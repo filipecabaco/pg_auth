@@ -19,6 +19,7 @@
   const status = root.querySelector(".pa-demo__status");
   const engines = [...root.querySelectorAll("[data-engine]")];
   const steps = [...root.querySelectorAll(".pa-step")];
+  const views = [...root.querySelectorAll("[data-view]")];
   const PANE = { anne: "\x1b1", bob: "\x1b2" };
   const NAME = { openfga: "OpenFGA", spicedb: "SpiceDB", cerbos: "Cerbos" };
   // a phone: the panes stacked (tmux alt-v) so a line is not wrapped mid-word in half the width
@@ -190,7 +191,6 @@
     root.dataset.engine = engine;
     root.dataset.family = FAMILY[engine];
     root.querySelectorAll("[data-engine-name]").forEach((n) => (n.textContent = NAME[engine]));
-    document.dispatchEvent(new CustomEvent("pa:engine", { detail: engine }));
     engines.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.engine === engine)));
     // another database: its steps start over
     steps.forEach((s) => s.classList.remove("is-done"));
@@ -198,7 +198,14 @@
     connect(engine);
   }
 
+  // Demo or Setup: the terminal, or what the demo's database ran and the engine's own rules
+  function showView(view) {
+    root.dataset.view = view;
+    views.forEach((v) => v.setAttribute("aria-selected", String(v.dataset.view === view)));
+  }
+
   async function send(step) {
+    showView("demo");
     if (!started) await start();
     if (!ready()) return;
     const panes = step.dataset.pane === "both" ? ["anne", "bob"] : [step.dataset.pane];
@@ -219,16 +226,5 @@
   );
   engines.forEach((b) => b.addEventListener("click", () => pickEngine(b.dataset.engine)));
   steps.forEach((s) => s.addEventListener("click", () => send(s)));
-})();
-
-// "Set it up with your engine": one tab per engine, following the demo's engine switcher
-(() => {
-  const tabs = [...document.querySelectorAll("[data-setup]")];
-  if (!tabs.length) return;
-  const show = (engine) => {
-    tabs.forEach((t) => t.setAttribute("aria-selected", String(t.dataset.setup === engine)));
-    document.querySelectorAll("[data-setup-for]").forEach((el) => (el.hidden = el.dataset.setupFor !== engine));
-  };
-  tabs.forEach((t) => t.addEventListener("click", () => show(t.dataset.setup)));
-  document.addEventListener("pa:engine", (e) => show(e.detail));
+  views.forEach((v) => v.addEventListener("click", () => showView(v.dataset.view)));
 })();

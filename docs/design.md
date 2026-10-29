@@ -268,6 +268,11 @@ One JSON object per line, one response per request (`sidecar/query/src/protocol.
     {"op":"fill",...,"wait_ms":10000} -> {"queued":true,"fresh":true}   (once the fill ends or wait_ms passes)
     {"op":"ping"} -> {"engine":"openfga"}
 
+`list` and `check` may carry `"context":{...}` and `"now":"current_time"`: values for OpenFGA
+conditions and SpiceDB caveats, resolved by the extension from `authz.configure(context => ...)`
+(a token's claims, settings), and a parameter the sidecar gives the time it asks the engine.
+Lists are cached per context.
+
 `engine_us` is the time the request spent waiting on the engine (0 when the sidecar answered from
 its cache); it is informational. `valid_ms` is how long the extension may keep a list: until the
 sidecar's cached answer reaches half its TTL, when the next request refreshes it in the

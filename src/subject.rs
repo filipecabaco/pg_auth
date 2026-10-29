@@ -72,23 +72,30 @@ struct Subject {
     detail: String,
     /// roles and attributes, for an engine that decides on them (Cerbos)
     principal: Option<Value>,
+    /// the token's claims, when the subject came from one
+    claims: Option<Value>,
+    /// what the request gives conditions and caveats (`context`)
+    context: Option<Value>,
 }
 
-/// A resolved subject (`type:id`) and its principal, with a hash of the principal's content.
+/// A resolved subject (`type:id`), its principal and the request's context, with a hash of their
+/// content.
 #[derive(Clone, Default)]
 struct Who {
     subject: Option<String>,
     principal: Option<Value>,
+    context: Option<Value>,
     principal_key: u64,
 }
 
 impl Who {
-    fn new(subject: Option<String>, principal: Option<Value>) -> Who {
+    fn new(subject: Option<String>, principal: Option<Value>, context: Option<Value>) -> Who {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         subject.hash(&mut h);
         principal.as_ref().map(Value::to_string).hash(&mut h);
-        Who { subject, principal, principal_key: h.finish() }
+        context.as_ref().map(Value::to_string).hash(&mut h);
+        Who { subject, principal, context, principal_key: h.finish() }
     }
 }
 
@@ -254,7 +261,7 @@ fn who() -> Who {
         return who;
     }
     let s = resolve();
-    let who = Who::new(s.id.map(|id| format!("{}:{id}", s.kind)), s.principal);
+    let who = Who::new(s.id.map(|id| format!("{}:{id}", s.kind)), s.principal, s.context);
     if let Some(inputs) = INPUTS.with(|i| i.borrow_mut().take()) {
         keep(&CURRENT, inputs, who.clone());
     }
@@ -280,14 +287,17 @@ pub fn current_as_caller() -> Option<String> {
     INPUTS.with(|i| *i.borrow_mut() = None);
     let subject = crate::ffi::read_one::<String>(SUBJECT_QUERY, &[]);
     if let Some(inputs) = INPUTS.with(|i| i.borrow_mut().take()) {
-        keep(&LAST, inputs, Who::new(subject.clone(), None));
+        keep(&LAST, inputs, Who::new(subject.clone(), None, None));
     }
     subject
 }
 
 fn resolve() -> Subject {
     let mut inputs = Inputs::default();
-    let subject = resolve_from(&mut inputs);
+    let mut subject = resolve_from(&mut inputs);
+    if subject.id.is_some() {
+        subject.context = context_of(&settings(), subject.claims.as_ref(), &mut inputs);
+    }
     // a rejected token is not reused: it may become valid (nbf) within the transaction
     let reusable = get_source() != "jwt_signed" || inputs.until.is_some();
     INPUTS.with(|i| *i.borrow_mut() = reusable.then_some(inputs));
@@ -314,10 +324,12 @@ fn resolve_from(inputs: &mut Inputs) -> Subject {
         let scope = claims.filter(|_| !scope_claim.is_empty()).and_then(|c| claim(c, &scope_claim)).or_else(|| scope_setting.clone());
         with_scope(principal, scope, &policy_version)
     };
-    let found = |subject_type: String, id: Option<String>, detail: String, principal: Option<Value>| Subject {
+    let found = |subject_type: String, id: Option<String>, detail: String, principal: Option<Value>, claims: Option<&Value>| Subject {
         source: source.clone(),
         kind: subject_type,
         principal: id.as_ref().and(principal),
+        claims: claims.cloned(),
+        context: None,
         id,
         detail,
     };
@@ -338,6 +350,8 @@ fn resolve_from(inputs: &mut Inputs) -> Subject {
             id: Some(id),
             detail: "pg_auth.as_subject: an administrator acting as this subject".into(),
             principal: Some(complete(serde_json::json!({"roles": roles, "attr": {}}), None)),
+            claims: None,
+            context: None,
         };
     }
     match source.as_str() {
@@ -352,28 +366,28 @@ fn resolve_from(inputs: &mut Inputs) -> Subject {
                 .filter(|r| !r.is_empty())
                 .map(str::to_owned)
                 .collect();
-            found(ty, id, detail.into(), Some(complete(serde_json::json!({"roles": roles, "attr": {}}), None)))
+            found(ty, id, detail.into(), Some(complete(serde_json::json!({"roles": roles, "attr": {}}), None)), None)
         }
         "jwt" => {
             let claims_setting = get("claims_setting");
             match read(inputs, &claims_setting).and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
-                None => found(default_type, None, format!("{claims_setting} is not set or not JSON"), None),
+                None => found(default_type, None, format!("{claims_setting} is not set or not JSON"), None, None),
                 Some(claims) => {
                     let id = claim(&claims, &get("claim"));
                     let detail = match &id {
                         Some(_) => format!("claim {} of {claims_setting} (not signature-checked)", get("claim")),
                         None => format!("claim {} missing from {claims_setting}", get("claim")),
                     };
-                    found(default_type, id, detail, Some(complete(principal_of(&claims, &roles_claim), Some(&claims))))
+                    found(default_type, id, detail, Some(complete(principal_of(&claims, &roles_claim), Some(&claims))), Some(&claims))
                 }
             }
         }
         "jwt_signed" => match bearer_token(read(inputs, &get("token_setting")), &get("token_setting"), &get("token_header")) {
-            Err(why) => found(default_type, None, why, None),
+            Err(why) => found(default_type, None, why, None, None),
             Ok(token) => {
                 let skew = get("clock_skew_seconds").parse().unwrap_or(30);
                 match verified_claims(&get("version"), &get("jwks"), &token, skew) {
-                    Err(why) => found(default_type, None, format!("token rejected: {why}"), None),
+                    Err(why) => found(default_type, None, format!("token rejected: {why}"), None, None),
                     Ok(claims) => {
                         // holds until it expires (verify requires exp)
                         inputs.until = claims.get("exp").and_then(Value::as_i64).map(|exp| exp + skew);
@@ -382,13 +396,55 @@ fn resolve_from(inputs: &mut Inputs) -> Subject {
                             Some(_) => format!("claim {} of a verified token", get("claim")),
                             None => format!("verified token has no claim {}", get("claim")),
                         };
-                        found(default_type, id, detail, Some(complete(principal_of(&claims, &roles_claim), Some(&claims))))
+                        found(default_type, id, detail, Some(complete(principal_of(&claims, &roles_claim), Some(&claims))), Some(&claims))
                     }
                 }
             }
         },
-        other => found(default_type, None, format!("unknown subject source {other:?}"), None),
+        other => found(default_type, None, format!("unknown subject source {other:?}"), None, None),
     }
+}
+
+/// What the request gives OpenFGA conditions and SpiceDB caveats (authz.configure(context =>
+/// ...)), as the sidecar protocol's fields: `{"context": {...}, "now": "current_time"}`. A claim
+/// or setting the request lacks is left out (a condition needing it is then not met). None when
+/// no context is configured.
+fn context_of(cfg: &HashMap<String, String>, claims: Option<&Value>, inputs: &mut Inputs) -> Option<Value> {
+    let spec = serde_json::from_str::<serde_json::Map<String, Value>>(cfg.get("context").filter(|c| !c.is_empty())?).ok()?;
+    let mut values = serde_json::Map::new();
+    let mut now = None;
+    for (name, source) in spec {
+        if source.as_str() == Some("now") {
+            now = Some(name);
+            continue;
+        }
+        let value = if let Some(path) = source.get("claim").and_then(Value::as_str) {
+            claims.and_then(|c| path.split('.').try_fold(c, |v, key| v.get(key))).cloned()
+        } else if let Some(setting) = source.get("setting").and_then(Value::as_str) {
+            let raw = read(inputs, setting).filter(|v| !v.is_empty());
+            match source.get("key").and_then(Value::as_str) {
+                Some(key) => raw.and_then(|r| serde_json::from_str::<Value>(&r).ok()).and_then(|v| v.get(key).cloned()),
+                None => raw.map(Value::String),
+            }
+        } else {
+            None
+        };
+        if let Some(v) = value.filter(|v| !v.is_null()) {
+            values.insert(name, v);
+        }
+    }
+    let mut fields = serde_json::Map::new();
+    fields.insert("context".into(), Value::Object(values));
+    if let Some(n) = now {
+        fields.insert("now".into(), Value::String(n));
+    }
+    Some(Value::Object(fields))
+}
+
+/// The request's context for conditions and caveats, as the sidecar protocol's fields to add to
+/// a list or check; None when none is configured.
+pub fn request_context() -> Option<Value> {
+    who().context
 }
 
 /// The principal with its scope and policy version (Cerbos), when there are any.

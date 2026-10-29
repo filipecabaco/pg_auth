@@ -8,6 +8,7 @@ description = "Answers pg_auth's authorization questions from an external engine
 
 [dependencies]
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+humantime = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "query"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

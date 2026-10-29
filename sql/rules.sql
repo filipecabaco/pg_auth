@@ -19,6 +19,9 @@ create table authz.rules (
     -- when the engine took it, or why it refused it (an invalid model, a policy that does not parse)
     pushed_at  timestamptz,
     error      text,
+    -- the engine's own id for it once pushed (OpenFGA's authorization model id), which every
+    -- sidecar then asks with
+    engine_ref text,
     primary key (engine, name, version)
 );
 
@@ -79,18 +82,29 @@ begin
 end
 $$;
 
--- For the sidecar: the engine took this version (no error), or refused it for good (the error).
-create function authz.rules_pushed(p_engine text, p_name text, p_version int, p_error text default null) returns void
+-- For the sidecar: the engine took this version (no error; `p_ref` its id for it, if any), or
+-- refused it for good (the error). The other sidecars hear of it, to ask with it too.
+create function authz.rules_pushed(p_engine text, p_name text, p_version int, p_error text default null, p_ref text default null)
+returns void
 language sql volatile security definer set search_path = pg_catalog, pg_temp as $$
-    update authz.rules set pushed_at = case when p_error is null then now() end, error = p_error
-    where engine = p_engine and name = p_name and version = p_version
+    update authz.rules set pushed_at = case when p_error is null then now() end, error = p_error, engine_ref = p_ref
+    where engine = p_engine and name = p_name and version = p_version;
+    select pg_notify('pg_auth_rules', p_engine);
+$$;
+
+-- For the sidecar: the engine's id for the rules in force (OpenFGA's model id), or null.
+create function authz.rules_ref(p_engine text) returns text
+language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+    select engine_ref from authz.rules where engine = p_engine and pushed_at is not null and engine_ref is not null
+    order by pushed_at desc limit 1
 $$;
 
 revoke all on authz.rules from public;
 revoke execute on function authz.set_rules(text, text, text) from public;
 revoke execute on function authz.rules(text) from public;
 revoke execute on function authz.rules_pending(text) from public;
-revoke execute on function authz.rules_pushed(text, text, int, text) from public;
+revoke execute on function authz.rules_pushed(text, text, int, text, text) from public;
+revoke execute on function authz.rules_ref(text) from public;
 
 -- What the setup names that the stored rules do not have: a protected table's type, permission or
 -- action; a relationship table's type, a relation that is computed rather than written, a subject
@@ -133,22 +147,32 @@ begin
         -- relationship tables: their types, and each relation a row may write with the subject it names
         select d.item, t from decl d, lateral (values (d.object_type), (d.subject_type)) v(t) where t is not null
     ), writes as (
-        -- what each written relationship needs: its subject as it is, unless every row has an end
-        -- (expires_column not null) and SpiceDB is given it; with an expiration, when it is
-        select d.item, d.object_type as t, u.wr as w, d.expires_column,
+        -- each relationship a row writes: its relation, and the subject it names when that is fixed
+        select d.item, d.object_type as t, u.wr as w, d.expires_column, d.condition,
                case when d.subject_type is not null and d.subject_relation_column is null
                     then d.subject_type || case when d.subject_id = '*' then ':*' else '' end || coalesce('#' || d.subject_relation, '') end as subject,
-               eng = 'spicedb' and d.expires_column is not null as needs_expiring,
+               eng = 'spicedb' and d.expires_column is not null as expiring,
                not (eng = 'spicedb' and d.expires_column is not null
-                    and (select a.attnotnull from pg_attribute a where a.attrelid = d.rel and a.attname = d.expires_column)) as needs_plain
+                    and (select a.attnotnull from pg_attribute a where a.attrelid = d.rel and a.attname = d.expires_column)) as unending
         from decl d, unnest(case when d.relation is not null then array[d.relation] else d.relations end) as u(wr)
         where d.object_type is not null and exists (select 1 from n where n.object_type = d.object_type)
+    ), forms as (
+        -- the forms of subject those relationships are written in: with their condition, and on
+        -- SpiceDB with an expiration when the row has an end (both when it may have none)
+        select w.*, f.form, f.why
+        from writes w,
+             lateral (values
+                 (case when w.unending then w.subject || coalesce(' with ' || w.condition, '') end,
+                  case when w.expiring then format(': rows with no end (%s may be null) are written so', w.expires_column) else '' end),
+                 (case when w.expiring then w.subject || ' with ' || coalesce(w.condition || ' and ', '') || 'expiration' end,
+                  ': rows with an end are written so (and `use expiration`)')) f(form, why)
+        where w.subject is not null and f.form is not null
     ), lists as (
         select n.object_type, string_agg(distinct n.name, ', ') filter (where n.kind <> 'type') as defined,
                string_agg(distinct n.name, ', ') filter (where n.kind = 'relation') as relations
         from n group by n.object_type
     ), all_types as (
-        select string_agg(distinct n.object_type, ', ') as types from n
+        select string_agg(distinct n.object_type, ', ') filter (where n.kind = 'type') as types from n
     )
     select distinct u.item,
            case when u.p is null and eng = 'cerbos' then format('%s have no resource policy for %s', rules, u.t)
@@ -170,22 +194,30 @@ begin
     select w.item,
            case when x.name is null then format('%s has no relation %s in %s (it has: %s)', w.t, w.w, rules,
                                                 coalesce((select relations from lists l where l.object_type = w.t), 'none'))
-                when x.kind = 'permission' then format('%s#%s is computed in %s: rows write the relations it assigns (%s)', w.t, w.w, rules,
-                                                       coalesce((select relations from lists l where l.object_type = w.t), 'none'))
-                when w.subject is not null and w.needs_plain and not w.subject = any(x.subjects) and w.subject = any(e.subjects)
-                    then format('%s#%s takes %s only with an expiration in the spicedb schema, and %s may be null: write `%s | %s with expiration`, or make the column not null',
-                                w.t, w.w, w.subject, w.expires_column, w.subject, w.subject)
-                when w.subject is not null and w.needs_plain and not w.subject = any(x.subjects)
-                    then format('%s#%s does not take %s in %s (it takes: %s)', w.t, w.w, w.subject, rules,
-                                coalesce(nullif(array_to_string(x.subjects || array(select s || ' with expiration' from unnest(e.subjects) s), ', '), ''), 'none'))
-                else format('%s#%s takes no expiration%s in the spicedb schema: write `%s with expiration` (and `use expiration`)',
-                            w.t, w.w, coalesce(' for ' || w.subject, ''), coalesce(w.subject, x.subjects[1], e.subjects[1])) end
+                else format('%s#%s is computed in %s: rows write the relations it assigns (%s)', w.t, w.w, rules,
+                            coalesce((select relations from lists l where l.object_type = w.t), 'none')) end
     from writes w
     left join n x on x.object_type = w.t and x.name = w.w and x.kind in ('relation', 'permission')
-    left join n e on e.object_type = w.t and e.name = w.w and e.kind = 'expiring'
     where x.name is null or x.kind = 'permission'
-       or (w.subject is not null and w.needs_plain and not w.subject = any(x.subjects))
-       or (w.needs_expiring and (e.name is null or (w.subject is not null and not w.subject = any(e.subjects))));
+    union
+    select f.item, format('%s#%s does not take `%s` in %s (it takes: %s)%s', f.t, f.w, f.form, rules,
+                          coalesce(nullif(array_to_string(x.subjects, ', '), ''), 'none'), f.why)
+    from forms f
+    join n x on x.object_type = f.t and x.name = f.w and x.kind = 'relation'
+    where not f.form = any(x.subjects)
+    union
+    -- a condition the rules have, and the values a row gives it for its parameters
+    select d.item, format('%s has no %s %s (it has: %s)', rules, case eng when 'openfga' then 'condition' else 'caveat' end, d.condition,
+                          coalesce((select string_agg(c.name, ', ' order by c.name) from n c where c.kind = 'condition'), 'none'))
+    from decl d
+    where d.condition is not null and not exists (select 1 from n c where c.kind = 'condition' and c.name = d.condition)
+    union
+    select d.item, format('%s %s has no parameter %s (it has: %s)', case eng when 'openfga' then 'condition' else 'caveat' end,
+                          d.condition, p.key, array_to_string(c.subjects, ', '))
+    from decl d
+    join n c on c.kind = 'condition' and c.name = d.condition,
+         jsonb_object_keys(d.condition_context) p(key)
+    where not p.key = any(c.subjects);
 end
 $$;
 

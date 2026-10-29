@@ -389,6 +389,30 @@ mod tests {
     }
 
     #[pg_test]
+    fn the_request_gives_conditions_its_claims_settings_and_the_time() {
+        fixture();
+        Spi::run(
+            r#"select authz.configure(subject => 'jwt', context => '{"current_time": "now", "region": {"claim": "geo.region"},
+                                       "client_ip": {"setting": "request.headers", "key": "x-forwarded-for"}, "plan": {"setting": "app.plan"}}');
+               select set_config('request.jwt.claims', '{"sub": "anne", "geo": {"region": "eu"}}', true);
+               select set_config('request.headers', '{"x-forwarded-for": "10.0.0.7"}', true);"#,
+        )
+        .unwrap();
+        // a setting the request does not have is left out
+        assert_eq!(
+            crate::subject::request_context(),
+            Some(serde_json::json!({"context": {"region": "eu", "client_ip": "10.0.0.7"}, "now": "current_time"}))
+        );
+        // follows the request's settings
+        Spi::run("select set_config('app.plan', 'gold', true)").unwrap();
+        assert_eq!(crate::subject::request_context().unwrap()["context"]["plan"], "gold");
+        assert!(error_of(r#"select authz.configure(context => '{"region": "claim:region"}')"#).unwrap_or_default().contains("a source is"));
+        // none configured: none sent
+        Spi::run("select authz.configure(context => '{}')").unwrap();
+        assert_eq!(crate::subject::request_context(), None);
+    }
+
+    #[pg_test]
     fn why_explains_a_policy_the_engine_cannot_decide_instead_of_failing() {
         fixture();
         let refused = why("2", Some("user:refused"));
@@ -684,6 +708,8 @@ mod tests {
 
     #[pg_test]
     fn a_relationship_ending_at_a_time_is_deleted_when_it_is_due() {
+        // the outbox's claim takes its lock without waiting: wait for another test holding it
+        Spi::run("select pg_advisory_xact_lock(hashtext('pg_auth.outbox'))").unwrap();
         let outbox = || -> Vec<String> {
             Spi::connect(|client| {
                 client
@@ -973,7 +999,7 @@ mod tests {
         fails_with(
             "select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation => 'member',
                                         subject_type => 'user', subject_id => '*')",
-            "org#member does not take user:* in the openfga model (it takes: user)",
+            "org#member does not take `user:*` in the openfga model (it takes: user)",
         );
         // what the model has commits
         let valid = "select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation_column => 'role',
@@ -1017,15 +1043,75 @@ mod tests {
         };
         assert_eq!(ending("viewer"), None);
         let error = ending("reader").unwrap_or_default();
-        assert!(error.contains("doc#reader takes no expiration for user in the spicedb schema: write `user with expiration`"), "{error}");
+        assert!(
+            error.contains(
+                "doc#reader does not take `user with expiration` in the spicedb schema (it takes: user): rows with an end are written so"
+            ),
+            "{error}"
+        );
         // only with an expiration: every row must have an end
         let error = ending("ending").unwrap_or_default();
         assert!(
-            error.contains("doc#ending takes user only with an expiration in the spicedb schema, and expires_at may be null"),
+            error.contains(
+                "doc#ending does not take `user` in the spicedb schema (it takes: user with expiration): rows with no end (expires_at may be null)"
+            ),
             "{error}"
         );
         Spi::run("alter table public.eshares alter column expires_at set not null").unwrap();
         assert_eq!(ending("ending"), None);
+    }
+
+    #[pg_test]
+    fn a_relationship_written_with_a_condition_gets_the_rows_values() {
+        // the outbox's claim takes its lock without waiting: wait for another test holding it
+        Spi::run("select pg_advisory_xact_lock(hashtext('pg_auth.outbox'))").unwrap();
+        Spi::run(
+            "create table public.cshares (doc_id int, user_id text, regions text[], primary key (doc_id, user_id));
+             insert into public.cshares values (1, 'anne', '{eu}');
+             select authz.set_rules('openfga', 'model', 'model\n  schema 1.1\ntype user\ntype doc\n  relations\n    \
+                                    define viewer: [user, user with in_region]\n    define reader: [user]\n\
+                                    condition in_region(region: string, allowed: list<string>) {\n  region in allowed\n}\n')",
+        )
+        .unwrap();
+        let relate = |relation: &str, condition: &str, context: &str| {
+            error_at_commit(&format!(
+                "select authz.relate('public.cshares', object_type => 'doc', object_column => 'doc_id', relation => '{relation}',
+                                     subject_type => 'user', subject_column => 'user_id', condition => '{condition}',
+                                     condition_context => '{context}')"
+            ))
+        };
+        let fails_with = |error: Option<String>, expected: &str| {
+            let error = error.unwrap_or_default();
+            assert!(error.contains(expected), "expected: {expected}\n  got: {error}");
+        };
+        fails_with(
+            relate("reader", "in_region", r#"{"allowed": "regions"}"#),
+            "doc#reader does not take `user with in_region` in the openfga model (it takes: user)",
+        );
+        fails_with(
+            relate("viewer", "in_regoin", r#"{"allowed": "regions"}"#),
+            "the openfga model has no condition in_regoin (it has: in_region)",
+        );
+        fails_with(
+            relate("viewer", "in_region", r#"{"alowed": "regions"}"#),
+            "condition in_region has no parameter alowed (it has: region, allowed)",
+        );
+        assert_eq!(relate("viewer", "in_region", r#"{"allowed": "regions"}"#), None);
+
+        // written with the row's values; other values: deleted and written again
+        let outbox = || {
+            Spi::get_one::<String>(
+                "select string_agg(op || ' ' || object || coalesce(' ' || condition || ' ' || condition_context::text, ''), ', ' order by id)
+                 from authz.outbox",
+            )
+            .unwrap()
+        };
+        assert_eq!(outbox().as_deref(), Some(r#"write doc:1 in_region {"allowed": ["eu"]}"#));
+        Spi::run("delete from authz.outbox; update public.cshares set regions = '{eu,us}'").unwrap();
+        assert_eq!(outbox().as_deref(), Some(r#"delete doc:1, write doc:1 in_region {"allowed": ["eu", "us"]}"#));
+        let claimed =
+            Spi::get_one::<String>("select condition || ' ' || condition_context from authz.outbox_claim(10) where op = 'write'").unwrap();
+        assert_eq!(claimed.as_deref(), Some(r#"in_region {"allowed": ["eu", "us"]}"#));
     }
 
     #[pg_test]
@@ -1063,6 +1149,8 @@ mod tests {
 
     #[pg_test]
     fn the_outbox_is_delivered_in_order_by_one_sidecar_and_removed_by_id() {
+        // the outbox's claim takes its lock without waiting: wait for another test holding it
+        Spi::run("select pg_advisory_xact_lock(hashtext('pg_auth.outbox'))").unwrap();
         Spi::run(
             "insert into authz.outbox (op, object, relation, subject) values
                  ('write', 'org:1', 'member', 'user:a'), ('delete', 'org:1', 'member', 'user:a'), ('write', 'org:2', 'member', 'user:b')",

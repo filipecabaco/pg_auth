@@ -26,7 +26,10 @@
 //! Ids are bare object ids (no `type:` prefix). `engine_us` is the time this request spent waiting
 //! on the engine (0 when answered from the sidecar's cache); callers may ignore it. `check` may
 //! carry `"attrs"`, one object per id, and any request a `"principal"` (its roles and
-//! attributes); engines that decide on relationships ignore both.
+//! attributes); engines that decide on relationships ignore both. `list` and `check` may carry
+//! the request's `"context"` for OpenFGA conditions and SpiceDB caveats (`{"region":"eu"}`), and
+//! `"now"`, a parameter to give the time the engine is asked (`"now":"current_time"`); Cerbos
+//! ignores both.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -42,6 +45,8 @@ pub enum Request {
         permission: String,
         #[serde(rename = "type")]
         object_type: String,
+        #[serde(flatten)]
+        context: Asked,
     },
     /// May the subject access each of these objects (with these attributes)?
     Check {
@@ -52,6 +57,8 @@ pub enum Request {
         ids: Vec<String>,
         attrs: Option<Vec<serde_json::Value>>,
         principal: Option<serde_json::Value>,
+        #[serde(flatten)]
+        context: Asked,
     },
     /// Which resources of `type` may the subject access, as a condition on their attributes?
     Plan {
@@ -70,6 +77,39 @@ pub enum Request {
         object_type: String,
         wait_ms: Option<u64>,
     },
+}
+
+/// What a request gives conditions and caveats: its values, and the parameter given the time
+/// the engine is asked.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct Asked {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<String>,
+}
+
+impl Asked {
+    pub fn is_empty(&self) -> bool {
+        self.context.as_ref().is_none_or(serde_json::Map::is_empty) && self.now.is_none()
+    }
+
+    /// The context to send the engine now: the values, and the time under `now` (RFC 3339, UTC).
+    pub fn at_now(&self) -> Option<serde_json::Value> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut context = self.context.clone().unwrap_or_default();
+        if let Some(name) = &self.now {
+            context.insert(name.clone(), rfc3339(std::time::SystemTime::now()).into());
+        }
+        Some(serde_json::Value::Object(context))
+    }
+}
+
+/// A time as RFC 3339 in UTC, to the microsecond (`2026-10-29T19:22:18.564953Z`).
+pub fn rfc3339(at: std::time::SystemTime) -> String {
+    humantime::format_rfc3339_micros(at).to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -131,7 +171,12 @@ mod tests {
     fn parses_requests() {
         assert_eq!(
             parse(r#"{"op":"list","subject":"user:anne","permission":"viewer","type":"document"}"#),
-            Ok(Request::List { subject: "user:anne".into(), permission: "viewer".into(), object_type: "document".into() })
+            Ok(Request::List {
+                subject: "user:anne".into(),
+                permission: "viewer".into(),
+                object_type: "document".into(),
+                context: Asked::default()
+            })
         );
         assert_eq!(
             parse(r#"{"op":"check","subject":"user:anne","permission":"viewer","type":"document","ids":["1"]}"#),
@@ -141,7 +186,8 @@ mod tests {
                 object_type: "document".into(),
                 ids: vec!["1".into()],
                 attrs: None,
-                principal: None
+                principal: None,
+                context: Asked::default()
             })
         );
         assert_eq!(parse(r#"{"op":"ping"}"#), Ok(Request::Ping));
@@ -151,6 +197,22 @@ mod tests {
         );
         assert!(parse(r#"{"op":"drop_tables"}"#).is_err());
         assert!(parse("not json").is_err());
+    }
+
+    #[test]
+    fn a_request_carries_its_context_and_the_time_it_is_asked() {
+        let Ok(Request::List { context, .. }) = parse(
+            r#"{"op":"list","subject":"user:anne","permission":"viewer","type":"doc","context":{"region":"eu"},"now":"current_time"}"#,
+        ) else {
+            panic!("not a list")
+        };
+        let sent = context.at_now().unwrap_or_default();
+        assert_eq!(sent["region"], "eu");
+        let time = sent["current_time"].as_str().unwrap_or_default();
+        assert!(time.len() == 27 && time.ends_with('Z'), "{time}");
+        assert_eq!(Asked::default().at_now(), None);
+        let at = std::time::UNIX_EPOCH + Duration::from_micros(1_772_218_938_564_953);
+        assert_eq!(rfc3339(at), "2026-02-27T19:02:18.564953Z");
     }
 
     #[test]

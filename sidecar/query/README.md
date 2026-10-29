@@ -26,7 +26,11 @@ as a condition on them, in the protocol's expression language (`and`, `or`, `not
 `lt`, `le`, `gt`, `ge`, `in` over `{"column":...}`, `{"id":true}` and `{"value":...}`); `rows`
 when the engine's condition is outside it. Requests may carry `"principal"` (roles and
 attributes) and `check` `"attrs"` (one object per id); engines that decide on relationships
-ignore both.
+ignore both. `list` and `check` may carry `"context"` (values for OpenFGA conditions and SpiceDB
+caveats, from `authz.configure(context => ...)`) and `"now"` (a parameter given the time the
+engine is asked); lists are cached per context, checks with one are not, and the permission
+index is not used for them. A ListObjects that OpenFGA refuses for a parameter the request did
+not give answers `too_many`, so the rows are checked, each such one denied.
 
 `ids`, `too_many` and `allowed` answers also carry `engine_us`, the time the request spent waiting
 on the engine (0 when answered from the cache), which `authz.stats()` sums per backend. `ids` and
@@ -102,7 +106,7 @@ extension then answers from Postgres instead of asking the engine per row.
       grant execute on function authz.index_begin(text, text, text, text), authz.index_add(bigint, text[]),
           authz.index_finish(bigint), authz.index_abort(bigint), authz.index_invalidate(),
           authz.outbox_claim(int), authz.outbox_done(bigint[]), authz.outbox_failed(bigint, text),
-          authz.answers_changed(), authz.rules_pending(text), authz.rules_pushed(text, text, int, text)
+          authz.answers_changed(), authz.rules_pending(text), authz.rules_pushed(text, text, int, text, text), authz.rules_ref(text)
           to pg_auth_sidecar;
 
 ## Relationship tables
@@ -133,7 +137,11 @@ API (`PUT /admin/policy`, the YAML sent as JSON, with `CERBOS_ADMIN_USER` and
 before, so InspectPolicies is asked after, and when they do not compile the versions before are
 stored again, a new policy disabled, and the push refused). The result is recorded beside each version in the same transaction,
 which calls `authz.answers_changed()` and clears the sidecar's own caches when the engine took
-them; SpiceDB is read from then on at least as fresh as the schema written. Rules the engine refuses are recorded with its reason and not retried; an unreachable engine
+them. The engine's id for the rules (OpenFGA's model id, SpiceDB's schema ZedToken) is recorded
+beside them (`authz.rules_ref`), and every sidecar asks with it from its next wake (a
+`NOTIFY`, or `INDEX_POLL_MS`): OpenFGA requests pin that model, SpiceDB reads are at least as
+fresh as that schema. A relationship written with a condition (`authz.relate condition =>`)
+carries it: OpenFGA's tuple `condition`, SpiceDB's `optional_caveat`, with the row's values. Rules the engine refuses are recorded with its reason and not retried; an unreachable engine
 is retried every `INDEX_POLL_MS`.
 
 ## Run

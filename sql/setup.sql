@@ -50,7 +50,7 @@ $$;
 -- One relationship declaration, unless the same one is already in force (relate would deliver the
 -- table's rows again).
 create function authz.setup_relate(rel regclass, decl_name text, filter text, object jsonb, relation jsonb, subject jsonb, what text,
-                                   expires jsonb default null)
+                                   expires jsonb default null, condition jsonb default null)
 returns void
 language plpgsql volatile as $$
 declare
@@ -59,6 +59,7 @@ declare
 begin
     perform authz.setup_keys(object, array['type', 'type_column', 'column', 'id'], what || ' object');
     perform authz.setup_keys(coalesce(expires, '{}'), array['column'], what || ' expires');
+    perform authz.setup_keys(coalesce(condition, '{}'), array['name', 'context'], what || ' condition');
     perform authz.setup_keys(subject, array['type', 'type_column', 'column', 'id', 'relation', 'relation_column'], what || ' subject');
     if jsonb_typeof(relation) = 'object' then
         perform authz.setup_keys(relation, array['column', 'allowed'], what || ' relation');
@@ -69,7 +70,8 @@ begin
              case when jsonb_typeof(relation) = 'string' then relation #>> '{}' end, relation ->> 'column',
              subject ->> 'type', subject ->> 'type_column', subject ->> 'id', subject ->> 'column',
              subject ->> 'relation', subject ->> 'relation_column', filter,
-             (select array_agg(r) from jsonb_array_elements_text(relation -> 'allowed') r), expires ->> 'column');
+             (select array_agg(r) from jsonb_array_elements_text(relation -> 'allowed') r), expires ->> 'column',
+             condition ->> 'name', condition -> 'context');
     select * into have from authz.relationships r where r.rel = setup_relate.rel and r.name = decl_name;
     if have is not distinct from want then
         return;
@@ -81,7 +83,7 @@ begin
                          subject_type => want.subject_type, subject_type_column => want.subject_type_column,
                          subject_column => want.subject_column, subject_id => want.subject_id,
                          subject_relation => want.subject_relation, subject_relation_column => want.subject_relation_column,
-                         expires_column => want.expires_column);
+                         expires_column => want.expires_column, condition => want.condition, condition_context => want.condition_context);
 end
 $$;
 
@@ -127,16 +129,16 @@ begin
 
     if s is not null then
         perform authz.setup_keys(s, array['source', 'type', 'claim', 'jwks', 'claims_setting', 'token_setting', 'token_header',
-                                          'clock_skew_seconds', 'roles', 'scope', 'policy_version'], 'subject');
+                                          'clock_skew_seconds', 'roles', 'scope', 'policy_version', 'context'], 'subject');
         perform authz.configure(subject => s ->> 'source', subject_type => s ->> 'type', claim => s ->> 'claim',
                                 jwks => s -> 'jwks', claims_setting => s ->> 'claims_setting',
                                 token_setting => s ->> 'token_setting', token_header => s ->> 'token_header',
                                 clock_skew_seconds => (s ->> 'clock_skew_seconds')::int, roles_claim => s ->> 'roles',
-                                scope_claim => s ->> 'scope', policy_version => s ->> 'policy_version');
+                                scope_claim => s ->> 'scope', policy_version => s ->> 'policy_version', context => s -> 'context');
     end if;
 
     for e in select x from jsonb_array_elements(coalesce(document -> 'relationships', '[]')) x loop
-        perform authz.setup_keys(e, array['table', 'name', 'filter', 'by', 'object', 'relation', 'subject', 'expires'], 'a relationship');
+        perform authz.setup_keys(e, array['table', 'name', 'filter', 'by', 'object', 'relation', 'subject', 'expires', 'condition'], 'a relationship');
         rel := (e ->> 'table')::regclass;
         base := coalesce(e ->> 'name', 'pg_auth');
         what := format('relationship %s (%s)', rel, base);
@@ -145,11 +147,11 @@ begin
             for v in select key, value from jsonb_each(e -> 'subject') loop
                 perform authz.setup_relate(rel, base || '_' || v.key,
                     concat_ws(' and ', '(' || (e ->> 'filter') || ')', format('%I = %L', e ->> 'by', v.key)),
-                    e -> 'object', e -> 'relation', v.value, what || ' ' || v.key, e -> 'expires');
+                    e -> 'object', e -> 'relation', v.value, what || ' ' || v.key, e -> 'expires', e -> 'condition');
                 relationships := relationships || (rel::text || '/' || base || '_' || v.key);
             end loop;
         else
-            perform authz.setup_relate(rel, base, e ->> 'filter', e -> 'object', e -> 'relation', e -> 'subject', what, e -> 'expires');
+            perform authz.setup_relate(rel, base, e ->> 'filter', e -> 'object', e -> 'relation', e -> 'subject', what, e -> 'expires', e -> 'condition');
             relationships := relationships || (rel::text || '/' || base);
         end if;
     end loop;
@@ -211,5 +213,5 @@ revoke all on authz.setups from public;
 revoke execute on function authz.setup(jsonb) from public;
 revoke execute on function authz.setup() from public;
 revoke execute on function authz.setup_keys(jsonb, text[], text) from public;
-revoke execute on function authz.setup_relate(regclass, text, text, jsonb, jsonb, jsonb, text, jsonb) from public;
+revoke execute on function authz.setup_relate(regclass, text, text, jsonb, jsonb, jsonb, text, jsonb, jsonb) from public;
 revoke execute on function authz.setup_unprotect(regclass, name) from public;

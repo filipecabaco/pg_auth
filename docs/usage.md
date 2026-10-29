@@ -158,6 +158,49 @@ select authz.protect('app.memberships', type => 'org', id => 'org_id', read => '
   has an end: a `not null` column). OpenFGA has no expiry of its own: its grants end when the
   sidecar deletes them, so while the sidecar is down an ended grant stays, like any revocation.
   Ends waiting in the outbox are not changes waiting: `authz.doctor()` counts them apart.
+- **Conditions and caveats.** A relationship can be written with an OpenFGA condition or a
+  SpiceDB caveat, the row giving its values, and each request the rest: a share in some regions,
+  a grant until a deadline, an office's IP range.
+
+  ```sql
+  -- the row gives `allowed`; each request gives `region` (the token's claim) and the time asked
+  select authz.relate('app.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+                      subject_type => 'user', subject_column => 'user_id',
+                      condition => 'in_region', condition_context => '{"allowed": "regions"}');
+  select authz.configure(context => '{"current_time": "now", "region": {"claim": "region"},
+                                      "client_ip": {"setting": "request.headers", "key": "x-forwarded-for"}}');
+  ```
+
+  ```text
+  condition in_region(region: string, allowed: list<string>) {     # OpenFGA
+    region in allowed
+  }
+  type doc
+    relations
+      define viewer: [user, user with in_region]
+
+  caveat in_region(region string, allowed list<string>) {         // SpiceDB
+    region in allowed
+  }
+  definition doc {
+    relation viewer: user | user with in_region
+  }
+  ```
+
+  - `condition_context` maps each parameter the row gives to its column (a null column gives
+    none). New values in the row write the relationship again with them.
+  - `authz.configure(context => ...)` names what every request gives: `"now"` (the time the
+    engine is asked, RFC 3339), `{"claim": "region"}` (the token's claim, `a.b` for a nested one),
+    or `{"setting": "request.headers", "key": "x-forwarded-for"}` (a setting, or a key of its
+    JSON). A value the request lacks is not sent, and a condition needing it is not met: those
+    rows stay hidden.
+  - Answers depend on the context, so they are kept per context; one asked with the time is kept
+    up to the sidecar's `CACHE_TTL_MS` (1 s), so a grant ends within that of its deadline. The
+    permission index is not used while a context is configured: a set is filled for no request
+    in particular. Broad subjects are then checked row by row.
+  - With rules kept in Postgres, a table naming a condition the rules do not have, a parameter
+    the condition does not take, or a relation that does not take `user with <condition>` fails
+    at commit.
 - **If the engine is down,** changes wait and are delivered when it is back. A change the engine
   refuses (a relation the model does not have) is set aside with its reason, and `authz.doctor()`
   reports it; the changes after it go on.
@@ -196,11 +239,14 @@ select authz.setup($${
 - `"by"` declares a table once per value of a column: the subject is a map from those values.
 - `"relation"` is a name, or `{"column": ..., "allowed": [...]}`.
 - `"expires": {"column": ...}` ends each relationship at the row's timestamp (`expires_column`).
+- `"condition": {"name": ..., "context": {"parameter": "column"}}` writes it with an OpenFGA
+  condition or SpiceDB caveat (`condition`, `condition_context`).
 - A protection takes `"select"`, `"write"`, `"update"`, `"delete"`, `"insert"` (a permission, or
   `{"type", "column", "permission"}` on the parent), `"column"` or `"key"`, `"attributes"` (a list of
   columns, or `{"name": "column"}`), `"hierarchy"` (`{"tree", "direct"}`), `"name"` and `"force"`.
 - `"subject"` takes `authz.configure`'s settings: `"source"`, `"claim"`, `"type"`, `"roles"`,
-  `"scope"`, `"policy_version"`, `"jwks"`, `"claims_setting"`, `"token_setting"`, `"token_header"`.
+  `"scope"`, `"policy_version"`, `"context"`, `"jwks"`, `"claims_setting"`, `"token_setting"`,
+  `"token_header"`.
 - What the previous document declared and this one does not is removed. Unknown keys fail, naming
   what the place takes. A relationship table declared exactly as before is not delivered again.
 
@@ -286,8 +332,11 @@ select engine, name, version, pushed_at, error from authz.rules();   -- the vers
   the sidecar asks it whether they compile, and puts the versions before back when they do not.
   Store a corrected version to replace it.
 - **OpenFGA's DSL** is converted to the API's JSON by the sidecar (schema 1.1: types, relations,
-  `[user, user:*, team#member]`, `or`, `and`, `but not`, `from`); conditions and modules are refused,
-  as pg_auth sends no context for them. JSON is taken as is.
+  `[user, user:*, team#member, user with in_region]`, `or`, `and`, `but not`, `from`, conditions);
+  modules are refused. JSON is taken as is.
+- **Every sidecar follows them.** The engine's id for the rules in force (OpenFGA's model, SpiceDB's
+  schema revision) is kept beside them, and every sidecar asks with it from the next request, not
+  only the one that pushed them.
 - **Cerbos** must store policies in a database with its Admin API on
   (`storage.driver: sqlite3` or `postgres`, `server.adminAPI.enabled: true`), and the sidecar needs
   its credentials (`CERBOS_ADMIN_USER`, `CERBOS_ADMIN_PASSWORD`). A policy directory or git store

@@ -151,6 +151,8 @@ type Declared = Rc<HashMap<(String, String), String>>;
 
 thread_local! {
     static CONN: RefCell<Option<(String, BufReader<UnixStream>)>> = const { RefCell::new(None) };
+    /// the request context this transaction's answers were given for (`context_held`)
+    static CONTEXT: RefCell<String> = const { RefCell::new(String::new()) };
     static LISTS: RefCell<HashMap<Key, Rc<Listed>>> = RefCell::new(HashMap::new());
     /// list answers kept across transactions, per sidecar socket, until the sidecar's own cache
     /// would stop giving them (its valid_ms)
@@ -420,6 +422,41 @@ fn broken(e: &std::io::Error) -> bool {
     matches!(e.kind(), BrokenPipe | ConnectionReset | ConnectionAborted | UnexpectedEof)
 }
 
+/// Whether the permission index answers: pg_auth.permission_index, and no request context for
+/// conditions and caveats (a set is filled for no context in particular, and the time it was
+/// filled at may no longer hold).
+fn index_on() -> bool {
+    PERMISSION_INDEX.get() && crate::subject::request_context().is_none()
+}
+
+/// A list or check request, with the request's context for conditions and caveats, if any.
+fn asking(mut request: Value) -> Value {
+    if let (Some(Value::Object(fields)), Some(r)) = (crate::subject::request_context(), request.as_object_mut()) {
+        r.extend(fields);
+    }
+    request
+}
+
+/// This transaction's answers were given for one context: another one (a claim or setting it
+/// reads changed meanwhile) asks again. -> the context, as the key of answers kept for it.
+fn context_held() -> String {
+    let context = crate::subject::request_context().map(|c| c.to_string()).unwrap_or_default();
+    let changed = CONTEXT.with(|c| {
+        let mut c = c.borrow_mut();
+        if *c == context {
+            return false;
+        }
+        c.clone_from(&context);
+        true
+    });
+    if changed {
+        LISTS.with(|c| c.borrow_mut().clear());
+        CHECKS.with(|c| c.borrow_mut().clear());
+        HOT.with(|h| *h.borrow_mut() = None);
+    }
+    context
+}
+
 /// Answers kept across transactions are dropped once relationships changed in the engine (a
 /// sidecar delivered relationship tables' changes: authz.answers_changed).
 fn forget_kept_if_relationships_changed() {
@@ -434,6 +471,7 @@ fn forget_kept_if_relationships_changed() {
 /// Which objects of `object_type` may `subject` access with `permission`?
 pub fn list(subject: &str, object_type: &str, permission: &str) -> Result<Rc<Listed>, String> {
     let key = (subject.to_string(), object_type.to_string(), permission.to_string());
+    let context = context_held();
     if let Some(hit) = LISTS.with(|c| c.borrow().get(&key).cloned()) {
         return Ok(hit);
     }
@@ -443,8 +481,9 @@ pub fn list(subject: &str, object_type: &str, permission: &str) -> Result<Rc<Lis
         return Ok(listed);
     }
     // a request's transaction is short: the answer the sidecar would give from its cache anyway
-    // spares a round trip, and the plan's of every statement of the next requests
-    let socket = socket_path();
+    // spares a round trip, and the plan's of every statement of the next requests; kept per
+    // sidecar and per context (another context is another answer)
+    let socket = if context.is_empty() { socket_path() } else { format!("{}\0{context}", socket_path()) };
     forget_kept_if_relationships_changed();
     let kept = LISTS_KEPT
         .with(|c| c.borrow().get(&(socket.clone(), key.clone())).filter(|(until, _)| Instant::now() < *until).map(|(_, l)| l.clone()));
@@ -454,7 +493,7 @@ pub fn list(subject: &str, object_type: &str, permission: &str) -> Result<Rc<Lis
         LISTS.with(|c| c.borrow_mut().insert(key, hit.clone()));
         return Ok(hit);
     }
-    let v = call(&json!({"op": "list", "subject": subject, "permission": permission, "type": object_type}))?;
+    let v = call(&asking(json!({"op": "list", "subject": subject, "permission": permission, "type": object_type})))?;
     let listed = if v.get("too_many").and_then(Value::as_bool) == Some(true) {
         Listed::TooMany
     } else {
@@ -689,7 +728,7 @@ pub enum IndexStatus {
 }
 
 pub fn index_status(subject: &str, object_type: &str, permission: &str) -> IndexStatus {
-    if !PERMISSION_INDEX.get() {
+    if !index_on() {
         return IndexStatus::Off;
     }
     match index_entry(&(subject.to_string(), object_type.to_string(), permission.to_string())) {
@@ -825,7 +864,7 @@ pub fn breadth_changed(subject: Option<&str>) -> bool {
 /// The subject's fresh set in the permission index, found once per transaction. The index
 /// functions resolve the current subject themselves; the key's subject is that subject.
 fn index_entry(key: &Key) -> Option<IndexedSet> {
-    if !PERMISSION_INDEX.get() && !hierarchy_set(key) {
+    if !index_on() && !hierarchy_set(key) {
         return None;
     }
     if !INDEXED.with(|c| c.borrow().contains_key(key)) {
@@ -852,7 +891,7 @@ fn index_entry(key: &Key) -> Option<IndexedSet> {
 /// effort) and the caller asks the engine.
 fn from_index(subject: &str, object_type: &str, permission: &str, ids: &[Option<String>]) -> Option<Vec<bool>> {
     let key = (subject.to_string(), object_type.to_string(), permission.to_string());
-    if !PERMISSION_INDEX.get() && !hierarchy_set(&key) {
+    if !index_on() && !hierarchy_set(&key) {
         record(key, |a| a.index_off = true);
         return None;
     }
@@ -898,7 +937,7 @@ fn from_index(subject: &str, object_type: &str, permission: &str, ids: &[Option<
 /// backend): scans then check their rows against it themselves, one by one.
 pub fn loaded(subject: &str, object_type: &str, permission: &str) -> Option<Rc<Loaded>> {
     let key = (subject.to_string(), object_type.to_string(), permission.to_string());
-    if !PERMISSION_INDEX.get() && !hierarchy_set(&key) {
+    if !index_on() && !hierarchy_set(&key) {
         return None;
     }
     index_entry(&key)?.loaded
@@ -925,7 +964,7 @@ fn index_read<A: pgrx::FromDatum + pgrx::IntoDatum>(query: &str, args: &[pgrx::d
 fn wait_for_fill(subject: &str, object_type: &str, permission: &str) -> bool {
     let key = (subject.to_string(), object_type.to_string(), permission.to_string());
     let wait = FILL_WAIT_MS.get();
-    if wait <= 0 || !PERMISSION_INDEX.get() {
+    if wait <= 0 || !index_on() {
         return false;
     }
     // ids, or round trips: checked row by row (a write), each id is one, so a tenth as many
@@ -1052,6 +1091,7 @@ const CHECK_CHUNK: usize = 1000;
 /// The subset of `ids` that `subject` may access, asking in batches. Missing answers are denials.
 pub fn filter(subject: &str, object_type: &str, permission: &str, ids: Vec<String>) -> Result<Vec<String>, String> {
     let key = (subject.to_string(), object_type.to_string(), permission.to_string());
+    context_held();
     let (mut allowed, unknown): (Vec<String>, Vec<String>) = CHECKS.with(|c| {
         let c = c.borrow();
         let known = c.get(&key);
@@ -1059,7 +1099,7 @@ pub fn filter(subject: &str, object_type: &str, permission: &str, ids: Vec<Strin
         (known_ids.into_iter().filter(|id| known.is_some_and(|k| k[id])).collect(), unknown)
     });
     for chunk in unknown.chunks(CHECK_CHUNK) {
-        let v = call(&json!({"op": "check", "subject": subject, "permission": permission, "type": object_type, "ids": chunk}))?;
+        let v = call(&asking(json!({"op": "check", "subject": subject, "permission": permission, "type": object_type, "ids": chunk})))?;
         let answers = v.get("allowed").and_then(Value::as_array).ok_or("bad sidecar response: no allowed")?;
         arm_cache_reset();
         CHECKS.with(|c| {

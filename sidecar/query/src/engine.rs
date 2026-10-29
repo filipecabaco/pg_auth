@@ -35,6 +35,8 @@ pub struct Change {
     /// a write's end (RFC 3339), when the row gives one: SpiceDB expires the relationship then;
     /// either way the outbox delivers its delete when it is due
     pub expires_at: Option<String>,
+    /// a write's condition (OpenFGA) or caveat (SpiceDB), and the values the row gives it
+    pub condition: Option<(String, Value)>,
 }
 
 /// `changes` cut into requests, in order: at most `max` each, and no relationship twice in one
@@ -57,12 +59,14 @@ pub fn batches(changes: &[Change], max: usize) -> Vec<&[Change]> {
     out
 }
 
-/// What a check may carry beyond ids, for an engine that decides on attributes: the principal
-/// (its roles and attributes) and each resource's attributes, by id position.
+/// What a check may carry beyond ids: for an engine that decides on attributes, the principal
+/// (its roles and attributes) and each resource's attributes, by id position; for conditions and
+/// caveats, the request's context.
 #[derive(Default)]
 pub struct Context<'a> {
     pub principal: Option<&'a Value>,
     pub attrs: Option<&'a [Value]>,
+    pub request: Option<&'a Value>,
 }
 
 impl Engine {
@@ -77,10 +81,10 @@ impl Engine {
 
     /// The objects of `object_type` the subject may access, or TooMany when there may be `limit`
     /// or more (the extension then checks rows instead).
-    pub async fn list(&self, (subject, object_type, permission): &Key, limit: usize) -> Result<Listed, String> {
+    pub async fn list(&self, (subject, object_type, permission): &Key, limit: usize, context: Option<&Value>) -> Result<Listed, String> {
         match self {
-            Engine::OpenFga(e) => e.list(subject, permission, object_type, limit).await,
-            Engine::SpiceDb(e) => e.list(subject, permission, object_type, limit).await,
+            Engine::OpenFga(e) => e.list(subject, permission, object_type, limit, context).await,
+            Engine::SpiceDb(e) => e.list(subject, permission, object_type, limit, context).await,
             // no relationships to list: rows are checked
             Engine::Cerbos(_) => Ok(Listed::TooMany),
         }
@@ -128,8 +132,8 @@ impl Engine {
     ) -> Result<Vec<bool>, String> {
         let chunk: Vec<&String> = at.iter().map(|&i| &ids[i]).collect();
         match self {
-            Engine::OpenFga(e) => e.check(subject, permission, object_type, &chunk).await,
-            Engine::SpiceDb(e) => e.check(subject, permission, object_type, &chunk).await,
+            Engine::OpenFga(e) => e.check(subject, permission, object_type, &chunk, context.request).await,
+            Engine::SpiceDb(e) => e.check(subject, permission, object_type, &chunk, context.request).await,
             Engine::Cerbos(e) => {
                 let attrs: Vec<Option<&Value>> = at.iter().map(|&i| context.attrs.and_then(|a| a.get(i))).collect();
                 e.check(subject, permission, object_type, &chunk, &attrs, context.principal).await
@@ -163,7 +167,7 @@ impl Engine {
     /// Make the engine run these rules, kept in Postgres (authz.set_rules): OpenFGA's
     /// model (its DSL, converted to the JSON its API takes; JSON as is), SpiceDB's schema, or
     /// Cerbos's policies. Rules the engine (or the conversion) refuses are a permanent error.
-    pub async fn push_rules(&self, rules: &[Rule]) -> Result<(), CallError> {
+    pub async fn push_rules(&self, rules: &[Rule]) -> Result<Option<String>, CallError> {
         let permanent = |message: String| CallError { permanent: true, message };
         match self {
             Engine::OpenFga(e) => {
@@ -173,13 +177,23 @@ impl Engine {
                 } else {
                     crate::openfga_dsl::to_json(&rule.body).map_err(|m| permanent(format!("openfga model: {m}")))?
                 };
-                e.write_model(&model).await
+                e.write_model(&model).await.map(Some)
             }
             Engine::SpiceDb(e) => {
                 let [rule] = rules else { return Err(permanent("spicedb keeps one schema".into())) };
                 e.write_schema(&rule.body).await
             }
-            Engine::Cerbos(e) => e.put_policies(rules).await,
+            Engine::Cerbos(e) => e.put_policies(rules).await.map(|()| None),
+        }
+    }
+
+    /// Ask with the engine's rules another sidecar pushed (`push_rules`'s id: OpenFGA's model,
+    /// SpiceDB's schema revision): whether they are new to this one.
+    pub fn use_rules(&self, id: &str) -> bool {
+        match self {
+            Engine::OpenFga(e) => e.use_model(id),
+            Engine::SpiceDb(e) => e.use_schema(id),
+            Engine::Cerbos(_) => false,
         }
     }
 
@@ -323,10 +337,20 @@ mod tests {
             .await;
         let e = openfga(&server);
         e.push_rules(&[rule("model", "model\n  schema 1.1\ntype user\n")]).await.unwrap();
-        e.list(&key("user:anne", "doc", "viewer"), 10).await.unwrap();
-        // a model with a condition is refused for good, without asking OpenFGA
-        let refused = e.push_rules(&[rule("model", "model\n  schema 1.1\ntype doc\n  relations\n    define v: [user with c]\n")]).await;
-        assert!(refused.as_ref().is_err_and(|e| e.permanent && e.message.contains("conditions")), "{:?}", refused.err().map(|e| e.message));
+        e.list(&key("user:anne", "doc", "viewer"), 10, None).await.unwrap();
+        // the model another sidecar pushed is new here once, and asked with from then on
+        Mock::given(path("/stores/s1/list-objects"))
+            .and(body_partial_json(json!({"authorization_model_id": "m3"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"objects": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert!(e.use_rules("m3"));
+        assert!(!e.use_rules("m3"));
+        e.list(&key("user:anne", "doc", "viewer"), 10, None).await.unwrap();
+        // a model in modules is refused for good, without asking OpenFGA
+        let refused = e.push_rules(&[rule("model", "model\n  schema 1.1\nmodule docs\n")]).await;
+        assert!(refused.as_ref().is_err_and(|e| e.permanent && e.message.contains("modules")), "{:?}", refused.err().map(|e| e.message));
 
         // SpiceDB: the schema's text
         let server = MockServer::start().await;
@@ -346,6 +370,9 @@ mod tests {
         e.push_rules(&[rule("schema", "definition user {}")]).await.unwrap();
         // reads after it see its definitions: at least as fresh as the schema
         e.check(&key("user:anne", "doc", "viewer"), &["1".into()], &Context::default(), 1).await.unwrap();
+        // its revision is the one in force here; another sidecar's next one is new, once
+        assert!(!e.use_rules("zed-schema"));
+        assert!(e.use_rules("zed-next") && !e.use_rules("zed-next"));
 
         // Cerbos: each policy's YAML as JSON, through the Admin API with its credentials
         let server = MockServer::start().await;
@@ -440,7 +467,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let listed = openfga(&server).list(&key("user:anne", "doc", "viewer"), 1000).await.unwrap();
+        let listed = openfga(&server).list(&key("user:anne", "doc", "viewer"), 1000, None).await.unwrap();
         assert!(matches!(listed, Listed::Ids(ids) if ids == ["1", "2"]), "objects of another type are not ids");
         let request = &server.received_requests().await.unwrap()[0];
         assert_eq!(request.headers.get("authorization").unwrap(), "Bearer secret");
@@ -453,7 +480,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"objects": ["doc:1", "doc:2", "doc:3"]})))
             .mount(&server)
             .await;
-        assert!(matches!(openfga(&server).list(&key("user:anne", "doc", "viewer"), 3).await.unwrap(), Listed::TooMany));
+        assert!(matches!(openfga(&server).list(&key("user:anne", "doc", "viewer"), 3, None).await.unwrap(), Listed::TooMany));
     }
 
     #[tokio::test]
@@ -468,15 +495,15 @@ mod tests {
             .mount(&server)
             .await;
         let e = openfga(&server);
-        let err = e.list(&key("user:anne", "doc", "viewer"), 10).await.err().unwrap();
-        assert_eq!(err, "openfga /list-objects 400 Bad Request: type 'doc' not found");
+        let err = e.list(&key("user:anne", "doc", "viewer"), 10, None).await.err().unwrap();
+        assert_eq!(err, "openfga /list-objects (model m1) 400 Bad Request: type 'doc' not found");
         let err = e.check(&key("user:anne", "doc", "viewer"), &["1".into()], &Context::default(), 1).await.err().unwrap();
         assert!(err.contains("502") && err.contains("<html>bad gateway</html>"), "{err}");
         // nothing listening: the transport's own causes
         let closed = Engine::OpenFga(
             OpenFga::new("http://127.0.0.1:1", "s1", None, None, None, Duration::from_secs(1), Duration::from_secs(1)).unwrap(),
         );
-        let err = closed.list(&key("user:anne", "doc", "viewer"), 10).await.err().unwrap();
+        let err = closed.list(&key("user:anne", "doc", "viewer"), 10, None).await.err().unwrap();
         assert!(err.starts_with("openfga /list-objects: error sending request"), "{err}");
     }
 
@@ -629,7 +656,7 @@ mod tests {
         let principal = json!({"roles": ["user"], "scope": "acme", "policy_version": "v2"});
         let e = cerbos(&server);
         assert_eq!(e.plan(&key("user:anne", "expense", "view"), Some(&principal)).await.unwrap(), Plan::Never);
-        let context = Context { principal: Some(&principal), attrs: None };
+        let context = Context { principal: Some(&principal), attrs: None, request: None };
         assert_eq!(e.check(&key("user:anne", "expense", "view"), &["1".to_owned()], &context, 1).await.unwrap(), vec![false]);
     }
 
@@ -659,7 +686,7 @@ mod tests {
         let ids: Vec<String> = (0..120).map(|i| i.to_string()).collect();
         let attrs: Vec<Value> = (0..120).map(|i| json!({"owner": if i % 3 == 0 { "anne" } else { "bob" }})).collect();
         let principal = json!({"roles": ["user"]});
-        let context = Context { principal: Some(&principal), attrs: Some(&attrs) };
+        let context = Context { principal: Some(&principal), attrs: Some(&attrs), request: None };
         let answers = cerbos(&server).check(&key("user:anne", "note", "read"), &ids, &context, 3).await.unwrap();
         for (i, allowed) in answers.iter().enumerate() {
             assert_eq!(*allowed, i % 3 == 0 && i != 3, "id {i}");
@@ -672,7 +699,7 @@ mod tests {
         let fga = openfga(&server);
         let c = cerbos(&server);
         assert!(fga.plan(&key("user:anne", "doc", "viewer"), None).await.err().unwrap().contains("openfga plans no conditions"));
-        assert!(matches!(c.list(&key("user:anne", "note", "read"), 10).await.unwrap(), Listed::TooMany));
+        assert!(matches!(c.list(&key("user:anne", "note", "read"), 10, None).await.unwrap(), Listed::TooMany));
         assert!(c.list_all(&key("user:anne", "note", "read")).await.is_err());
         let (tx, _rx) = mpsc::unbounded_channel();
         // no change feed: returns at once
@@ -682,7 +709,7 @@ mod tests {
     }
 
     fn change(write: bool, object: &str, subject: &str) -> Change {
-        Change { write, object: object.into(), relation: "member".into(), subject: subject.into(), expires_at: None }
+        Change { write, object: object.into(), relation: "member".into(), subject: subject.into(), ..Change::default() }
     }
 
     #[test]
@@ -762,6 +789,83 @@ mod tests {
         e.write(&[ending]).await.unwrap();
     }
 
+    // OpenFGA refuses a list whose condition lacks a parameter: the rows are checked instead (a
+    // check denies each such object); without a context a refusal stays an error
+    #[tokio::test]
+    async fn a_list_refused_for_a_missing_parameter_has_its_rows_checked() {
+        let server = MockServer::start().await;
+        Mock::given(path("/stores/s1/list-objects"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({"code": "validation_error", "message": "Internal Server Error"})))
+            .mount(&server)
+            .await;
+        let e = openfga(&server);
+        let k = key("user:anne", "doc", "viewer");
+        assert!(matches!(e.list(&k, 10, Some(&json!({"current_time": "2026-10-29T12:00:00Z"}))).await, Ok(Listed::TooMany)));
+        assert!(e.list(&k, 10, None).await.is_err());
+    }
+
+    // the request's context reaches every list and check, and a relationship's condition or caveat
+    // is written with the row's values
+    #[tokio::test]
+    async fn conditions_and_caveats_get_the_requests_context_and_the_rows() {
+        let context = json!({"region": "eu", "current_time": "2026-10-29T12:00:00.000000Z"});
+        let server = MockServer::start().await;
+        Mock::given(path("/stores/s1/list-objects"))
+            .and(body_partial_json(json!({"context": context})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"objects": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/stores/s1/batch-check"))
+            .and(body_partial_json(json!({"checks": [{"context": context}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": {}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/stores/s1/write"))
+            .and(body_partial_json(
+                json!({"writes": {"tuple_keys": [{"condition": {"name": "in_region", "context": {"allowed": ["eu"]}}}]}}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let e = openfga(&server);
+        let k = key("user:anne", "doc", "viewer");
+        let asked = Context { request: Some(&context), ..Context::default() };
+        e.list(&k, 10, Some(&context)).await.unwrap();
+        e.check(&k, &["1".into()], &asked, 1).await.unwrap();
+        let conditional =
+            Change { condition: Some(("in_region".into(), json!({"allowed": ["eu"]}))), ..change(true, "doc:1", "user:anne") };
+        e.write(std::slice::from_ref(&conditional)).await.unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(path("/v1/permissions/resources"))
+            .and(body_partial_json(json!({"context": context})))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/v1/permissions/checkbulk"))
+            .and(body_partial_json(json!({"items": [{"context": context}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"pairs": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/v1/relationships/write"))
+            .and(body_partial_json(
+                json!({"updates": [{"relationship": {"optional_caveat": {"caveat_name": "in_region", "context": {"allowed": ["eu"]}}}}]}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"writtenAt": {"token": "t"}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let e = Engine::SpiceDb(crate::spicedb::SpiceDb::new(&server.uri(), "key", None, Duration::from_secs(5)).unwrap());
+        e.list(&k, 10, Some(&context)).await.unwrap();
+        e.check(&k, &["1".into()], &asked, 1).await.unwrap();
+        e.write(&[conditional]).await.unwrap();
+    }
+
     #[tokio::test]
     async fn cerbos_keeps_no_relationships() {
         let server = MockServer::start().await;
@@ -801,9 +905,9 @@ mod tests {
             .await;
         let e = openfga(&server);
         let k = key("user:anne", "doc", "viewer");
-        e.list(&k, 10).await.unwrap();
+        e.list(&k, 10, None).await.unwrap();
         e.write(&[change(true, "org:1", "user:a")]).await.unwrap();
-        e.list(&k, 10).await.unwrap();
+        e.list(&k, 10, None).await.unwrap();
         let consistency: Vec<Value> = server
             .received_requests()
             .await

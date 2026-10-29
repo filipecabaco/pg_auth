@@ -1,13 +1,15 @@
 //! OpenFGA's modeling language (the DSL people write and read) to the JSON its API takes, so the
 //! model kept in Postgres (authz.set_rules) can be written to the store as is. Covers schema 1.1:
-//! types, relations, directly related types (`user`, `user:*`, `team#member`), computed
-//! relations, `X from Y`, `or`, `and`, `but not` and parentheses. Conditions and modules are
-//! refused, as pg_auth sends no context for them.
+//! types, relations, directly related types (`user`, `user:*`, `team#member`, `user with
+//! in_region`), computed relations, `X from Y`, `or`, `and`, `but not`, parentheses, and
+//! conditions (`condition in_region(region: string, allowed: list<string>) { region in allowed }`).
+//! Modules are refused.
 
 use serde_json::{Map, Value, json};
 
 /// The model's JSON (`{"schema_version", "type_definitions"}`), as `fga model transform` gives it.
 pub fn to_json(dsl: &str) -> Result<Value, String> {
+    let (dsl, conditions) = take_conditions(dsl)?;
     let mut schema = None;
     let mut types: Vec<(String, Vec<(String, String)>)> = Vec::new();
     for (n, raw) in dsl.lines().enumerate() {
@@ -24,8 +26,8 @@ pub fn to_json(dsl: &str) -> Result<Value, String> {
             let (name, expr) = def.split_once(':').ok_or_else(|| at("define needs `name: expression`".into()))?;
             let (_, relations) = types.last_mut().ok_or_else(|| at("define outside a type".into()))?;
             relations.push((name.trim().to_owned(), expr.trim().to_owned()));
-        } else if line.starts_with("condition ") || line.starts_with("module ") || line.starts_with("extend type ") {
-            return Err(at("conditions and modules are not supported: pg_auth sends no context for them".into()));
+        } else if line.starts_with("module ") || line.starts_with("extend type ") {
+            return Err(at("modules are not supported: keep the model in one text".into()));
         } else {
             return Err(at(format!("unexpected `{line}`")));
         }
@@ -51,7 +53,101 @@ pub fn to_json(dsl: &str) -> Result<Value, String> {
         }
         definitions.push(json!({"type": name, "relations": rewrites, "metadata": {"relations": metadata}}));
     }
-    Ok(json!({"schema_version": schema, "type_definitions": definitions}))
+    let mut model = json!({"schema_version": schema, "type_definitions": definitions});
+    if !conditions.is_empty() {
+        model["conditions"] = Value::Object(conditions);
+    }
+    Ok(model)
+}
+
+/// The model without its `condition name(params) { expression }` blocks (blank lines in their
+/// place, so line numbers still hold), and those conditions as the API takes them.
+fn take_conditions(dsl: &str) -> Result<(String, Map<String, Value>), String> {
+    let mut rest = String::with_capacity(dsl.len());
+    let mut conditions = Map::new();
+    let mut at = 0;
+    while at < dsl.len() {
+        let line_end = dsl[at..].find('\n').map_or(dsl.len(), |e| at + e + 1);
+        if !strip_comment(&dsl[at..line_end]).trim_start().starts_with("condition ") {
+            rest.push_str(&dsl[at..line_end]);
+            at = line_end;
+            continue;
+        }
+        let open = dsl[at..].find('{').map(|o| at + o).ok_or("a condition needs its `{ expression }`")?;
+        let close = matching(dsl, open).ok_or("a condition's `{` needs its `}`")?;
+        let header = dsl[at..open].trim().trim_start_matches("condition").trim();
+        let (name, params) = header.split_once('(').ok_or_else(|| format!("condition `{header}`: needs `name(parameter: type, ...)`"))?;
+        let params = params.trim().strip_suffix(')').ok_or_else(|| format!("condition {name}: its parameters need their `)`"))?;
+        let mut parameters = Map::new();
+        for param in split_top(params) {
+            let (p, t) = param.split_once(':').ok_or_else(|| format!("condition {name}: parameter `{param}` needs `name: type`"))?;
+            parameters.insert(p.trim().to_owned(), param_type(t.trim()).map_err(|e| format!("condition {name}: {e}"))?);
+        }
+        let name = name.trim().to_owned();
+        let expression = dsl[open + 1..close].trim().to_owned();
+        conditions.insert(name.clone(), json!({"name": name, "expression": expression, "parameters": parameters}));
+        rest.extend(std::iter::repeat_n('\n', dsl[at..=close].matches('\n').count()));
+        at = close + 1;
+    }
+    Ok((rest, conditions))
+}
+
+/// The `}` closing the `{` at `open`.
+fn matching(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0;
+    for (i, c) in text[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `a: string, b: map<list<int>>` split at its top-level commas.
+fn split_top(params: &str) -> Vec<&str> {
+    let (mut parts, mut depth, mut start) = (Vec::new(), 0, 0);
+    for (i, c) in params.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(params[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(params[start..].trim());
+    parts.into_iter().filter(|p| !p.is_empty()).collect()
+}
+
+/// A condition parameter's type (`string`, `list<string>`, `map<int>`) as the API names it.
+fn param_type(t: &str) -> Result<Value, String> {
+    for (generic, name) in [("list<", "TYPE_NAME_LIST"), ("map<", "TYPE_NAME_MAP")] {
+        if let Some(inner) = t.strip_prefix(generic).and_then(|i| i.strip_suffix('>')) {
+            return Ok(json!({"type_name": name, "generic_types": [param_type(inner.trim())?]}));
+        }
+    }
+    let name = match t {
+        "any" => "TYPE_NAME_ANY",
+        "bool" => "TYPE_NAME_BOOL",
+        "string" => "TYPE_NAME_STRING",
+        "int" => "TYPE_NAME_INT",
+        "uint" => "TYPE_NAME_UINT",
+        "double" => "TYPE_NAME_DOUBLE",
+        "duration" => "TYPE_NAME_DURATION",
+        "timestamp" => "TYPE_NAME_TIMESTAMP",
+        "ipaddress" => "TYPE_NAME_IPADDRESS",
+        other => return Err(format!("unknown parameter type `{other}`")),
+    };
+    Ok(json!({"type_name": name}))
 }
 
 /// A line without its comment: `#` at the start or after a space (not `team#member`).
@@ -156,18 +252,25 @@ impl Parser {
     }
 }
 
-/// `user`, `user:*` (anyone of the type) or `team#member` (a set of subjects).
+/// `user`, `user:*` (anyone of the type) or `team#member` (a set of subjects), each possibly
+/// `with` a condition.
 fn directly_related(item: &str) -> Result<Value, String> {
-    if item.contains(" with ") {
-        return Err(format!("`{item}`: conditions are not supported: pg_auth sends no context for them"));
-    }
-    Ok(if let Some(t) = item.strip_suffix(":*") {
+    let (item, condition) = match item.split_once(" with ") {
+        Some((i, c)) if !c.trim().is_empty() => (i.trim(), Some(c.trim())),
+        Some(_) => return Err(format!("`{item}`: `with` needs a condition's name")),
+        None => (item, None),
+    };
+    let mut related = if let Some(t) = item.strip_suffix(":*") {
         json!({"type": t, "wildcard": {}})
     } else if let Some((t, relation)) = item.split_once('#') {
         json!({"type": t, "relation": relation})
     } else {
         json!({"type": item})
-    })
+    };
+    if let Some(c) = condition {
+        related["condition"] = json!(c);
+    }
+    Ok(related)
 }
 
 #[cfg(test)]
@@ -219,13 +322,32 @@ mod tests {
         assert_eq!(repo, &cli);
     }
 
+    // the API's form of conditions (as `fga model transform` gives it), and a subject with one
     #[test]
-    fn conditions_mixed_operators_and_stray_text_are_refused() {
+    fn conditions_convert_with_their_parameters() {
+        let dsl = "model\n  schema 1.1\ntype user\ntype doc\n  relations\n    define viewer: [user, user with in_region, user:* with in_region]\n\
+                   condition in_region(region: string, allowed: list<string>, limits: map<list<int>>) {\n  region in allowed\n}\n";
+        let model = to_json(dsl).unwrap();
+        assert_eq!(
+            model["conditions"],
+            json!({"in_region": {"name": "in_region", "expression": "region in allowed", "parameters": {
+                "region": {"type_name": "TYPE_NAME_STRING"},
+                "allowed": {"type_name": "TYPE_NAME_LIST", "generic_types": [{"type_name": "TYPE_NAME_STRING"}]},
+                "limits": {"type_name": "TYPE_NAME_MAP", "generic_types": [{"type_name": "TYPE_NAME_LIST", "generic_types": [{"type_name": "TYPE_NAME_INT"}]}]}}}})
+        );
+        assert_eq!(
+            model["type_definitions"][1]["metadata"]["relations"]["viewer"]["directly_related_user_types"],
+            json!([{"type": "user"}, {"type": "user", "condition": "in_region"}, {"type": "user", "wildcard": {}, "condition": "in_region"}])
+        );
+    }
+
+    #[test]
+    fn modules_mixed_operators_and_stray_text_are_refused() {
         let with = |def: &str| to_json(&format!("model\n  schema 1.1\ntype doc\n  relations\n    define {def}\n"));
-        assert!(with("viewer: [user with in_hours]").unwrap_err().contains("conditions are not supported"));
         assert!(with("viewer: a or b and c").unwrap_err().contains("need parentheses"));
         assert!(with("viewer: (a or b").unwrap_err().contains("ends too soon"));
-        assert!(to_json("model\n  schema 1.1\ncondition in_hours(x: int) { x > 1 }").unwrap_err().contains("not supported"));
+        assert!(to_json("model\n  schema 1.1\nmodule docs").unwrap_err().contains("not supported"));
+        assert!(to_json("model\n  schema 1.1\ncondition c(x: money) { x > 1 }").unwrap_err().contains("unknown parameter type `money`"));
         assert!(to_json("type doc").unwrap_err().contains("no `schema`"));
     }
 }

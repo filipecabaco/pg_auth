@@ -221,6 +221,19 @@ given the end as an expiration, ends it itself with the sidecar paused.
     elixir compare/expiry.exs                           # OpenFGA, then SpiceDB
     elixir compare/expiry.exs --engine spicedb --no-build
 
+## Conditions and caveats
+
+`conditions.exs` checks relationships written with an OpenFGA condition or a SpiceDB caveat
+(`authz.relate` `condition`, `condition_context`) and the context each request gives
+(`authz.configure(context => ...)`), on a real OpenFGA and SpiceDB, through a sidecar that lists
+and one that checks rows (`LIST_LIMIT` 2): a share in some regions shows to a token from one of
+them, a token without the claim is not let in, the row's new regions are followed, and a share
+until a deadline goes once it passes (timed). The rules are stored in Postgres: one sidecar pushes
+them, the other follows.
+
+    elixir compare/conditions.exs                       # OpenFGA, then SpiceDB
+    elixir compare/conditions.exs --engine spicedb --no-build
+
 ## History
 
 This harness first compared OpenFGA with the authorization engine pg_auth used to embed

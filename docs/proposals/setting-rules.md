@@ -175,10 +175,12 @@ teams that want their rules versioned with their schema. In order:
 5. **Context, last and per engine:** expiring relationships first: done. `expires_column` on
    `relate` ends a row's relationship at its timestamp: the outbox holds its delete until then
    (both engines, within a few hundred milliseconds), and SpiceDB is also given it as an
-   expiration, ending it itself when the sidecar is down; `compare/expiry.exs` checks both. Then
-   request-level context (time, client IP from a setting) for
-   OpenFGA conditions and SpiceDB caveats, then per-row context, which BatchCheck accepts but
-   ListObjects does not.
+   expiration, ending it itself when the sidecar is down; `compare/expiry.exs` checks both.
+   Conditions and caveats: done. `relate` writes a relationship with an OpenFGA condition or
+   SpiceDB caveat and the row's values for it (`condition`, `condition_context`); each list and
+   check gives the request's context (`authz.configure(context => ...)`: a token's claim, a
+   setting, the time asked); `compare/conditions.exs` checks both engines. Per-row context (a
+   value of the protected row itself, which BatchCheck accepts but ListObjects does not) is left.
 
 Steps 2 and 3 address the usability gaps most models hit; step 5 is what the banking, temporal
 access and IP cases need, and is the largest piece of work.

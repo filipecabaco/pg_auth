@@ -68,9 +68,15 @@ async fn push(url: &str, engine: &Engine, poll: Duration, pushed: &(impl Fn() + 
     }
 }
 
-/// Push what is pending: whether the engine took new rules.
+/// Push what is pending: whether the engine took new rules, or another sidecar's are new here.
 async fn once(client: &mut Client, engine: &Engine) -> Result<bool, String> {
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
+    // rules another sidecar pushed: asked with from now on (OpenFGA pins its model)
+    let in_force: Option<String> = client.query_one("select authz.rules_ref($1)", &[&engine.name()]).await.map_err(pg)?.get(0);
+    if let Some(id) = in_force.filter(|id| engine.use_rules(id)) {
+        eprintln!("pg-auth-sidecar: rules in force: {id}");
+        return Ok(true);
+    }
     let tx = client.transaction().await.map_err(pg)?;
     let rows = tx.query("select name, version, body, previous from authz.rules_pending($1)", &[&engine.name()]).await.map_err(pg)?;
     if rows.is_empty() {
@@ -79,14 +85,14 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<bool, String> {
     }
     let rules: Vec<Rule> = rows.iter().map(|r| Rule { name: r.get(0), body: r.get(2), previous: r.get(3) }).collect();
     let versions: Vec<(String, i32)> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
-    let error = match engine.push_rules(&rules).await {
-        Ok(()) => None,
+    let (error, id) = match engine.push_rules(&rules).await {
+        Ok(id) => (None, id),
         // the engine unreachable: the rules stay pending, pushed again later
         Err(e) if !e.permanent => return Err(e.message),
-        Err(e) => Some(e.message),
+        Err(e) => (Some(e.message), None),
     };
     for (name, version) in &versions {
-        tx.execute("select authz.rules_pushed($1, $2, $3, $4)", &[&engine.name(), name, version, &error]).await.map_err(pg)?;
+        tx.execute("select authz.rules_pushed($1, $2, $3, $4, $5)", &[&engine.name(), name, version, &error, &id]).await.map_err(pg)?;
     }
     if error.is_none() {
         tx.execute("select authz.answers_changed()", &[]).await.map_err(pg)?;
@@ -94,8 +100,9 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<bool, String> {
     tx.commit().await.map_err(pg)?;
     match &error {
         None => eprintln!(
-            "pg-auth-sidecar: rules pushed: {}",
-            versions.iter().map(|(n, v)| format!("{n} version {v}")).collect::<Vec<_>>().join(", ")
+            "pg-auth-sidecar: rules pushed: {}{}",
+            versions.iter().map(|(n, v)| format!("{n} version {v}")).collect::<Vec<_>>().join(", "),
+            id.as_ref().map(|id| format!(" (the engine's {id})")).unwrap_or_default()
         ),
         Some(e) => eprintln!("pg-auth-sidecar: rules refused by the engine, kept the version before: {e}"),
     }

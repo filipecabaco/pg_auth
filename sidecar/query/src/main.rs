@@ -72,7 +72,8 @@ struct State {
     /// how recently a list or plan must have been used to be refreshed in the background
     active: Duration,
     refresh_concurrency: usize,
-    lists: Cache<Key, Listed>,
+    /// lists per subject and request context (as JSON; "" for none)
+    lists: Cache<(Key, String), Listed>,
     /// plans per subject and principal (its roles and attributes, as JSON; "" for none)
     plans: Cache<(Key, String), Plan>,
     /// lists and plans being refreshed ahead of their expiry
@@ -85,7 +86,7 @@ struct State {
 /// What a background refresh asks the engine again.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Refresh {
-    List(Key),
+    List((Key, String)),
     Plan((Key, String)),
 }
 
@@ -350,8 +351,8 @@ async fn answer(state: &Arc<State>, request: Request, engine: &mut Duration) -> 
             };
             Response::Queued { queued, fresh }
         }
-        Request::List { subject, permission, object_type } => {
-            let key = (subject, object_type, permission);
+        Request::List { subject, permission, object_type, context } => {
+            let key = ((subject, object_type, permission), context_key(&context));
             // the extension keeps an answer for valid_ms: until its half-life, so that it asks
             // again while the answer is still cached here, which refreshes it in the background
             let half = u64::try_from(state.ttl.as_millis()).unwrap_or(u64::MAX) / 2;
@@ -361,12 +362,13 @@ async fn answer(state: &Arc<State>, request: Request, engine: &mut Duration) -> 
                 }
                 return to_list_response(cached, Some(left.saturating_sub(half)));
             }
-            // a fresh index set at least this large: too many, without asking the engine
-            if state.index.as_ref().is_some_and(|i| i.too_many(&key, state.list_limit)) {
+            // a fresh index set at least this large: too many, without asking the engine (a set
+            // holds for no context in particular)
+            if context.is_empty() && state.index.as_ref().is_some_and(|i| i.too_many(&key.0, state.list_limit)) {
                 return Response::TooMany { too_many: true, valid_ms: None };
             }
             let started = Instant::now();
-            let listed = state.engine.list(&key, state.list_limit).await;
+            let listed = state.engine.list(&key.0, state.list_limit, context.at_now().as_ref()).await;
             *engine += started.elapsed();
             match listed {
                 Ok(listed) => {
@@ -405,11 +407,12 @@ async fn answer(state: &Arc<State>, request: Request, engine: &mut Duration) -> 
                 Plan::Condition(c) => Response::Plan { plan: "condition", condition: Some(c), valid_ms },
             }
         }
-        Request::Check { subject, permission, object_type, ids, attrs, principal } => {
+        Request::Check { subject, permission, object_type, ids, attrs, principal, context: asked } => {
             let key = (subject, object_type, permission);
-            let context = Context { principal: principal.as_ref(), attrs: attrs.as_deref() };
-            // an answer on attributes or a principal depends on more than the id: not cached
-            let caching = !state.ttl.is_zero() && context.principal.is_none() && context.attrs.is_none();
+            let request = asked.at_now();
+            let context = Context { principal: principal.as_ref(), attrs: attrs.as_deref(), request: request.as_ref() };
+            // an answer on attributes, a principal or a context depends on more than the id: not cached
+            let caching = !state.ttl.is_zero() && context.principal.is_none() && context.attrs.is_none() && asked.is_empty();
             let mut answers = if caching { state.checks.get(&key, &ids, state.ttl) } else { vec![None; ids.len()] };
             let missing: Vec<String> = ids.iter().zip(&answers).filter(|(_, a)| a.is_none()).map(|(id, _)| id.clone()).collect();
             if !missing.is_empty() {
@@ -445,7 +448,8 @@ fn refresh(state: &Arc<State>, what: Refresh) {
     tokio::spawn(async move {
         match &what {
             Refresh::List(key) => {
-                if let Ok(listed) = state.engine.list(key, state.list_limit).await {
+                let context = serde_json::from_str::<protocol::Asked>(&key.1).unwrap_or_default();
+                if let Ok(listed) = state.engine.list(&key.0, state.list_limit, context.at_now().as_ref()).await {
                     state.lists.refreshed(key, listed);
                 }
             }
@@ -489,13 +493,27 @@ async fn refresher(state: Arc<State>) {
 fn asked_line(request: &Request) -> String {
     match request {
         Request::Ping => "ping".into(),
-        Request::List { subject, permission, object_type } => format!("list   {subject} {object_type}#{permission}"),
+        Request::List { subject, permission, object_type, context } => {
+            format!("list   {subject} {object_type}#{permission}{}", context_shown(context))
+        }
         Request::Check { subject, permission, object_type, ids, .. } => {
             format!("check  {subject} {object_type}#{permission} [{}]", ids.join(", "))
         }
         Request::Plan { subject, permission, object_type, .. } => format!("plan   {subject} {object_type}#{permission}"),
         Request::Fill { subject, permission, object_type, .. } => format!("fill   {subject} {object_type}#{permission}"),
     }
+}
+
+/// A list's cache key for its context: lists asked with another context are other answers.
+fn context_key(context: &protocol::Asked) -> String {
+    if context.is_empty() { String::new() } else { serde_json::to_string(context).unwrap_or_default() }
+}
+
+/// The context a request gives, for the request log.
+fn context_shown(context: &protocol::Asked) -> String {
+    let mut parts: Vec<String> = context.context.iter().flatten().map(|(k, v)| format!("{k}={v}")).collect();
+    parts.extend(context.now.iter().map(|n| format!("{n}=now")));
+    if parts.is_empty() { String::new() } else { format!(" with {}", parts.join(", ")) }
 }
 
 /// What Postgres was told, and whether the engine was asked or the cache answered.
@@ -575,7 +593,12 @@ mod tests {
 
     #[test]
     fn request_log_names_the_question_the_answer_and_who_gave_it() {
-        let list = protocol::Request::List { subject: "user:bob".into(), permission: "viewer".into(), object_type: "document".into() };
+        let list = protocol::Request::List {
+            subject: "user:bob".into(),
+            permission: "viewer".into(),
+            object_type: "document".into(),
+            context: protocol::Asked::default(),
+        };
         let ids = Response::Ids { ids: vec!["1".into(), "2".into()], valid_ms: None };
         assert_eq!(
             format!("{} → {}", asked_line(&list), told_line(&ids, "openfga", Duration::from_millis(3))),
@@ -706,6 +729,30 @@ mod serving {
         assert_eq!(second["ids"], json!(["1", "2"]));
         assert_eq!(second["engine_us"], 0, "from the cache");
         assert!(second["valid_ms"].as_u64().unwrap() <= 500);
+    }
+
+    // another context is another answer; the time asked is not part of it
+    #[tokio::test]
+    async fn lists_are_kept_per_context() {
+        let server = MockServer::start().await;
+        for (region, objects) in [("eu", json!(["doc:1"])), ("us", json!(["doc:2"]))] {
+            Mock::given(path("/stores/s1/list-objects"))
+                .and(body_partial_json(json!({"context": {"region": region}})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"objects": objects})))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let mut c = Client::connect(&state(openfga(&server), 1000, 0));
+        let list = |region: &str| {
+            format!(
+                r#"{{"op":"list","subject":"user:anne","permission":"viewer","type":"doc","context":{{"region":"{region}"}},"now":"current_time"}}"#
+            )
+        };
+        assert_eq!(c.ask(&list("eu")).await["ids"], json!(["1"]));
+        assert_eq!(c.ask(&list("us")).await["ids"], json!(["2"]));
+        let again = c.ask(&list("eu")).await;
+        assert_eq!((again["ids"].clone(), again["engine_us"].clone()), (json!(["1"]), json!(0)), "the same context: from the cache");
     }
 
     #[tokio::test]

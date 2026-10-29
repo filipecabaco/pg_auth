@@ -2,12 +2,12 @@
 //! from the engine's own language, so a setup naming something they do not have fails when it is
 //! committed instead of when the engine is asked (`authz.rules_problems`).
 //!
-//! One row per type (`type`), per relation a row may write (`relation`, with the subjects it takes
-//! as they are: `user`, `user:*`, `team#member`), per relation computed from others (`permission`),
-//! per SpiceDB relation taking subjects with an expiration (`expiring`, with those subjects), and
-//! per Cerbos action (`action`, its resource as the type). Subjects that need a condition or a
-//! caveat are left out: pg_auth writes none. Rules it cannot read give one `unreadable`
-//! row, and are not checked: the engine says what is wrong with them.
+//! One row per type (`type`), per relation a row may write (`relation`, with each form of subject
+//! it takes, as written: `user`, `user:*`, `team#member`, `user with in_region`, `user with
+//! expiration`), per relation computed from others (`permission`), per OpenFGA condition or
+//! SpiceDB caveat (`condition`, with its parameters), and per Cerbos action (`action`, its resource
+//! as the type). Rules it cannot read give one `unreadable` row, and are not checked: the engine
+//! says what is wrong with them.
 
 use pgrx::prelude::*;
 use serde_json::Value;
@@ -31,6 +31,10 @@ impl Entry {
 
     fn permission(t: &str, name: &str) -> Self {
         Self { object_type: t.to_owned(), name: Some(name.to_owned()), kind: "permission", subjects: None }
+    }
+
+    fn condition(name: &str, parameters: Vec<String>) -> Self {
+        Self { object_type: String::new(), name: Some(name.to_owned()), kind: "condition", subjects: Some(parameters) }
     }
 
     fn action(resource: &str, action: &str) -> Self {
@@ -71,12 +75,19 @@ fn openfga_dsl(dsl: &str) -> Vec<Entry> {
             let t = t.trim();
             names.push(Entry::of_type(t));
             current = Some(t.to_owned());
-        } else if line.starts_with("condition ") || line.starts_with("module ") {
+        } else if let Some(header) = line.strip_prefix("condition ") {
+            // `condition in_region(region: string, allowed: list<string>) {`
+            if let Some((name, params)) = header.split_once('(') {
+                let params = params.split(')').next().unwrap_or_default();
+                names.push(Entry::condition(name.trim(), parameters(params, ':')));
+            }
+            current = None;
+        } else if line.starts_with("module ") {
             current = None;
         } else if let (Some(t), Some((name, expr))) = (&current, line.strip_prefix("define ").and_then(|d| d.split_once(':'))) {
             let direct = expr.find('[').and_then(|s| expr[s + 1..].find(']').map(|e| &expr[s + 1..s + 1 + e]));
             names.push(match direct {
-                Some(d) => Entry::relation(t, name.trim(), plain(d.split(','))),
+                Some(d) => Entry::relation(t, name.trim(), forms(d.split(','))),
                 None => Entry::permission(t, name.trim()),
             });
         }
@@ -99,18 +110,24 @@ fn openfga_json(body: &str) -> Result<Vec<Entry>, String> {
             };
             let subjects = direct
                 .iter()
-                .filter(|d| d.get("condition").and_then(Value::as_str).is_none_or(str::is_empty))
                 .filter_map(|d| {
                     let t = d["type"].as_str()?;
-                    Some(match (d.get("wildcard"), d["relation"].as_str()) {
+                    let subject = match (d.get("wildcard"), d["relation"].as_str()) {
                         (Some(_), _) => format!("{t}:*"),
                         (None, Some(r)) => format!("{t}#{r}"),
                         (None, None) => t.to_owned(),
+                    };
+                    Some(match d.get("condition").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+                        Some(c) => format!("{subject} with {c}"),
+                        None => subject,
                     })
                 })
                 .collect();
             names.push(Entry::relation(t, name, subjects));
         }
+    }
+    for (name, condition) in model["conditions"].as_object().into_iter().flatten() {
+        names.push(Entry::condition(name, condition["parameters"].as_object().map(|p| p.keys().cloned().collect()).unwrap_or_default()));
     }
     Ok(names)
 }
@@ -124,26 +141,18 @@ fn spicedb(schema: &str) -> Vec<Entry> {
         let (word, after) = (&rest[at.0..at.1], &rest[at.1..]);
         let Some(open) = after.find('{') else { break };
         let close = matching_brace(after, open).unwrap_or(after.len());
-        if word == "definition" {
+        if word == "caveat" {
+            // `caveat in_region(region string, allowed list<string>) {`
+            if let Some((name, params)) = after[..open].split_once('(') {
+                names.push(Entry::condition(name.trim(), parameters(params.trim().trim_end_matches(')'), ' ')));
+            }
+        } else {
             let t = after[..open].trim();
             names.push(Entry::of_type(t));
             for line in after[open + 1..close].split(['\n', ';']) {
                 let line = line.trim();
                 if let Some((name, types)) = line.strip_prefix("relation ").and_then(|r| r.split_once(':')) {
-                    names.push(Entry::relation(t, name.trim(), plain(types.split('|'))));
-                    // `user with expiration` (not `user with in_hours and expiration`: that needs a caveat too)
-                    let expiring: Vec<String> = types
-                        .split('|')
-                        .filter_map(|s| s.split_once(" with ").filter(|(_, w)| w.trim() == "expiration").map(|(t, _)| t.trim().to_owned()))
-                        .collect();
-                    if !expiring.is_empty() {
-                        names.push(Entry {
-                            object_type: t.to_owned(),
-                            name: Some(name.trim().to_owned()),
-                            kind: "expiring",
-                            subjects: Some(expiring),
-                        });
-                    }
+                    names.push(Entry::relation(t, name.trim(), forms(types.split('|'))));
                 } else if let Some((name, _)) = line.strip_prefix("permission ").and_then(|p| p.split_once('=')) {
                     names.push(Entry::permission(t, name.trim()));
                 }
@@ -204,10 +213,35 @@ fn strip_comments(text: &str) -> String {
     out
 }
 
-/// The subjects written as they are (`user`, `user:*`, `team#member`): not those that need a
-/// condition, a caveat or an expiration (`user with in_hours`).
-fn plain<'a>(subjects: impl Iterator<Item = &'a str>) -> Vec<String> {
-    subjects.map(str::trim).filter(|s| !s.is_empty() && !s.contains(" with ")).map(str::to_owned).collect()
+/// Each form of subject a relation takes, as written, its spacing normalised: `user`,
+/// `team#member`, `user with in_region`, `user with in_region and expiration`.
+fn forms<'a>(subjects: impl Iterator<Item = &'a str>) -> Vec<String> {
+    subjects.map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|s| !s.is_empty()).collect()
+}
+
+/// A condition's parameter names: `region: string, allowed: list<string>` (OpenFGA, `separator`
+/// ':') or `region string, allowed list<string>` (SpiceDB, ' '). Commas inside `<...>` do not
+/// split.
+fn parameters(params: &str, separator: char) -> Vec<String> {
+    let (mut names, mut depth, mut start) = (Vec::new(), 0, 0);
+    let mut push = |part: &str| {
+        if let Some(name) = part.trim().split(separator).next().map(str::trim).filter(|n| !n.is_empty()) {
+            names.push(name.to_owned());
+        }
+    };
+    for (i, c) in params.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                push(&params[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    push(&params[start..]);
+    names
 }
 
 /// A policy's resource and actions: resource policies, role policies (`allowActions`) and
@@ -259,10 +293,17 @@ mod tests {
     fn an_openfga_model_names_its_types_relations_and_their_subjects() {
         let dsl = "model\n  schema 1.1\ntype user\ntype doc # a comment\n  relations\n    define owner: [user]\n    \
                    define viewer: [user, user:*, team#member with in_hours] or owner\n    define can_read: viewer but not banned\n\
-                   condition in_hours(x: int) {\n  x > 1\n}\n";
+                   condition in_hours(x: int, hours: map<list<int>>) {\n  x > 1\n}\n";
         assert_eq!(
             summary(&openfga_dsl(dsl)),
-            ["type user", "type doc", "relation doc#owner [user]", "relation doc#viewer [user, user:*]", "permission doc#can_read"]
+            [
+                "type user",
+                "type doc",
+                "relation doc#owner [user]",
+                "relation doc#viewer [user, user:*, team#member with in_hours]",
+                "permission doc#can_read",
+                "condition #in_hours [x, hours]"
+            ]
         );
     }
 
@@ -271,26 +312,33 @@ mod tests {
         let json = r#"{"schema_version": "1.1", "type_definitions": [{"type": "user"}, {"type": "doc",
             "relations": {"viewer": {"this": {}}, "can_read": {"computedUserset": {"relation": "viewer"}}},
             "metadata": {"relations": {"viewer": {"directly_related_user_types": [{"type": "user"}, {"type": "user", "wildcard": {}},
-                {"type": "team", "relation": "member"}]}, "can_read": {}}}}]}"#;
+                {"type": "team", "relation": "member", "condition": "in_hours"}]}, "can_read": {}}}}],
+            "conditions": {"in_hours": {"name": "in_hours", "expression": "x > 1", "parameters": {"x": {"type_name": "TYPE_NAME_INT"}}}}}"#;
         assert_eq!(
             summary(&openfga_json(json).unwrap()),
-            ["type user", "type doc", "permission doc#can_read", "relation doc#viewer [user, user:*, team#member]"]
+            [
+                "type user",
+                "type doc",
+                "permission doc#can_read",
+                "relation doc#viewer [user, user:*, team#member with in_hours]",
+                "condition #in_hours [x]"
+            ]
         );
     }
 
     #[test]
-    fn a_spicedb_schema_names_its_definitions_skipping_caveats_and_comments() {
-        let schema = "/** a user */\ndefinition user {}\ncaveat in_hours(x int) {\n  x > 1\n}\n// the docs\n\
+    fn a_spicedb_schema_names_its_definitions_and_caveats_skipping_comments() {
+        let schema = "/** a user */\ndefinition user {}\ncaveat in_hours(x int, hours map<list<int>>) {\n  x > 1\n}\n// the docs\n\
                       definition app/doc {\n  relation owner: user\n  relation viewer: user with expiration | user:* | team#member with in_hours and expiration\n  \
                       permission can_read = viewer + owner // either\n}\n";
         assert_eq!(
             summary(&spicedb(schema)),
             [
                 "type user",
+                "condition #in_hours [x, hours]",
                 "type app/doc",
                 "relation app/doc#owner [user]",
-                "relation app/doc#viewer [user:*]",
-                "expiring app/doc#viewer [user]",
+                "relation app/doc#viewer [user with expiration, user:*, team#member with in_hours and expiration]",
                 "permission app/doc#can_read"
             ]
         );

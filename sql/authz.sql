@@ -275,6 +275,10 @@ insert into authz.settings values
     -- Cerbos's scope (a tenant claim) and policy version: none by default, so scoped policies need one
     ('scope_claim', ''),
     ('policy_version', ''),
+    -- what each request gives OpenFGA conditions and SpiceDB caveats: {"parameter": source}, a
+    -- source being "now" (the time the engine is asked), {"claim": "region"} (the token's claim) or
+    -- {"setting": "request.headers", "key": "x-forwarded-for"} (a setting, or a key of its JSON)
+    ('context', ''),
     ('claims_setting', 'request.jwt.claims'),
     ('token_setting', 'request.headers'),
     ('token_header', 'authorization'),
@@ -292,10 +296,20 @@ create function authz.configure(
     clock_skew_seconds int default null,
     roles_claim text default null,
     scope_claim text default null,
-    policy_version text default null
+    policy_version text default null,
+    context jsonb default null
 ) returns void
 language plpgsql volatile as $$
+declare
+    p text;
+    source jsonb;
 begin
+    for p, source in select key, value from jsonb_each(coalesce(configure.context, '{}')) loop
+        if not (source = '"now"' or (jsonb_typeof(source) = 'object' and (source ?| array['claim', 'setting'])
+                                     and not exists (select 1 from jsonb_object_keys(source) k where k not in ('claim', 'setting', 'key')))) then
+            raise exception 'context %: a source is "now", {"claim": ...} or {"setting": ..., "key": ...} (got %)', p, source;
+        end if;
+    end loop;
     if subject is not null and subject not in ('guc', 'jwt', 'jwt_signed') then
         raise exception 'subject must be one of guc, jwt, jwt_signed (got %)', subject;
     end if;
@@ -319,7 +333,8 @@ begin
         ('clock_skew_seconds', clock_skew_seconds::text),
         ('roles_claim', roles_claim),
         ('scope_claim', scope_claim),
-        ('policy_version', policy_version)
+        ('policy_version', policy_version),
+        ('context', case when configure.context = '{}' then '' else configure.context::text end)
     ) as s (k, v)
     where v is not null
     on conflict (key) do update set value = excluded.value;
@@ -335,4 +350,4 @@ revoke execute on function authz.bind(regclass, name, text, text, text, boolean,
 revoke execute on function authz.unbind(regclass) from public;
 revoke execute on function authz.drop_policies(regclass) from public;
 revoke execute on function authz.apply_policies(regclass, authz.bindings) from public;
-revoke execute on function authz.configure(text, text, text, jsonb, text, text, text, int, text, text, text) from public;
+revoke execute on function authz.configure(text, text, text, jsonb, text, text, text, int, text, text, text, jsonb) from public;

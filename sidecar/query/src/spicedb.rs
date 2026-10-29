@@ -29,6 +29,8 @@ pub struct SpiceDb {
     consistency: Value,
     /// the revision the sidecar's last relationship write produced: reads are at least as fresh
     written_at: Mutex<Option<Value>>,
+    /// the revision of the schema in force (authz.set_rules), written here or by another sidecar
+    schema_at: Mutex<Option<String>>,
 }
 
 /// Whether SpiceDB can hold `id` as an object id: `[a-zA-Z0-9/_|\-=+]`, up to 1024 bytes.
@@ -51,24 +53,38 @@ impl SpiceDb {
             "fully_consistent" => json!({"fully_consistent": true}),
             other => return Err(format!("SPICEDB_CONSISTENCY {other}: expected minimize_latency or fully_consistent")),
         };
-        Ok(Self { client, watch_client, base: url.trim_end_matches('/').to_string(), consistency, written_at: Mutex::new(None) })
+        Ok(Self {
+            client,
+            watch_client,
+            base: url.trim_end_matches('/').to_string(),
+            consistency,
+            written_at: Mutex::new(None),
+            schema_at: Mutex::new(None),
+        })
     }
 
     /// LookupResources, paged by its cursor: up to `limit` ids, or TooMany when there are at
     /// least that many.
-    pub async fn list(&self, subject: &str, permission: &str, object_type: &str, limit: usize) -> Result<Listed, String> {
+    pub async fn list(
+        &self,
+        subject: &str,
+        permission: &str,
+        object_type: &str,
+        limit: usize,
+        context: Option<&Value>,
+    ) -> Result<Listed, String> {
         // an optional_limit of 0 would mean no limit
         if limit == 0 {
             return Ok(Listed::TooMany);
         }
-        let ids = self.lookup(subject, permission, object_type, Some(limit), self.read_consistency()).await?;
+        let ids = self.lookup(subject, permission, object_type, Some(limit), self.read_consistency(), context).await?;
         Ok(if ids.len() >= limit { Listed::TooMany } else { Listed::Ids(ids) })
     }
 
     /// Every object the subject may access, for the permission index, at the latest revision: a
     /// fill must reflect every change the change feed reported before it began.
     pub async fn list_all(&self, subject: &str, permission: &str, object_type: &str) -> Result<Vec<String>, String> {
-        self.lookup(subject, permission, object_type, None, json!({"fully_consistent": true})).await
+        self.lookup(subject, permission, object_type, None, json!({"fully_consistent": true}), None).await
     }
 
     /// LookupResources pages: every page repeats the first call (SpiceDB refuses a cursor whose
@@ -80,6 +96,7 @@ impl SpiceDb {
         object_type: &str,
         limit: Option<usize>,
         consistency: Value,
+        context: Option<&Value>,
     ) -> Result<Vec<String>, String> {
         let page = limit.map_or(LOOKUP_PAGE, |l| l.min(LOOKUP_PAGE));
         let mut body = json!({
@@ -89,6 +106,9 @@ impl SpiceDb {
             "subject": subject_reference(subject)?,
             "optional_limit": page,
         });
+        if let Some(c) = context {
+            body["context"] = c.clone();
+        }
         let mut ids = Vec::new();
         loop {
             let lines = self.stream("/v1/permissions/resources", body.clone()).await?;
@@ -113,11 +133,25 @@ impl SpiceDb {
 
     /// One CheckBulkPermissions call (up to MAX_BULK ids): an answer per id, in order; errored
     /// or conditional answers are denials.
-    pub async fn check(&self, subject: &str, permission: &str, object_type: &str, ids: &[&String]) -> Result<Vec<bool>, String> {
+    pub async fn check(
+        &self,
+        subject: &str,
+        permission: &str,
+        object_type: &str,
+        ids: &[&String],
+        context: Option<&Value>,
+    ) -> Result<Vec<bool>, String> {
         let subject = subject_reference(subject)?;
         let items: Vec<Value> = ids
             .iter()
-            .map(|id| json!({"resource": {"object_type": object_type, "object_id": id}, "permission": permission, "subject": subject}))
+            .map(|id| {
+                let mut item =
+                    json!({"resource": {"object_type": object_type, "object_id": id}, "permission": permission, "subject": subject});
+                if let Some(c) = context {
+                    item["context"] = c.clone();
+                }
+                item
+            })
             .collect();
         let v = self.post("/v1/permissions/checkbulk", json!({"consistency": self.read_consistency(), "items": items})).await?;
         let pairs = field(&v, "pairs").and_then(Value::as_array).ok_or("spicedb checkbulk: no pairs field")?;
@@ -187,6 +221,9 @@ impl SpiceDb {
                 if let (true, Some(at)) = (c.write, &c.expires_at) {
                     relationship["optional_expires_at"] = json!(at);
                 }
+                if let (true, Some((name, context))) = (c.write, &c.condition) {
+                    relationship["optional_caveat"] = json!({"caveat_name": name, "context": context});
+                }
                 Ok(json!({"operation": if c.write { "OPERATION_TOUCH" } else { "OPERATION_DELETE" }, "relationship": relationship}))
             })
             .collect::<Result<Vec<Value>, String>>()
@@ -245,16 +282,32 @@ impl SpiceDb {
         Ok(())
     }
 
-    /// Replace the schema (the text kept in Postgres).
-    pub async fn write_schema(&self, schema: &str) -> Result<(), CallError> {
+    /// Replace the schema (the text kept in Postgres): its revision (ZedToken), for the other
+    /// sidecars to read at.
+    pub async fn write_schema(&self, schema: &str) -> Result<Option<String>, CallError> {
         let request = self.client.post(format!("{}/v1/schema/write", self.base)).json(&json!({"schema": schema}));
         let text = send_classified(request, "spicedb write schema").await?;
-        // reads from now on at least as fresh as the schema: an older revision has not its definitions
-        let written = serde_json::from_str::<Value>(&text).ok().and_then(|v| field(&v, "written_at").cloned());
-        if let (Some(token), Ok(mut w)) = (written, self.written_at.lock()) {
-            *w = Some(token);
+        let token = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| field(&v, "written_at").and_then(|w| w.get("token")).and_then(Value::as_str).map(str::to_owned));
+        if let Some(t) = &token {
+            self.use_schema(t);
         }
-        Ok(())
+        Ok(token)
+    }
+
+    /// Read from now on at least as fresh as this schema revision: an older one has not its
+    /// definitions (`type not found`). Whether it is new here.
+    pub fn use_schema(&self, token: &str) -> bool {
+        let Ok(mut at) = self.schema_at.lock() else { return false };
+        if at.as_deref() == Some(token) {
+            return false;
+        }
+        *at = Some(token.to_owned());
+        if let Ok(mut w) = self.written_at.lock() {
+            *w = Some(json!({"token": token}));
+        }
+        true
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
@@ -400,12 +453,12 @@ mod tests {
         })
         .await;
         let e = engine(&url);
-        assert!(matches!(e.list("group:eng#member", "viewer", "doc", 1000).await.unwrap(), Listed::Ids(ids) if ids == ["1", "3"]));
+        assert!(matches!(e.list("group:eng#member", "viewer", "doc", 1000, None).await.unwrap(), Listed::Ids(ids) if ids == ["1", "3"]));
         let body = seen.lock().unwrap()[0].clone();
         assert_eq!(body["subject"], json!({"object": {"object_type": "group", "object_id": "eng"}, "optional_relation": "member"}));
         assert_eq!(body["optional_limit"], json!(1000));
         // a page as long as the limit may have more
-        assert!(matches!(e.list("user:anne", "viewer", "doc", 3).await.unwrap(), Listed::TooMany));
+        assert!(matches!(e.list("user:anne", "viewer", "doc", 3, None).await.unwrap(), Listed::TooMany));
     }
 
     #[tokio::test]
@@ -424,7 +477,7 @@ mod tests {
         })
         .await;
         // a page of 2 with one definite answer: the next page, then 2 ids, as many as the limit
-        assert!(matches!(engine(&url).list("user:anne", "viewer", "doc", 2).await.unwrap(), Listed::TooMany));
+        assert!(matches!(engine(&url).list("user:anne", "viewer", "doc", 2, None).await.unwrap(), Listed::TooMany));
         let seen = seen.lock().unwrap();
         let mut second = seen[1].clone();
         assert_eq!(second["optional_cursor"], json!({"token": "c2"}));

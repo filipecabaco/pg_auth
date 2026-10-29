@@ -80,7 +80,10 @@ async fn deliver(url: &str, engine: &Engine, poll: Duration, delivered: &(impl F
 async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
     let tx = client.transaction().await.map_err(pg)?;
-    let rows = tx.query("select id, op, object, relation, subject, expires_at from authz.outbox_claim($1)", &[&CLAIM]).await.map_err(pg)?;
+    let rows = tx
+        .query("select id, op, object, relation, subject, expires_at, condition, condition_context from authz.outbox_claim($1)", &[&CLAIM])
+        .await
+        .map_err(pg)?;
     if rows.is_empty() {
         tx.commit().await.map_err(pg)?;
         return Ok(0);
@@ -89,7 +92,10 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
         .iter()
         .map(|r| {
             let write = r.get::<_, String>(1) == "write";
-            (r.get(0), Change { write, object: r.get(2), relation: r.get(3), subject: r.get(4), expires_at: r.get(5) })
+            let context =
+                r.get::<_, Option<String>>(7).and_then(|c| serde_json::from_str(&c).ok()).unwrap_or_else(|| serde_json::json!({}));
+            let condition = r.get::<_, Option<String>>(6).map(|name| (name, context));
+            (r.get(0), Change { write, object: r.get(2), relation: r.get(3), subject: r.get(4), expires_at: r.get(5), condition })
         })
         .collect();
     let all: Vec<Change> = changes.iter().map(|(_, c)| c.clone()).collect();

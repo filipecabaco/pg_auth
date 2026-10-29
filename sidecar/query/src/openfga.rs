@@ -65,7 +65,7 @@ impl OpenFga {
     }
 
     /// Write a model (its JSON, converted from the DSL kept in Postgres) and ask it from now on.
-    pub async fn write_model(&self, model: &Value) -> Result<(), CallError> {
+    pub async fn write_model(&self, model: &Value) -> Result<String, CallError> {
         let body =
             send_classified(self.client.post(format!("{}/authorization-models", self.base)).json(model), "openfga write model").await?;
         let id = serde_json::from_str::<Value>(&body)
@@ -73,9 +73,19 @@ impl OpenFga {
             .and_then(|v| v.get("authorization_model_id").and_then(Value::as_str).map(str::to_owned))
             .ok_or_else(|| CallError { permanent: false, message: "openfga write model: no authorization_model_id".into() })?;
         if let Ok(mut m) = self.model_id.lock() {
-            *m = Some(id);
+            *m = Some(id.clone());
         }
-        Ok(())
+        Ok(id)
+    }
+
+    /// Ask with this model from now on (one another sidecar wrote): whether it is a new one.
+    pub fn use_model(&self, id: &str) -> bool {
+        let Ok(mut model) = self.model_id.lock() else { return false };
+        if model.as_deref() == Some(id) {
+            return false;
+        }
+        *model = Some(id.to_owned());
+        true
     }
 
     /// Poll the change feed from `start` every `poll`, reading it until it has nothing new each
@@ -124,7 +134,13 @@ impl OpenFga {
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
-        send_json(self.client.post(format!("{}{path}", self.base)).json(&self.body(body)), &format!("openfga {path}")).await
+        let body = self.body(body);
+        // an answer about the model (a type it lacks) names the model asked
+        let what = match body.get("authorization_model_id").and_then(Value::as_str) {
+            Some(m) => format!("openfga {path} (model {m})"),
+            None => format!("openfga {path}"),
+        };
+        send_json(self.client.post(format!("{}{path}", self.base)).json(&body), &what).await
     }
 
     /// ListObjects truncates silently twice over, so both cases are reported as TooMany (the
@@ -133,9 +149,25 @@ impl OpenFga {
     /// - at the server's deadline (listObjectsDeadline, 3 s by default) it answers with the objects
     ///   found so far, as a success. Its clock starts after ours, so an answer that took at least
     ///   the deadline here may be partial.
-    pub async fn list(&self, subject: &str, permission: &str, object_type: &str, limit: usize) -> Result<Listed, String> {
+    pub async fn list(
+        &self,
+        subject: &str,
+        permission: &str,
+        object_type: &str,
+        limit: usize,
+        context: Option<&Value>,
+    ) -> Result<Listed, String> {
         let started = Instant::now();
-        let v = self.post("/list-objects", json!({"type": object_type, "relation": permission, "user": subject})).await?;
+        let mut body = json!({"type": object_type, "relation": permission, "user": subject});
+        if let Some(c) = context {
+            body["context"] = c.clone();
+        }
+        let v = match self.post("/list-objects", body).await {
+            // ListObjects fails as a whole when a condition lacks a parameter the request did not
+            // give (a token without the claim); BatchCheck denies each such object: check rows
+            Err(e) if context.is_some() && e.contains(" 400 ") => return Ok(Listed::TooMany),
+            answer => answer?,
+        };
         let objects = v.get("objects").and_then(Value::as_array).ok_or("openfga list-objects: no objects field")?;
         if objects.len() >= limit || started.elapsed() >= self.list_deadline {
             return Ok(Listed::TooMany);
@@ -191,7 +223,14 @@ impl OpenFga {
     /// a tuple written that exists or deleted that does not ignored.
     pub async fn write(&self, changes: &[Change]) -> Result<(), CallError> {
         let key = |c: &Change| json!({"user": c.subject, "relation": c.relation, "object": c.object});
-        let writes: Vec<Value> = changes.iter().filter(|c| c.write).map(key).collect();
+        let written = |c: &Change| {
+            let mut k = key(c);
+            if let Some((name, context)) = &c.condition {
+                k["condition"] = json!({"name": name, "context": context});
+            }
+            k
+        };
+        let writes: Vec<Value> = changes.iter().filter(|c| c.write).map(written).collect();
         let deletes: Vec<Value> = changes.iter().filter(|c| !c.write).map(key).collect();
         let mut body = json!({});
         if !writes.is_empty() {
@@ -212,15 +251,26 @@ impl OpenFga {
 
     /// One BatchCheck call (up to MAX_BATCH ids): an answer per id, in order; missing or errored
     /// results are denials.
-    pub async fn check(&self, subject: &str, permission: &str, object_type: &str, ids: &[&String]) -> Result<Vec<bool>, String> {
+    pub async fn check(
+        &self,
+        subject: &str,
+        permission: &str,
+        object_type: &str,
+        ids: &[&String],
+        context: Option<&Value>,
+    ) -> Result<Vec<bool>, String> {
         let checks: Vec<Value> = ids
             .iter()
             .enumerate()
             .map(|(i, id)| {
-                json!({
+                let mut check = json!({
                     "tuple_key": {"user": subject, "relation": permission, "object": format!("{object_type}:{id}")},
                     "correlation_id": i.to_string()
-                })
+                });
+                if let Some(c) = context {
+                    check["context"] = c.clone();
+                }
+                check
             })
             .collect();
         let v = self.post("/batch-check", json!({ "checks": checks })).await?;
@@ -263,7 +313,7 @@ mod tests {
     async fn list(delay: Duration, deadline: Duration, limit: usize) -> Listed {
         let url = fake_openfga(delay).await;
         let engine = OpenFga::new(&url, "s", None, None, None, Duration::from_secs(5), deadline).unwrap();
-        engine.list("user:anne", "viewer", "doc", limit).await.unwrap()
+        engine.list("user:anne", "viewer", "doc", limit, None).await.unwrap()
     }
 
     #[tokio::test]

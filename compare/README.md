@@ -237,6 +237,24 @@ them, the other follows.
     elixir compare/conditions.exs                       # OpenFGA, then SpiceDB
     elixir compare/conditions.exs --engine spicedb --no-build
 
+## The demo's rules, and who decides
+
+`notes.exs` loads the demo's rules files (`docker/demo/rules`) unchanged into OpenFGA, SpiceDB
+and Cerbos with `authz.set_rules`, and plays the demo's story: the notes in each file protect and
+relate the tables, with nothing set up by hand. Then it checks that the engine decides each row,
+not Postgres:
+
+- every `pg_auth` policy in `pg_policies` is only a call to `authz.permits` or
+  `authz.permits_resource`, with no join or comparison of its own;
+- a relationship written straight into the engine shows a row no table in Postgres grants, and
+  one deleted straight from the engine hides a row while `memberships` still holds it; on
+  Cerbos, a policy put through its Admin API changes what each principal sees;
+- with the engine stopped, and then the sidecar stopped, every read and write on a protected
+  table fails once the sidecar's 1 s answers have passed.
+
+    elixir compare/notes.exs                            # OpenFGA, SpiceDB, then Cerbos
+    elixir compare/notes.exs --engine cerbos --no-build
+
 ## History
 
 This harness first compared OpenFGA with the authorization engine pg_auth used to embed

@@ -2,8 +2,8 @@
 
 pg_auth asks an engine outside Postgres who may see what, and still competes with row level
 security written by hand and tuned: over the 489 query and subject pairs of the
-[benchmarks](benchmarks.md) (35 scenarios, 2026-10-29), it takes 0.75x the time of best-practice
-RLS, planning and execution together, and is faster in 225 of them. How the pieces work is in
+[benchmarks](benchmarks.md) (35 scenarios, 2026-10-29), it takes 0.80x the time of best-practice
+RLS, planning and execution together, and is faster in 201 of them. How the pieces work is in
 [the implementation](design.md); this page is what they cost and how to tune them.
 
 ## Where it wins and where it loses

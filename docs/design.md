@@ -326,12 +326,15 @@ conditional is denied. Subjects may be usersets (`group:eng#member`).
 1. Row locks, inserts, writes pinned to one row, and writes by subjects whose index set is stale
    or over 10,000 objects still check rows one by one (answered from the permission index once it
    is fresh); AuthzBatch does not do EvalPlanQual rechecks.
-2. Where pg_auth still loses to best-practice RLS (`bench/docker` results, commit `a828449`;
-   0.75x overall): a tenant holding half the table paging one kind of row
-   (`tenant-skew-bad-estimates`, 1.7x), joins of two protected tables (1.6x), direct reads of one
-   partition (1.5x), a `count(*)` over JWT-claim rows (`jwt-claims-parsed-per-row`, 1.3x; the
-   2026-10-28 run read 0.86x, but the 44f67e3 build measures 1.3x again side by side with this
-   one), and per-statement planning on sub-millisecond statements (RLS's own best case, 1.3x).
+2. Where pg_auth still loses to best-practice RLS (`bench/docker` results, commit `eb69ff7`;
+   0.80x overall): a tenant holding half the table paging one kind of row
+   (`tenant-skew-bad-estimates`, 1.7x), direct reads of one partition (1.6x), writes that read
+   their row back (`update-select-coupling`, 1.6x), joins of two protected tables (1.2x), and
+   per-statement planning on sub-millisecond statements (RLS's own best case, 1.4x). These
+   sub-millisecond scenarios move by about a third between runs: `jwt-claims-parsed-per-row` read
+   1.3x in the previous run and 0.90x in this one, and an A/B of `update-select-coupling` against
+   the build before request context (`59e6f54`, alternating, fresh containers) read 1.49x/1.40x
+   old and 1.86x/1.47x new, the best-practice policy's own times varying as much.
 3. SpiceDB's gRPC API instead of its HTTP gateway (one JSON translation less per call), and
    ZedTokens to read at least as fresh as a write the application just made.
 4. Phase C of the permission index proposal: attribute rules compiled to SQL conditions.

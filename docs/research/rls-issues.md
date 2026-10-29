@@ -41,12 +41,12 @@ follow the subject ([design.md](../design.md)).
 
 | # | id | cat | one-line | measured here (naive vs best plain-RLS) | pg_auth (bench) |
 |---|---|---|---|---|---|
-| 1 | `per-row-function-in-policy` | perf | plpgsql / SECURITY DEFINER helper called per row | 302-338 ms vs 0.5 ms (count, small user) | 0.88x |
-| 2 | `jwt-claims-parsed-per-row` | perf | `current_setting('request.jwt.claims')::jsonb` per row | 188 ms vs 6 ms | 1.30x |
-| 3 | `membership-subplan-no-pullup` | perf | EXISTS / IN on membership table stays a SubPlan | 12.8 ms vs 0.5 ms count; 19 ms vs 0.08 ms latest-20 (power) | 0.85x |
-| 4 | `missing-policy-index` | perf | no index on the column the policy filters | 18.5 ms vs <1 ms | 1.47x (its pg_auth variant keeps the index missing) |
+| 1 | `per-row-function-in-policy` | perf | plpgsql / SECURITY DEFINER helper called per row | 302-338 ms vs 0.5 ms (count, small user) | 1.06x |
+| 2 | `jwt-claims-parsed-per-row` | perf | `current_setting('request.jwt.claims')::jsonb` per row | 188 ms vs 6 ms | 0.90x |
+| 3 | `membership-subplan-no-pullup` | perf | EXISTS / IN on membership table stays a SubPlan | 12.8 ms vs 0.5 ms count; 19 ms vs 0.08 ms latest-20 (power) | 0.87x |
+| 4 | `missing-policy-index` | perf | no index on the column the policy filters | 18.5 ms vs <1 ms | 1.70x (its pg_auth variant keeps the index missing) |
 | 5 | `view-owner-bypass` | correctness | view owned by superuser ignores RLS | 200000 rows visible instead of 200 | verdicts in the scenario README |
-| 6 | `nested-rls-chain` | perf | policy on A reads B which has its own RLS | 22 ms vs 1.3 ms | 0.23x |
+| 6 | `nested-rls-chain` | perf | policy on A reads B which has its own RLS | 22 ms vs 1.3 ms | 0.22x |
 | 7 | `non-leakproof-operators-lose-index` | perf | LIKE / ILIKE / jsonb / lower() lose the user's index | 10.5 ms vs 0.12 ms (power user) | 1.05x |
 | 8 | `order-by-limit-selective-policy` | perf | planner walks the sort index and filters | 13 ms (199,800 rows filtered) vs 0.08 ms | 0.24x |
 | 9 | `update-select-coupling` | correctness | UPDATE needs SELECT policy; new row must pass it | silent 0-row UPDATE; soft-delete rejected | verdicts in the scenario README |
@@ -55,13 +55,13 @@ follow the subject ([design.md](../design.md)).
 | 12 | `secdef-helper-oracle` | correctness | SECURITY DEFINER helper taking a user id | enumerates other users' memberships | verdicts in the scenario README |
 | 13 | `rls-bypass-paths` | correctness | owner / BYPASSRLS / matview / pg_dump / replication | owner sees 200000 rows | verdicts in the scenario README |
 | 14 | `partition-direct-access` | correctness | leaf partitions queried directly skip the parent policy | 14300 rows instead of 0 | verdicts in the scenario README |
-| 15 | `partitioned-rls-no-pruning` | perf | policy array does not prune partitions | 16/16 partitions scanned, 11 ms | 0.98x |
-| 16 | `join-two-rls-tables` | perf | two RLS tables joined, SubPlans on both sides | est. 50000 rows vs 200 actual; 10.3 ms vs 0.2 ms | 1.58x |
-| 17 | `tenant-skew-bad-estimates` | perf | `tenant_id = (select setting)` hides the value from stats | est. 100 vs 100000 rows | 1.71x |
-| 18 | `hierarchical-permissions` | perf | recursive CTE or ancestor walk inside a policy | 333 ms vs 0.5 ms (100k files) | 0.22x (declared hierarchy: same warm; 22 ms vs 6.4 s cold) |
-| 19 | `large-membership-array-overhead` | perf | `= ANY(array)` rebuilds a huge array per statement | PK lookup 0.2 ms vs 16 ms | 0.40x |
+| 15 | `partitioned-rls-no-pruning` | perf | policy array does not prune partitions | 16/16 partitions scanned, 11 ms | 0.94x |
+| 16 | `join-two-rls-tables` | perf | two RLS tables joined, SubPlans on both sides | est. 50000 rows vs 200 actual; 10.3 ms vs 0.2 ms | 1.23x |
+| 17 | `tenant-skew-bad-estimates` | perf | `tenant_id = (select setting)` hides the value from stats | est. 100 vs 100000 rows | 1.68x |
+| 18 | `hierarchical-permissions` | perf | recursive CTE or ancestor walk inside a policy | 333 ms vs 0.5 ms (100k files) | 0.21x (declared hierarchy: same warm; 22 ms vs 6.4 s cold) |
+| 19 | `large-membership-array-overhead` | perf | `= ANY(array)` rebuilds a huge array per statement | PK lookup 0.2 ms vs 16 ms | 0.39x |
 | 20 | `leaky-function-and-leakproof-marking` | correctness | LEAKPROOF used as a perf hack leaks hidden rows | 201 hidden-row values observed | verdicts in the scenario README |
-| 21 | `update-delete-bulk-rls-cost` | perf | USING + WITH CHECK evaluated per written row | 2.9 s vs 2.0 s (100k-row UPDATE) | 0.87x |
+| 21 | `update-delete-bulk-rls-cost` | perf | USING + WITH CHECK evaluated per written row | 2.9 s vs 2.0 s (100k-row UPDATE) | 1.04x |
 | 22 | `prepared-plan-role-revalidation` | perf | plan cache is tied to the role; generic plans | +12-15% per call (trivial query) | 0.97x |
 
 Ranking rationale: 1-4 are the bulk of "my RLS is slow" threads. 5 and 9-10 are the most common

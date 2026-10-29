@@ -164,6 +164,8 @@ thread_local! {
     static PLANS: RefCell<HashMap<(Key, u64), Rc<Plan>>> = RefCell::new(HashMap::new());
     /// plans kept across transactions while the sidecar's answer is (its valid_ms), per socket
     static PLANS_KEPT: RefCell<Kept<(String, Key, u64), Plan>> = RefCell::new(HashMap::new());
+    /// the engine's answers' generation LISTS_KEPT and PLANS_KEPT were kept under
+    static KEPT_UNDER: Cell<u64> = const { Cell::new(0) };
     /// a row's answer by its id and attributes, when its plan is to check rows
     static RESOURCE_CHECKS: RefCell<HashMap<(Key, String, String), bool>> = RefCell::new(HashMap::new());
     /// fresh permission index sets found this transaction (None: no fresh set; a fill was requested)
@@ -418,6 +420,17 @@ fn broken(e: &std::io::Error) -> bool {
     matches!(e.kind(), BrokenPipe | ConnectionReset | ConnectionAborted | UnexpectedEof)
 }
 
+/// Answers kept across transactions are dropped once relationships changed in the engine (a
+/// sidecar delivered relationship tables' changes: authz.answers_changed).
+fn forget_kept_if_relationships_changed() {
+    let generation = crate::ffi::answers_generation();
+    if KEPT_UNDER.get() != generation {
+        LISTS_KEPT.with(|c| c.borrow_mut().clear());
+        PLANS_KEPT.with(|c| c.borrow_mut().clear());
+        KEPT_UNDER.set(generation);
+    }
+}
+
 /// Which objects of `object_type` may `subject` access with `permission`?
 pub fn list(subject: &str, object_type: &str, permission: &str) -> Result<Rc<Listed>, String> {
     let key = (subject.to_string(), object_type.to_string(), permission.to_string());
@@ -432,6 +445,7 @@ pub fn list(subject: &str, object_type: &str, permission: &str) -> Result<Rc<Lis
     // a request's transaction is short: the answer the sidecar would give from its cache anyway
     // spares a round trip, and the plan's of every statement of the next requests
     let socket = socket_path();
+    forget_kept_if_relationships_changed();
     let kept = LISTS_KEPT
         .with(|c| c.borrow().get(&(socket.clone(), key.clone())).filter(|(until, _)| Instant::now() < *until).map(|(_, l)| l.clone()));
     if let Some(hit) = kept {
@@ -1081,6 +1095,7 @@ pub fn plan(
     // a request's transaction is short: the plan the sidecar would answer from its cache anyway
     // spares a round trip at every statement's planning
     let socket = socket_path();
+    forget_kept_if_relationships_changed();
     let kept = PLANS_KEPT.with(|c| {
         c.borrow().get(&(socket.clone(), key.clone(), generation)).filter(|(until, _)| Instant::now() < *until).map(|(_, p)| p.clone())
     });

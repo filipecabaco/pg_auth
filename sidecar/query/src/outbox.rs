@@ -1,0 +1,123 @@
+//! Relationship tables (sql/relationships.sql): the rows applications write that are
+//! relationships in the engine, recorded in authz.outbox by a trigger, delivered here in order.
+//!
+//! One sidecar delivers at a time (authz.outbox_claim takes an advisory lock for its
+//! transaction): it claims the oldest changes, applies them in the engine, and removes them by id
+//! in the same transaction, so a change is removed only once the engine has it. A batch that fails
+//! is rolled back and delivered again later; the engines' writes and deletes are idempotent. It
+//! wakes on the trigger's NOTIFY, and every `poll` in case one was missed. Optional: enabled by
+//! PG_AUTH_DATABASE_URL, with the permission index.
+
+use crate::engine::{Change, Engine};
+use futures_util::StreamExt;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_postgres::{AsyncMessage, Client, NoTls};
+
+/// Changes claimed per transaction.
+const CLAIM: i32 = 500;
+
+/// Deliver the outbox for as long as the sidecar runs; `delivered` is called after each batch the
+/// engine took (the sidecar then forgets the answers it cached).
+pub fn start(url: String, engine: Arc<Engine>, poll: Duration, delivered: impl Fn() + Send + Sync + 'static) {
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = deliver(&url, &engine, poll, &delivered).await {
+                eprintln!("pg-auth-sidecar: relationship tables: {e}");
+            }
+            tokio::time::sleep(poll).await;
+        }
+    });
+}
+
+/// Connect, listen for changes, and deliver until the connection fails.
+async fn deliver(url: &str, engine: &Engine, poll: Duration, delivered: &(impl Fn() + Send + Sync)) -> Result<(), String> {
+    let (mut client, mut connection) = tokio_postgres::connect(url, NoTls).await.map_err(|e| format!("postgres: {e}"))?;
+    let (wake, mut woken) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut messages = futures_util::stream::poll_fn(move |cx| connection.poll_message(cx));
+        while let Some(message) = messages.next().await {
+            match message {
+                Ok(AsyncMessage::Notification(_)) => {
+                    let _ = wake.send(());
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("pg-auth-sidecar: relationship tables connection: {e}");
+                    break;
+                }
+            }
+        }
+    });
+    client.batch_execute("listen pg_auth_outbox").await.map_err(|e| format!("postgres: {e}"))?;
+    loop {
+        match once(&mut client, engine).await {
+            Ok(0) => {
+                if client.is_closed() {
+                    return Err("postgres connection closed".into());
+                }
+                // nothing to deliver: wait for a change (or a missed one, at the next poll)
+                let _ = tokio::time::timeout(poll, woken.recv()).await;
+                while woken.try_recv().is_ok() {}
+            }
+            Ok(_) => delivered(),
+            Err(e) => {
+                eprintln!("pg-auth-sidecar: relationship tables: {e}; retrying");
+                if client.is_closed() {
+                    return Err("postgres connection closed".into());
+                }
+                tokio::time::sleep(poll).await;
+            }
+        }
+    }
+}
+
+/// Deliver one batch: how many changes it settled (0: nothing to deliver, or another sidecar is
+/// delivering). A batch the engine refuses for good is delivered change by change: the changes it
+/// refuses are set aside with its reason (authz.outbox_failed), the others go on. After a
+/// delivery every backend forgets the answers it kept (authz.answers_changed, at commit).
+async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
+    let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
+    let tx = client.transaction().await.map_err(pg)?;
+    let rows = tx.query("select id, op, object, relation, subject from authz.outbox_claim($1)", &[&CLAIM]).await.map_err(pg)?;
+    if rows.is_empty() {
+        tx.commit().await.map_err(pg)?;
+        return Ok(0);
+    }
+    let changes: Vec<(i64, Change)> = rows
+        .iter()
+        .map(|r| (r.get(0), Change { write: r.get::<_, String>(1) == "write", object: r.get(2), relation: r.get(3), subject: r.get(4) }))
+        .collect();
+    let all: Vec<Change> = changes.iter().map(|(_, c)| c.clone()).collect();
+    // a failure the engine may get over (it is unreachable) leaves the transaction to roll back:
+    // the changes stay for the next attempt
+    let (done, refused) = match engine.write(&all).await {
+        Ok(()) => (changes.iter().map(|(id, _)| *id).collect::<Vec<_>>(), Vec::new()),
+        Err(e) if !e.permanent => return Err(e.message),
+        Err(_) => {
+            let mut done = Vec::new();
+            let mut refused = Vec::new();
+            for (id, change) in &changes {
+                match engine.write(std::slice::from_ref(change)).await {
+                    Ok(()) => done.push(*id),
+                    Err(e) if e.permanent => refused.push((*id, e.message)),
+                    // settle what is settled; the rest waits for the next attempt
+                    Err(_) => break,
+                }
+            }
+            (done, refused)
+        }
+    };
+    tx.execute("select authz.outbox_done($1)", &[&done]).await.map_err(pg)?;
+    for (id, reason) in &refused {
+        eprintln!("pg-auth-sidecar: relationship change {id} refused by the engine, set aside: {reason}");
+        tx.execute("select authz.outbox_failed($1, $2)", &[id, reason]).await.map_err(pg)?;
+    }
+    if !done.is_empty() {
+        tx.execute("select authz.answers_changed()", &[]).await.map_err(pg)?;
+    }
+    tx.commit().await.map_err(pg)?;
+    eprintln!("pg-auth-sidecar: delivered {} relationship changes", done.len());
+    Ok(done.len() + refused.len())
+}

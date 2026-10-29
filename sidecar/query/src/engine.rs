@@ -25,6 +25,35 @@ pub enum Engine {
     Cerbos(Cerbos),
 }
 
+/// A change to one relationship, from a relationship table (outbox.rs): written, or deleted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub write: bool,
+    pub object: String,
+    pub relation: String,
+    pub subject: String,
+}
+
+/// `changes` cut into requests, in order: at most `max` each, and no relationship twice in one
+/// (the engines refuse a request that names one relationship twice).
+pub fn batches(changes: &[Change], max: usize) -> Vec<&[Change]> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut seen = std::collections::HashSet::new();
+    for (i, c) in changes.iter().enumerate() {
+        if i - start == max || !seen.insert((&c.object, &c.relation, &c.subject)) {
+            out.push(&changes[start..i]);
+            start = i;
+            seen.clear();
+            seen.insert((&c.object, &c.relation, &c.subject));
+        }
+    }
+    if start < changes.len() {
+        out.push(&changes[start..]);
+    }
+    out
+}
+
 /// What a check may carry beyond ids, for an engine that decides on attributes: the principal
 /// (its roles and attributes) and each resource's attributes, by id position.
 #[derive(Default)]
@@ -105,6 +134,29 @@ impl Engine {
         }
     }
 
+    /// Apply relationship changes, in order. Writing one that exists, or deleting one that does
+    /// not, is not an error: a batch the sidecar delivers again after a failure is harmless.
+    pub async fn write(&self, changes: &[Change]) -> Result<(), CallError> {
+        let max = match self {
+            Engine::OpenFga(_) => crate::openfga::MAX_WRITE,
+            Engine::SpiceDb(_) => crate::spicedb::MAX_WRITE,
+            Engine::Cerbos(_) => {
+                return Err(CallError {
+                    permanent: true,
+                    message: "cerbos keeps no relationships: relationship tables need OpenFGA or SpiceDB".into(),
+                });
+            }
+        };
+        for batch in batches(changes, max) {
+            match self {
+                Engine::OpenFga(e) => e.write(batch).await?,
+                Engine::SpiceDb(e) => e.write(batch).await?,
+                Engine::Cerbos(_) => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Which resources the subject may access, as a condition on their attributes; engines that
     /// decide on relationships have none to give.
     pub async fn plan(&self, (subject, object_type, permission): &Key, principal: Option<&Value>) -> Result<Plan, String> {
@@ -131,9 +183,29 @@ impl Engine {
 /// Send a request: the body on success, else an error naming `what`, the status, and the
 /// server's message (or the start of the body when it is not JSON, a proxy's error page say).
 pub async fn send(request: reqwest::RequestBuilder, what: &str) -> Result<String, String> {
-    let resp = request.send().await.map_err(|e| format!("{what}: {}", causes(&e)))?;
+    send_classified(request, what).await.map_err(|e| e.message)
+}
+
+/// A failed call: `permanent` when the engine refused the request for good (a 4xx other than a
+/// timeout or a rate limit: an invalid relationship), which sending it again will not change.
+#[derive(Debug)]
+pub struct CallError {
+    pub permanent: bool,
+    pub message: String,
+}
+
+impl From<String> for CallError {
+    fn from(message: String) -> Self {
+        CallError { permanent: false, message }
+    }
+}
+
+/// `send`, telling a refusal from a failure.
+pub async fn send_classified(request: reqwest::RequestBuilder, what: &str) -> Result<String, CallError> {
+    let failed = |e: reqwest::Error| CallError { permanent: false, message: format!("{what}: {}", causes(&e)) };
+    let resp = request.send().await.map_err(failed)?;
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| format!("{what}: {}", causes(&e)))?;
+    let text = resp.text().await.map_err(failed)?;
     if status.is_success() {
         return Ok(text);
     }
@@ -141,7 +213,8 @@ pub async fn send(request: reqwest::RequestBuilder, what: &str) -> Result<String
         .ok()
         .and_then(|v| v.get("message").or_else(|| v.pointer("/error/message")).and_then(Value::as_str).map(str::to_owned))
         .unwrap_or_else(|| text.chars().take(200).collect());
-    Err(format!("{what} {status}: {message}"))
+    let permanent = status.is_client_error() && !matches!(status.as_u16(), 408 | 429);
+    Err(CallError { permanent, message: format!("{what} {status}: {message}") })
 }
 
 pub async fn send_json(request: reqwest::RequestBuilder, what: &str) -> Result<Value, String> {
@@ -413,5 +486,149 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), c.follow(String::new(), Duration::from_millis(1), tx)).await.unwrap();
         assert_eq!((fga.name(), c.name()), ("openfga", "cerbos"));
         assert!(server.received_requests().await.unwrap().is_empty(), "none of these asks the engine");
+    }
+
+    fn change(write: bool, object: &str, subject: &str) -> Change {
+        Change { write, object: object.into(), relation: "member".into(), subject: subject.into() }
+    }
+
+    #[test]
+    fn batches_keep_order_and_never_name_a_relationship_twice() {
+        let changes = [
+            change(true, "org:1", "user:a"),
+            change(true, "org:1", "user:b"),
+            change(false, "org:1", "user:a"),
+            change(true, "org:2", "user:a"),
+            change(true, "org:3", "user:a"),
+        ];
+        let sizes: Vec<usize> = batches(&changes, 10).iter().map(|b| b.len()).collect();
+        assert_eq!(sizes, [2, 3], "the delete of a written relationship starts a new request");
+        let sizes: Vec<usize> = batches(&changes, 2).iter().map(|b| b.len()).collect();
+        assert_eq!(sizes, [2, 2, 1]);
+        assert_eq!(batches(&changes, 2).concat(), changes, "nothing reordered or lost");
+        assert_eq!(batches(&[], 5).len(), 0);
+    }
+
+    #[tokio::test]
+    async fn openfga_writes_relationship_changes_idempotently() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/stores/s1/write"))
+            .and(body_partial_json(json!({
+                "authorization_model_id": "m1",
+                "writes": {"on_duplicate": "ignore", "tuple_keys": [{"user": "team:eng#member", "relation": "member", "object": "org:1"}]},
+                "deletes": {"on_missing": "ignore", "tuple_keys": [{"user": "user:a", "relation": "member", "object": "org:2"}]}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        openfga(&server).write(&[change(true, "org:1", "team:eng#member"), change(false, "org:2", "user:a")]).await.unwrap();
+        // the write request carries no read consistency, which OpenFGA's write does not take
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(body.get("consistency").is_none());
+    }
+
+    #[tokio::test]
+    async fn spicedb_touches_and_deletes_relationships() {
+        let server = MockServer::start().await;
+        Mock::given(path("/v1/relationships/write"))
+            .and(body_partial_json(json!({"updates": [
+                {"operation": "OPERATION_TOUCH", "relationship": {"resource": {"object_type": "org", "object_id": "1"}, "relation": "member",
+                    "subject": {"object": {"object_type": "team", "object_id": "eng"}, "optional_relation": "member"}}},
+                {"operation": "OPERATION_DELETE", "relationship": {"resource": {"object_type": "org", "object_id": "2"}, "relation": "member",
+                    "subject": {"object": {"object_type": "user", "object_id": "a"}}}}
+            ]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"writtenAt": {"token": "t"}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let e = Engine::SpiceDb(crate::spicedb::SpiceDb::new(&server.uri(), "key", None, Duration::from_secs(5)).unwrap());
+        e.write(&[change(true, "org:1", "team:eng#member"), change(false, "org:2", "user:a")]).await.unwrap();
+        let refused = e.write(&[change(true, "org", "user:a")]).await.err().unwrap();
+        assert!(refused.permanent && refused.message.contains("expected type:id"), "{refused:?}");
+        // reads are now at least as fresh as that write
+        let lookups = server.received_requests().await.unwrap().len();
+        assert_eq!(lookups, 1);
+    }
+
+    #[tokio::test]
+    async fn cerbos_keeps_no_relationships() {
+        let server = MockServer::start().await;
+        let refused = cerbos(&server).write(&[change(true, "org:1", "user:a")]).await.err().unwrap();
+        assert!(refused.permanent && refused.message.contains("need OpenFGA or SpiceDB"));
+    }
+
+    #[tokio::test]
+    async fn writes_tell_a_refusal_from_a_failure() {
+        let server = MockServer::start().await;
+        Mock::given(path("/stores/s1/write"))
+            .and(body_partial_json(json!({"writes": {"tuple_keys": [{"object": "org:bad"}]}})))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({"message": "type 'org' has no relation 'member'"})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/stores/s1/write"))
+            .and(body_partial_json(json!({"writes": {"tuple_keys": [{"object": "org:busy"}]}})))
+            .respond_with(ResponseTemplate::new(429).set_body_json(json!({"message": "rate limited"})))
+            .mount(&server)
+            .await;
+        let e = openfga(&server);
+        assert!(e.write(&[change(true, "org:bad", "user:a")]).await.err().unwrap().permanent, "a 400 is a refusal");
+        assert!(!e.write(&[change(true, "org:busy", "user:a")]).await.err().unwrap().permanent, "a 429 is worth retrying");
+        let closed = Engine::OpenFga(
+            OpenFga::new("http://127.0.0.1:1", "s1", None, None, None, Duration::from_secs(1), Duration::from_secs(1)).unwrap(),
+        );
+        assert!(!closed.write(&[change(true, "org:1", "user:a")]).await.err().unwrap().permanent, "unreachable is worth retrying");
+    }
+
+    #[tokio::test]
+    async fn reads_after_a_write_skip_openfgas_caches() {
+        let server = MockServer::start().await;
+        Mock::given(path("/stores/s1/write")).respond_with(ResponseTemplate::new(200).set_body_json(json!({}))).mount(&server).await;
+        Mock::given(path("/stores/s1/list-objects"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"objects": []})))
+            .mount(&server)
+            .await;
+        let e = openfga(&server);
+        let k = key("user:anne", "doc", "viewer");
+        e.list(&k, 10).await.unwrap();
+        e.write(&[change(true, "org:1", "user:a")]).await.unwrap();
+        e.list(&k, 10).await.unwrap();
+        let consistency: Vec<Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("list-objects"))
+            .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["consistency"].clone())
+            .collect();
+        assert_eq!(consistency, [json!("MINIMIZE_LATENCY"), json!("HIGHER_CONSISTENCY")]);
+    }
+
+    #[tokio::test]
+    async fn reads_after_a_write_are_at_least_as_fresh_in_spicedb() {
+        let server = MockServer::start().await;
+        Mock::given(path("/v1/relationships/write"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"writtenAt": {"token": "zed1"}})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/v1/permissions/checkbulk"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"pairs": []})))
+            .mount(&server)
+            .await;
+        let e = Engine::SpiceDb(crate::spicedb::SpiceDb::new(&server.uri(), "key", None, Duration::from_secs(5)).unwrap());
+        let k = key("user:anne", "doc", "viewer");
+        e.check(&k, &["1".into()], &Context::default(), 1).await.unwrap();
+        e.write(&[change(true, "org:1", "user:a")]).await.unwrap();
+        e.check(&k, &["1".into()], &Context::default(), 1).await.unwrap();
+        let consistency: Vec<Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("checkbulk"))
+            .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["consistency"].clone())
+            .collect();
+        assert_eq!(consistency, [json!({"minimize_latency": true}), json!({"at_least_as_fresh": {"token": "zed1"}})]);
     }
 }

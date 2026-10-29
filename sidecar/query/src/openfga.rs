@@ -1,13 +1,19 @@
 //! OpenFGA as the source of truth: ListObjects for "which ids", BatchCheck for "these ids",
 //! StreamedListObjects to fill the permission index, ReadChanges (polled) as the change feed.
 
-use crate::engine::{Listed, send_json};
+use crate::engine::{CallError, Change, Listed, send_classified, send_json};
 use serde_json::{Value, json};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// OpenFGA rejects batches larger than this (maxChecksPerBatchCheck).
 pub const MAX_BATCH: usize = 50;
+/// OpenFGA rejects writes of more tuples than this (maxTuplesPerWrite).
+pub const MAX_WRITE: usize = 100;
+/// After the sidecar writes relationships, reads skip OpenFGA's caches this long (its check cache's
+/// default TTL), so a grant or a revocation shows at once.
+const FRESH_AFTER_WRITE: Duration = Duration::from_secs(10);
 
 pub struct OpenFga {
     client: reqwest::Client,
@@ -15,6 +21,8 @@ pub struct OpenFga {
     model_id: Option<String>,
     consistency: Option<String>,
     list_deadline: Duration,
+    /// until when reads skip the caches (relationships were just written)
+    fresh_until: Mutex<Option<Instant>>,
 }
 
 /// Whether OpenFGA can hold `type:id` as an object (`^[^\s]{2,256}$`): any other id is denied
@@ -40,7 +48,14 @@ impl OpenFga {
             headers.insert(reqwest::header::AUTHORIZATION, value);
         }
         let client = reqwest::Client::builder().default_headers(headers).timeout(timeout).build().map_err(|e| e.to_string())?;
-        Ok(Self { client, base: format!("{}/stores/{store}", url.trim_end_matches('/')), model_id, consistency, list_deadline })
+        Ok(Self {
+            client,
+            base: format!("{}/stores/{store}", url.trim_end_matches('/')),
+            model_id,
+            consistency,
+            list_deadline,
+            fresh_until: Mutex::new(None),
+        })
     }
 
     /// Poll the change feed from `start` every `poll`, reading it until it has nothing new each
@@ -77,8 +92,13 @@ impl OpenFga {
         if let Some(m) = &self.model_id {
             body["authorization_model_id"] = json!(m);
         }
-        if let (Some(c), None) = (&self.consistency, body.get("consistency")) {
-            body["consistency"] = json!(c);
+        let fresh = self.fresh_until.lock().ok().and_then(|f| *f).is_some_and(|until| Instant::now() < until);
+        if body.get("consistency").is_none() {
+            if fresh {
+                body["consistency"] = json!("HIGHER_CONSISTENCY");
+            } else if let Some(c) = &self.consistency {
+                body["consistency"] = json!(c);
+            }
         }
         body
     }
@@ -145,6 +165,29 @@ impl OpenFga {
         let n = v.get("changes").and_then(Value::as_array).map_or(0, Vec::len);
         let next = v.get("continuation_token").and_then(Value::as_str).unwrap_or_default().to_string();
         Ok((n, next))
+    }
+
+    /// One Write call (up to MAX_WRITE changes, no tuple twice): writes and deletes together,
+    /// a tuple written that exists or deleted that does not ignored.
+    pub async fn write(&self, changes: &[Change]) -> Result<(), CallError> {
+        let key = |c: &Change| json!({"user": c.subject, "relation": c.relation, "object": c.object});
+        let writes: Vec<Value> = changes.iter().filter(|c| c.write).map(key).collect();
+        let deletes: Vec<Value> = changes.iter().filter(|c| !c.write).map(key).collect();
+        let mut body = json!({});
+        if !writes.is_empty() {
+            body["writes"] = json!({"tuple_keys": writes, "on_duplicate": "ignore"});
+        }
+        if !deletes.is_empty() {
+            body["deletes"] = json!({"tuple_keys": deletes, "on_missing": "ignore"});
+        }
+        if let Some(m) = &self.model_id {
+            body["authorization_model_id"] = json!(m);
+        }
+        send_classified(self.client.post(format!("{}/write", self.base)).json(&body), "openfga write").await?;
+        if let Ok(mut f) = self.fresh_until.lock() {
+            *f = Some(Instant::now() + FRESH_AFTER_WRITE);
+        }
+        Ok(())
     }
 
     /// One BatchCheck call (up to MAX_BATCH ids): an answer per id, in order; missing or errored

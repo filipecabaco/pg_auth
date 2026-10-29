@@ -44,6 +44,8 @@ why.
 ## 3. Protect tables
 
 ```sql
+select authz.protect('app.documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
+-- or positionally:
 select authz.protect('app.documents', 'document', 'id',     'viewer', 'editor');
 select authz.protect('app.comments',  'document', 'document_id', 'viewer');
 ```
@@ -83,7 +85,40 @@ too. Index the id column, as you would for RLS.
 
 `authz.unbind(table)` removes pg_auth's policies from a table.
 
-## 4. Inspect and debug
+## 4. Grant access by writing rows
+
+An app with no backend changes who may see what by writing rows, through PostgREST like any other
+table: a membership, a share, a team. `authz.relate` declares that a table's rows are relationships
+in the engine (OpenFGA or SpiceDB), and pg_auth delivers each change.
+
+```sql
+-- org:<org_id>#<role>@user:<user_id>, the relation read from the row
+select authz.relate('app.memberships', object_type => 'org', object_column => 'org_id',
+                    relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
+-- document:<doc_id>#shared_with@team:<team>#member, a fixed relation and a team's members
+select authz.relate('app.shares', object_type => 'document', object_column => 'doc_id',
+                    relation => 'shared_with', subject_type => 'team', subject_column => 'team',
+                    subject_relation => 'member');
+-- who may write those rows is pg_auth too: only an org's admins manage its members
+select authz.protect('app.memberships', type => 'org', id => 'org_id', read => 'can_read', write => 'can_manage');
+```
+
+- **Write to relations, read permissions.** The rows write plain relations (`admin`, `member`,
+  `shared_with`); tables are protected by permissions computed from them (`viewer: shared_with or
+  can_read from org`). SpiceDB only takes writes to relations, and the model reads the same in
+  OpenFGA.
+- **When it shows.** A trigger records each insert, delete and relationship-changing update in
+  `authz.outbox` with the write itself, so a rolled-back write never reaches the engine. The
+  sidecar delivers it on commit, and every backend asks again: the change shows within tens of
+  milliseconds (`compare/relationships.exs`).
+- **If the engine is down,** changes wait and are delivered when it is back. A change the engine
+  refuses (a relation the model does not have) is set aside with its reason, and `authz.doctor()`
+  reports it; the changes after it go on.
+- **Needs** the sidecar's `PG_AUTH_DATABASE_URL` (as for the permission index), and a unique key
+  over the columns, so two rows are never one relationship. Rows already in the table are delivered
+  when it is declared; `authz.unrelate(table)` stops delivering.
+
+## 5. Inspect and debug
 
 ```sql
 select * from authz.doctor();         -- the setup checked, with the statement that fixes each problem
@@ -103,7 +138,7 @@ select * from authz.lint();           -- hand-written RLS policies scored agains
 `pg_auth.warn_ms` (off by default) raises a WARNING with the advice when a statement's engine
 time reaches it, for clients that never call `last_statement_advice()`.
 
-## 5. Settings
+## 6. Settings
 
 | setting | default | what it does |
 |---|---|---|
@@ -122,7 +157,7 @@ time reaches it, for clients that never call `last_statement_advice()`.
 The sidecar's own settings (list limit, cache TTL, check concurrency) are in its
 [README](https://github.com/filipecabaco/pg_auth/blob/main/sidecar/query/README.md).
 
-## 6. What it costs
+## 7. What it costs
 
 Per scenario numbers against RLS written the way Supabase recommends are in
 [the benchmarks](benchmarks.md); correctness against the engine is checked by

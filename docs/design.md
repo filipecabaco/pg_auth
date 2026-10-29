@@ -62,6 +62,16 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
   transactions too, while the request settings it read are unchanged, the configuration has not
   changed and a verified token has not expired, so a returning subject costs no query at all
   (§5, configuration).
+- **Relationship tables** (sql/relationships.sql, sidecar `outbox.rs`) are the other direction:
+  rows the application writes that are relationships in the engine. A row trigger records each
+  change in `authz.outbox` in the writing transaction; the sidecar claims the oldest changes (an
+  advisory lock: one sidecar delivers, in order), writes them to the engine idempotently, and
+  removes them by id in one transaction, which also calls `authz.answers_changed()`: a relcache
+  invalidation of `authz.outbox` that makes every backend drop the answers it kept across
+  transactions. Reads then skip the engine's caches (OpenFGA's `HIGHER_CONSISTENCY` for 10 s,
+  SpiceDB at least as fresh as the write's ZedToken), so a grant or a revocation shows within tens
+  of milliseconds of its commit. A change the engine refuses for good is set aside with its reason,
+  never holding up the next ones.
 
 ## 3. Planning: shape the scan with the engine's answer
 

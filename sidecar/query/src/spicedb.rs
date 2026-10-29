@@ -6,8 +6,9 @@
 //! definite permission counts: a caveated relationship evaluated without its context is
 //! conditional, and conditional is denied (fail closed), in lists and checks alike.
 
-use crate::engine::{Listed, causes, send, send_json};
+use crate::engine::{CallError, Change, Listed, causes, send, send_classified, send_json};
 use serde_json::{Value, json};
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -16,6 +17,8 @@ const LOOKUP_PAGE: usize = 1000;
 /// Ids per CheckBulkPermissions call; SpiceDB takes up to 10,000, and groups the items of one
 /// subject, type and permission into a single dispatch.
 pub const MAX_BULK: usize = 1000;
+/// SpiceDB rejects writes of more updates than this (max-relationship-updates-per-call, default).
+pub const MAX_WRITE: usize = 1000;
 
 pub struct SpiceDb {
     client: reqwest::Client,
@@ -24,6 +27,8 @@ pub struct SpiceDb {
     watch_client: reqwest::Client,
     base: String,
     consistency: Value,
+    /// the revision the sidecar's last relationship write produced: reads are at least as fresh
+    written_at: Mutex<Option<Value>>,
 }
 
 /// Whether SpiceDB can hold `id` as an object id: `[a-zA-Z0-9/_|\-=+]`, up to 1024 bytes.
@@ -46,7 +51,7 @@ impl SpiceDb {
             "fully_consistent" => json!({"fully_consistent": true}),
             other => return Err(format!("SPICEDB_CONSISTENCY {other}: expected minimize_latency or fully_consistent")),
         };
-        Ok(Self { client, watch_client, base: url.trim_end_matches('/').to_string(), consistency })
+        Ok(Self { client, watch_client, base: url.trim_end_matches('/').to_string(), consistency, written_at: Mutex::new(None) })
     }
 
     /// LookupResources, paged by its cursor: up to `limit` ids, or TooMany when there are at
@@ -56,7 +61,7 @@ impl SpiceDb {
         if limit == 0 {
             return Ok(Listed::TooMany);
         }
-        let ids = self.lookup(subject, permission, object_type, Some(limit), self.consistency.clone()).await?;
+        let ids = self.lookup(subject, permission, object_type, Some(limit), self.read_consistency()).await?;
         Ok(if ids.len() >= limit { Listed::TooMany } else { Listed::Ids(ids) })
     }
 
@@ -114,7 +119,7 @@ impl SpiceDb {
             .iter()
             .map(|id| json!({"resource": {"object_type": object_type, "object_id": id}, "permission": permission, "subject": subject}))
             .collect();
-        let v = self.post("/v1/permissions/checkbulk", json!({"consistency": self.consistency, "items": items})).await?;
+        let v = self.post("/v1/permissions/checkbulk", json!({"consistency": self.read_consistency(), "items": items})).await?;
         let pairs = field(&v, "pairs").and_then(Value::as_array).ok_or("spicedb checkbulk: no pairs field")?;
         Ok((0..ids.len()).map(|i| pairs.get(i).and_then(|p| field(p, "item")).and_then(permissionship) == Some(2)).collect())
     }
@@ -151,6 +156,46 @@ impl SpiceDb {
             }
             tokio::time::sleep(retry).await;
         }
+    }
+
+    /// One WriteRelationships call (up to MAX_WRITE changes, no relationship twice): TOUCH writes
+    /// whether or not the relationship exists, DELETE whether or not it does.
+    /// The configured consistency, or at least as fresh as the sidecar's last relationship write
+    /// (a ZedToken), so a grant shows at once.
+    fn read_consistency(&self) -> Value {
+        match self.written_at.lock().ok().and_then(|w| w.clone()) {
+            Some(token) if self.consistency.get("fully_consistent").is_none() => json!({"at_least_as_fresh": token}),
+            _ => self.consistency.clone(),
+        }
+    }
+
+    pub async fn write(&self, changes: &[Change]) -> Result<(), CallError> {
+        let updates = changes
+            .iter()
+            .map(|c| {
+                let (object_type, object_id) = c
+                    .object
+                    .split_once(':')
+                    .filter(|(t, i)| !t.is_empty() && !i.is_empty())
+                    .ok_or_else(|| format!("object {:?}: expected type:id", c.object))?;
+                Ok(json!({
+                    "operation": if c.write { "OPERATION_TOUCH" } else { "OPERATION_DELETE" },
+                    "relationship": {
+                        "resource": {"object_type": object_type, "object_id": object_id},
+                        "relation": c.relation,
+                        "subject": subject_reference(&c.subject)?,
+                    }
+                }))
+            })
+            .collect::<Result<Vec<Value>, String>>()
+            .map_err(|message| CallError { permanent: true, message })?;
+        let request = self.client.post(format!("{}/v1/relationships/write", self.base)).json(&json!({"updates": updates}));
+        let text = send_classified(request, "spicedb /v1/relationships/write").await?;
+        let written = serde_json::from_str::<Value>(&text).ok().and_then(|v| field(&v, "written_at").cloned());
+        if let (Some(token), Ok(mut w)) = (written, self.written_at.lock()) {
+            *w = Some(token);
+        }
+        Ok(())
     }
 
     /// The current revision, to watch from: the one ReadSchema read at.

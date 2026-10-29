@@ -126,12 +126,28 @@ Run the sidecar ([`sidecar/query`](sidecar/query/README.md)) next to Postgres, p
 engine. [Getting started](docs/usage.md) covers the rest: subjects from signed tokens, several ways
 to reach a row, inherited folders, attribute rules, inserts checked on the parent.
 
-**Next:** relationship tables, so an app with no backend can grant and revoke access by writing
-rows (a membership, a share) that pg_auth delivers to the engine.
+## Grant access by writing rows
+
+An app with no backend grants and revokes access the way it writes anything else: a row, through
+PostgREST. `authz.relate` declares a table's rows to be relationships in the engine, and pg_auth
+delivers each change; who may write those rows is pg_auth too.
+
+```sql
+select authz.relate('public.memberships', object_type => 'org', object_column => 'org_id',
+                    relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
+select authz.protect('public.memberships', type => 'org', id => 'org_id', read => 'can_read', write => 'can_manage');
+```
+```sql
+insert into memberships values (1, 'bob', 'member');   -- as an org admin: bob sees org 1's documents ~25 ms later
+```
+
+Changes travel through an outbox written in the same transaction, so a rolled-back write never
+reaches the engine, an engine outage only delays them, and a change the engine refuses is set aside
+for `authz.doctor()` to report.
 
 ## Documentation
 
-- [Getting started](docs/usage.md): install, subjects, protecting tables, debugging
+- [Getting started](docs/usage.md): install, subjects, protecting tables, granting by writing rows, debugging
 - [Implementation](docs/design.md): the planner hook, AuthzBatch, the permission index, the protocol, security
 - [Performance](docs/performance.md): what it costs, where it wins and loses, how to tune it
 - [Benchmarks](docs/benchmarks.md): 35 scenarios against hand-tuned RLS

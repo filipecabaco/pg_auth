@@ -198,6 +198,18 @@ planner's filter), `cached` (one generic plan, reused by every principal on one 
 its own transaction) and `per_row` (`pg_auth.plan_lookup = off`: the plan evaluated per row, or
 Cerbos asked per row). On a mismatch it prints the plan. Exits 1 on any mismatch.
 
+## Relationship tables
+
+`relationships.exs` checks that an application with no backend can grant and revoke access by
+writing rows (`authz.relate`), on a real OpenFGA and SpiceDB, with the sidecar's production cache
+settings: an org's admin adds a member, a member is refused admin rights and shares outside their
+org, shares to a user and to a team, a revocation, and the engine paused while a grant is written
+(it waits in the outbox and arrives; an invalid relationship is set aside). Each change is timed
+from its commit to the moment the subject sees it.
+
+    elixir compare/relationships.exs                    # OpenFGA, then SpiceDB
+    elixir compare/relationships.exs --engine spicedb --no-build
+
 ## History
 
 This harness first compared OpenFGA with the authorization engine pg_auth used to embed

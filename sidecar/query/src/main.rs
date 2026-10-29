@@ -31,7 +31,9 @@
 //!   OPENFGA_LIST_DEADLINE_MS               default 3000: OpenFGA's listObjectsDeadline
 //!   PG_AUTH_DATABASE_URL                   optional: enables the permission index (sql/index.sql)
 //!   INDEX_POLL_MS                          default 500: how often OpenFGA's change feed is read
-//!                                          (SpiceDB's Watch streams), and the retry interval
+//!                                          (SpiceDB's Watch streams), and the retry interval; also
+//!                                          how often the relationship tables' outbox is read when
+//!                                          no NOTIFY says it changed
 
 #![forbid(unsafe_code)]
 
@@ -39,6 +41,7 @@ mod cerbos;
 mod engine;
 mod index;
 mod openfga;
+mod outbox;
 mod protocol;
 mod spicedb;
 
@@ -99,6 +102,13 @@ impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
         Cache { ttl, entries: Mutex::new(HashMap::new()) }
     }
 
+    /// Forget every answer.
+    fn clear(&self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.clear();
+        }
+    }
+
     /// A request's cached answer and how many milliseconds it stays fresh.
     fn get(&self, key: &K) -> Option<(V, u64)> {
         let mut entries = self.entries.lock().ok()?;
@@ -156,6 +166,13 @@ struct Checks {
 type CheckAnswers = HashMap<Key, HashMap<String, (Instant, bool)>>;
 
 impl Checks {
+    /// Forget every answer (relationships changed).
+    fn clear(&self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            *entries = (0, CheckAnswers::default());
+        }
+    }
+
     fn get(&self, key: &Key, ids: &[String], ttl: Duration) -> Vec<Option<bool>> {
         let entries = self.entries.lock().ok();
         let answers = entries.as_ref().and_then(|e| e.1.get(key));
@@ -240,6 +257,15 @@ async fn run() -> Result<(), String> {
     });
     if !state.ttl.is_zero() && !state.active.is_zero() {
         tokio::spawn(refresher(state.clone()));
+    }
+    // relationship tables: the changes applications write, delivered to the engine; the answers
+    // cached here are forgotten after each batch, so a grant or a revocation shows at once
+    if let Some(url) = env("PG_AUTH_DATABASE_URL") {
+        let answers = state.clone();
+        outbox::start(url, state.engine.clone(), poll, move || {
+            answers.lists.clear();
+            answers.checks.clear();
+        });
     }
 
     let path = env("PG_AUTH_SOCKET").unwrap_or_else(|| "/tmp/pg_auth.sock".into());

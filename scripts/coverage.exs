@@ -67,7 +67,8 @@ defmodule Coverage do
     for {what, args} <- [
           {"parity against OpenFGA", ["compare/parity.exs", "--seed", "1", "--no-build"]},
           {"parity against SpiceDB", ["compare/parity.exs", "--engine", "spicedb", "--seed", "1", "--no-build"]},
-          {"attribute parity against Cerbos", ["compare/attributes.exs", "--seed", "1", "--no-build"]}
+          {"attribute parity against Cerbos", ["compare/attributes.exs", "--seed", "1", "--no-build"]},
+          {"relationship tables against OpenFGA and SpiceDB", ["compare/relationships.exs", "--no-build"]}
         ] do
       step(what)
       sh!("elixir", args, env: env)

@@ -386,6 +386,14 @@ fn stats() -> TableIterator<
     TableIterator::once((to_i64(s.calls), to_i64(s.ids_checked), ms(s.sidecar), ms(s.engine), to_i64(s.index_lookups)))
 }
 
+/// For the sidecar, after it delivered relationship tables' changes to the engine: every backend
+/// forgets the answers it kept, so the next statement asks again (sql/relationships.sql).
+#[pg_extern(volatile, security_definer)]
+#[search_path(pg_catalog, pg_temp)]
+fn answers_changed() {
+    crate::ffi::invalidate_answers();
+}
+
 /// Which engine the sidecar talks to, or why it cannot be reached.
 #[pg_extern(volatile, security_definer)]
 #[search_path(pg_catalog, pg_temp)]

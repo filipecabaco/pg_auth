@@ -296,6 +296,25 @@ begin
         return next;
     end loop;
 
+    -- relationship tables: changes waiting for the sidecar, and changes the engine refused
+    if exists (select 1 from authz.relationships) then
+        check_name := 'relationship tables';
+        select count(*) filter (where error is not null) as refused, min(at) filter (where error is null) as oldest
+        into t from authz.outbox;
+        if t.refused > 0 then
+            status := 'fail';
+            detail := t.refused || ' changes the engine refused, e.g. ' || (select error from authz.outbox where error is not null order by id limit 1);
+            fix := 'select * from authz.outbox where error is not null;  -- fix the model or the rows, then delete these';
+        elsif t.oldest < now() - interval '1 minute' then
+            status := 'warn';
+            detail := 'changes waiting since ' || t.oldest || ': is a sidecar with PG_AUTH_DATABASE_URL running?';
+            fix := 'start the sidecar with PG_AUTH_DATABASE_URL and grant it authz.outbox_claim, outbox_done, outbox_failed, answers_changed';
+        else
+            status := 'ok'; detail := (select count(*) from authz.relationships) || ' declared, delivered'; fix := null;
+        end if;
+        return next;
+    end if;
+
     -- tables an API role can read with no row level security at all
     for t in select c.oid::regclass as rel
              from pg_class c join pg_namespace n on n.oid = c.relnamespace
@@ -318,3 +337,4 @@ revoke execute on function authz.check(text, text, text) from public;
 revoke execute on function authz.status() from public;
 revoke execute on function authz.why(regclass, text, text, name) from public;
 revoke execute on function authz.doctor() from public;
+revoke execute on function authz.answers_changed() from public;

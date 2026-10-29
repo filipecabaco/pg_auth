@@ -100,7 +100,22 @@ extension then answers from Postgres instead of asking the engine per row.
 
       grant usage on schema authz to pg_auth_sidecar;
       grant execute on function authz.index_begin(text, text, text, text), authz.index_add(bigint, text[]),
-          authz.index_finish(bigint), authz.index_abort(bigint), authz.index_invalidate() to pg_auth_sidecar;
+          authz.index_finish(bigint), authz.index_abort(bigint), authz.index_invalidate(),
+          authz.outbox_claim(int), authz.outbox_done(bigint[]), authz.outbox_failed(bigint, text),
+          authz.answers_changed() to pg_auth_sidecar;
+
+## Relationship tables
+
+With `PG_AUTH_DATABASE_URL` set, the sidecar also delivers relationship tables' changes
+(`authz.relate`, sql/relationships.sql) to OpenFGA or SpiceDB (`src/outbox.rs`). It listens for
+the trigger's `NOTIFY`, claims the oldest changes (one sidecar at a time, an advisory lock), writes
+them (OpenFGA's Write with `on_duplicate`/`on_missing: ignore`, up to 100 tuples a call; SpiceDB's
+WriteRelationships with TOUCH and DELETE, up to 1000), and removes them by id in the same
+transaction, which also calls `authz.answers_changed()` so every backend forgets the answers it kept.
+A failure the engine may get over (unreachable, 5xx, 429) is retried every `INDEX_POLL_MS`; a
+change it refuses for good (another 4xx) is set aside in the outbox with its reason, and the others
+go on. Afterwards reads skip the engine's caches: OpenFGA with `HIGHER_CONSISTENCY` for 10 s,
+SpiceDB at least as fresh as the write's ZedToken. A change shows within tens of milliseconds.
 
 ## Run
 

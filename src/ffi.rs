@@ -253,6 +253,11 @@ thread_local! {
     static CONFIG_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// authz.settings, once known; until then every invalidation counts
     static CONFIG_REL: std::cell::Cell<pg_sys::Oid> = const { std::cell::Cell::new(pg_sys::InvalidOid) };
+    /// Bumped when relationships changed in the engine: a sidecar delivered relationship tables'
+    /// changes and sent a relcache invalidation of authz.outbox (`invalidate_answers`). Answers
+    /// kept across transactions hold while it is unchanged.
+    static ANSWERS_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ANSWERS_REL: std::cell::Cell<pg_sys::Oid> = const { std::cell::Cell::new(pg_sys::InvalidOid) };
 }
 
 /// Listen for configuration changes (once, from _PG_init).
@@ -269,6 +274,11 @@ unsafe extern "C-unwind" fn config_invalidated(_arg: pg_sys::Datum, relid: pg_sy
         // looked up again on next use: the extension may have been dropped and created again
         CONFIG_REL.set(pg_sys::InvalidOid);
     }
+    let answers = ANSWERS_REL.get();
+    if relid == pg_sys::InvalidOid || answers == pg_sys::InvalidOid || relid == answers {
+        ANSWERS_GENERATION.set(ANSWERS_GENERATION.get().wrapping_add(1));
+        ANSWERS_REL.set(pg_sys::InvalidOid);
+    }
 }
 
 /// The configuration's generation, to take before loading it: an invalidation that arrives
@@ -283,6 +293,35 @@ pub fn config_generation() -> u64 {
         CONFIG_REL.set(rel);
     }
     CONFIG_GENERATION.get()
+}
+
+/// authz's relation `name`, if the extension is installed.
+fn authz_relation(name: &CStr) -> pg_sys::Oid {
+    // SAFETY: syscache lookups by name; missing_ok, so no error when authz does not exist
+    unsafe {
+        let ns = pg_sys::get_namespace_oid(c"authz".as_ptr(), true);
+        if ns == pg_sys::InvalidOid { pg_sys::InvalidOid } else { pg_sys::get_relname_relid(name.as_ptr(), ns) }
+    }
+}
+
+/// The engine's answers' generation: kept answers taken under another one are stale.
+pub fn answers_generation() -> u64 {
+    if ANSWERS_REL.get() == pg_sys::InvalidOid {
+        ANSWERS_REL.set(authz_relation(c"outbox"));
+    }
+    ANSWERS_GENERATION.get()
+}
+
+/// Make every backend forget the answers it kept, when this transaction commits (and this
+/// backend now): relationships changed in the engine.
+pub fn invalidate_answers() {
+    answers_generation();
+    let rel = ANSWERS_REL.get();
+    if rel != pg_sys::InvalidOid {
+        // SAFETY: queues a relcache invalidation for an existing relation
+        unsafe { pg_sys::CacheInvalidateRelcacheByRelid(rel) }
+    }
+    ANSWERS_GENERATION.set(ANSWERS_GENERATION.get().wrapping_add(1));
 }
 
 /// Make every backend reload pg_auth's configuration, when this transaction commits (and this

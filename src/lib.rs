@@ -25,10 +25,20 @@ extension_sql_file!("../sql/authz.sql", name = "authz_schema", bootstrap);
 extension_sql_file!(
     "../sql/api.sql",
     name = "authz_api",
-    requires = ["authz_schema", "authz_hierarchy", access::permits, access::check, access::engine, subject::subject_id]
+    requires = [
+        "authz_schema",
+        "authz_hierarchy",
+        "authz_relationships",
+        access::permits,
+        access::check,
+        access::engine,
+        access::answers_changed,
+        subject::subject_id
+    ]
 );
 extension_sql_file!("../sql/lint.sql", name = "authz_lint", requires = ["authz_schema", lint::lint_policies]);
 extension_sql_file!("../sql/index.sql", name = "authz_index", requires = ["authz_schema", subject::subject_id, subject::subject_type]);
+extension_sql_file!("../sql/relationships.sql", name = "authz_relationships", requires = ["authz_schema"]);
 extension_sql_file!(
     "../sql/hierarchy.sql",
     name = "authz_hierarchy",
@@ -617,6 +627,120 @@ mod tests {
         as_subject("wide");
         assert_eq!(count("select count(*) from public.docs where id > 1"), 9);
         reset_role();
+    }
+
+    /// The outbox's changes, in order, as `op object relation subject`.
+    fn outbox() -> Vec<String> {
+        Spi::connect(|client| {
+            client
+                .select("select op || ' ' || object || ' ' || relation || ' ' || subject from authz.outbox order by id", None, &[])
+                .unwrap()
+                .map(|row| row.get::<String>(1).unwrap().unwrap())
+                .collect()
+        })
+    }
+
+    #[pg_test]
+    fn relationship_tables_send_their_changes_to_the_engine() {
+        Spi::run(
+            "create table public.memberships (org_id int not null, user_id text not null, role text, primary key (org_id, user_id));
+             insert into public.memberships values (1, 'anne', 'admin'), (2, 'bob', null);",
+        )
+        .unwrap();
+        // the rows already there are delivered too (bob's has no role: no relationship)
+        let queued = Spi::get_one::<i64>(
+            "select authz.relate('public.memberships', object_type => 'org', object_column => 'org_id',
+                                 subject_type => 'user', subject_column => 'user_id', relation_column => 'role')",
+        )
+        .unwrap();
+        assert_eq!(queued, Some(1));
+        assert_eq!(outbox(), ["write org:1 admin user:anne"]);
+        Spi::run("delete from authz.outbox").unwrap();
+
+        Spi::run(
+            "insert into public.memberships values (3, 'carl', 'member');
+             update public.memberships set role = 'member' where user_id = 'anne';
+             update public.memberships set role = 'member' where user_id = 'anne';  -- no change
+             update public.memberships set role = 'viewer' where user_id = 'bob';   -- from nothing
+             delete from public.memberships where user_id = 'carl';",
+        )
+        .unwrap();
+        assert_eq!(
+            outbox(),
+            [
+                "write org:3 member user:carl",
+                "delete org:1 admin user:anne",
+                "write org:1 member user:anne",
+                "write org:2 viewer user:bob",
+                "delete org:3 member user:carl",
+            ]
+        );
+        Spi::run("delete from authz.outbox").unwrap();
+
+        // a group as the subject, and a fixed relation; a write rolled back never reaches the engine
+        Spi::run(
+            "create table public.team_docs (doc_id int, team text);
+             select authz.relate('public.team_docs', object_type => 'document', object_column => 'doc_id', relation => 'viewer',
+                                 subject_type => 'team', subject_column => 'team', subject_relation => 'member');
+             insert into public.team_docs values (7, 'eng'), (8, null);",
+        )
+        .unwrap();
+        assert!(fails("do $$ begin insert into public.team_docs values (9, 'ops'); raise exception 'rolled back'; end $$"));
+        assert_eq!(outbox(), ["write document:7 viewer team:eng#member"]);
+
+        // no longer delivered once unrelated
+        Spi::run("select authz.unrelate('public.team_docs'); insert into public.team_docs values (10, 'ops')").unwrap();
+        assert_eq!(outbox().len(), 1);
+        assert!(fails(
+            "select authz.relate('public.team_docs', object_type => 'd', object_column => 'nope', subject_type => 't', subject_column => 'team', relation => 'v')"
+        ));
+        assert!(fails(
+            "select authz.relate('public.team_docs', object_type => 'd', object_column => 'doc_id', subject_type => 't', subject_column => 'team')"
+        ));
+    }
+
+    #[pg_test]
+    fn the_outbox_is_delivered_in_order_by_one_sidecar_and_removed_by_id() {
+        Spi::run(
+            "insert into authz.outbox (op, object, relation, subject) values
+                 ('write', 'org:1', 'member', 'user:a'), ('delete', 'org:1', 'member', 'user:a'), ('write', 'org:2', 'member', 'user:b')",
+        )
+        .unwrap();
+        let claimed = Spi::get_one::<String>("select string_agg(op || ' ' || object, ',' order by id) from authz.outbox_claim(2)").unwrap();
+        assert_eq!(claimed.as_deref(), Some("write org:1,delete org:1"));
+        // the claim's lock is this transaction's: another session would get nothing until it ends
+        assert_eq!(Spi::get_one::<bool>("select pg_try_advisory_xact_lock(hashtext('pg_auth.outbox'))").unwrap(), Some(true));
+        let first = Spi::get_one::<i64>("select min(id) from authz.outbox").unwrap().unwrap();
+        assert_eq!(Spi::get_one::<i64>(&format!("select authz.outbox_done(array[{first}, {}])", first + 2)).unwrap(), Some(2));
+        assert_eq!(outbox(), ["delete org:1 member user:a"]);
+        // a change the engine refused for good is set aside: the next claim skips it
+        let refused = Spi::get_one::<i64>("select min(id) from authz.outbox").unwrap().unwrap();
+        Spi::run(&format!("select authz.outbox_failed({refused}, 'openfga write 400: no relation member')")).unwrap();
+        Spi::run("insert into authz.outbox (op, object, relation, subject) values ('write', 'org:3', 'member', 'user:c')").unwrap();
+        let claimed = Spi::get_one::<String>("select string_agg(object, ',') from authz.outbox_claim(10)").unwrap();
+        assert_eq!(claimed.as_deref(), Some("org:3"));
+        // ordinary roles cannot read or change it, nor tell backends to forget their answers
+        Spi::run("create role authz_outsider nologin; set local role authz_outsider").unwrap();
+        assert!(fails("select * from authz.outbox"));
+        assert!(fails("select * from authz.outbox_claim(10)"));
+        assert!(fails("select authz.answers_changed()"));
+        Spi::run("reset role").unwrap();
+        Spi::run("select authz.answers_changed()").unwrap();
+    }
+
+    #[pg_test]
+    fn doctor_reports_refused_relationship_changes() {
+        fixture();
+        Spi::run(
+            "create table public.members (org_id int, user_id text);
+             select authz.relate('public.members', object_type => 'org', object_column => 'org_id', relation => 'member',
+                                 subject_type => 'user', subject_column => 'user_id');
+             insert into authz.outbox (op, object, relation, subject, error) values ('write', 'org:1', 'member', 'user:a', 'no relation member')",
+        )
+        .unwrap();
+        let row =
+            Spi::get_one::<String>("select status || ': ' || detail from authz.doctor() where check_name = 'relationship tables'").unwrap();
+        assert_eq!(row.as_deref(), Some("fail: 1 changes the engine refused, e.g. no relation member"));
     }
 
     #[pg_test]

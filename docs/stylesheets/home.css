@@ -931,6 +931,19 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* the engine row fits the frame: its buttons share the width, the label is left to the group's name */
+  .pa-engines {
+    width: 100%;
+  }
+
+  .pa-engines span {
+    display: none;
+  }
+
+  .pa-engines button {
+    flex: 1;
+  }
+
   .pa-demo__boot {
     flex-wrap: wrap;
   }

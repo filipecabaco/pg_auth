@@ -43,8 +43,9 @@ FORM: chosen sketch, position 2 of the dealt three (a sticky demo beside the sto
 seed:b0da61fe066f10c1, simplified as above. Signature interaction: each step types its statement
 into its pane (step 1 into both); the next step is lit; after step 3 a hint offers a query to try by
 hand. Switching engines reconnects both panes and resets that database's data. Scrolling types
-nothing. Motion grammar: terminal text types; the lit step changes; nothing else moves. Below the
-stage: one rule written both ways, authz.why as a table, the mistakes RLS invites, what to expect
+nothing. Motion grammar: terminal text types; the lit step changes and a played step's
+check fades in; the status pulses while booting; on a narrow screen the hero's boot button scrolls
+to the demo; nothing else moves. Below the stage: one rule written both ways, authz.why as a table, the mistakes RLS invites, what to expect
 (cost as a strip of dots, freshness, the engine down, where it runs, status), engines, install.
 
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance.

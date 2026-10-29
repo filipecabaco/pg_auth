@@ -1271,3 +1271,44 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Set it up with your engine: a tab per engine over its four steps */
+.pa-setups__tabs {
+  display: inline-flex;
+  margin: 0 0 0.6rem;
+  padding: 0.12rem;
+  border: 1px solid var(--pa-line);
+  border-radius: 0.4rem;
+}
+
+.pa-setups__tabs button {
+  padding: 0.35rem 0.75rem;
+  border: 0;
+  border-radius: 0.28rem;
+  background: none;
+  color: var(--pa-muted);
+  font: 600 0.6rem/1 var(--pa-mono);
+  cursor: pointer;
+  transition: background-color 160ms, color 160ms;
+}
+
+.pa-setups__tabs button:hover {
+  color: var(--md-default-fg-color);
+}
+
+.pa-setups__tabs button[aria-selected="true"] {
+  background: var(--md-code-bg-color);
+  color: var(--pa-green);
+}
+
+.md-typeset .pa-setups__note {
+  margin: 0.7rem 0 0;
+  font-size: 0.64rem;
+  line-height: 1.55;
+  color: var(--pa-muted);
+}
+
+.md-typeset .pa-setups pre[hidden],
+.md-typeset .pa-setups p[hidden] {
+  display: none;
+}

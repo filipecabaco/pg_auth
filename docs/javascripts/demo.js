@@ -190,6 +190,7 @@
     root.dataset.engine = engine;
     root.dataset.family = FAMILY[engine];
     root.querySelectorAll("[data-engine-name]").forEach((n) => (n.textContent = NAME[engine]));
+    document.dispatchEvent(new CustomEvent("pa:engine", { detail: engine }));
     engines.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.engine === engine)));
     // another database: its steps start over
     steps.forEach((s) => s.classList.remove("is-done"));
@@ -218,4 +219,16 @@
   );
   engines.forEach((b) => b.addEventListener("click", () => pickEngine(b.dataset.engine)));
   steps.forEach((s) => s.addEventListener("click", () => send(s)));
+})();
+
+// "Set it up with your engine": one tab per engine, following the demo's engine switcher
+(() => {
+  const tabs = [...document.querySelectorAll("[data-setup]")];
+  if (!tabs.length) return;
+  const show = (engine) => {
+    tabs.forEach((t) => t.setAttribute("aria-selected", String(t.dataset.setup === engine)));
+    document.querySelectorAll("[data-setup-for]").forEach((el) => (el.hidden = el.dataset.setupFor !== engine));
+  };
+  tabs.forEach((t) => t.addEventListener("click", () => show(t.dataset.setup)));
+  document.addEventListener("pa:engine", (e) => show(e.detail));
 })();

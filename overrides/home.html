@@ -439,23 +439,86 @@ resourcePolicy:
 
 <section class="pa-section pa-install" id="install">
   <div>
-    <h2 class="pa-h2">Try it on your own Postgres</h2>
+    <h2 class="pa-h2">Set it up with your engine</h2>
     <p class="pa-sub">
-      Build the extension, preload it, run the sidecar next to Postgres pointed at your engine, and
-      protect a table.
+      Four steps: preload pg_auth, run the engine with your rules in its own language, run the
+      sidecar next to Postgres pointed at it, and protect a table. Rules you already have stay as they
+      are.
     </p>
     <a class="pa-btn pa-btn--primary" href="{{ 'usage/' | url }}">Getting started</a>
   </div>
-<pre class="pa-code"><code><span class="c"># the pinned toolchain, then build into the active Postgres</span>
-mise install
-cargo pgrx install --release --pg-config "$(which pg_config)"
+  <div class="pa-setups">
+    <div class="pa-setups__tabs" role="tablist" aria-label="Engine">
+      <button type="button" role="tab" data-setup="openfga" aria-selected="true">OpenFGA</button>
+      <button type="button" role="tab" data-setup="spicedb" aria-selected="false">SpiceDB</button>
+      <button type="button" role="tab" data-setup="cerbos" aria-selected="false">Cerbos</button>
+    </div>
+<pre class="pa-code" data-setup-for="openfga"><code><span class="c"># 1. pg_auth, built into your Postgres (15 to 18) and preloaded</span>
+mise install && cargo pgrx install --release --pg-config "$(which pg_config)"
+<span class="c">#    postgresql.conf: shared_preload_libraries = 'pg_auth', then restart</span>
 
-<span class="c">-- postgresql.conf: shared_preload_libraries = 'pg_auth'</span>
+<span class="c"># 2. OpenFGA with your model</span>
+<span class="c">#    (in memory to try it; its Postgres datastore in production)</span>
+docker run -d -p 8080:8080 openfga/openfga run
+fga store create --name app                       <span class="c"># prints the store id</span>
+fga model write --store-id "$STORE" --file model.fga
+
+<span class="c"># 3. the sidecar, next to Postgres</span>
+OPENFGA_URL=http://localhost:8080 OPENFGA_STORE_ID="$STORE" \
+PG_AUTH_DATABASE_URL=postgres://pg_auth_sidecar@/app?host=/run/postgresql \
+PG_AUTH_SOCKET=/run/pg_auth/authz.sock pg-auth-sidecar
+
+<span class="c">-- 4. in Postgres, as a superuser</span>
 create extension pg_auth;
-alter system set pg_auth.sidecar_socket = '/run/pg_auth/default.sock';
+alter system set pg_auth.sidecar_socket = '/run/pg_auth/authz.sock';
 select pg_reload_conf();
-select authz.configure(subject => 'jwt');
+select authz.configure(subject => 'jwt');         <span class="c">-- the token's sub</span>
 select authz.protect('documents', type => 'document',
   id => 'id', read => 'viewer', write => 'editor');</code></pre>
+<pre class="pa-code" data-setup-for="spicedb" hidden><code><span class="c"># 1. pg_auth, built into your Postgres (15 to 18) and preloaded</span>
+mise install && cargo pgrx install --release --pg-config "$(which pg_config)"
+<span class="c">#    postgresql.conf: shared_preload_libraries = 'pg_auth', then restart</span>
+
+<span class="c"># 2. SpiceDB with your schema, its HTTP gateway on</span>
+<span class="c">#    (in memory to try it; a real datastore in production)</span>
+spicedb serve --grpc-preshared-key "$KEY" --http-enabled
+zed context set local localhost:50051 "$KEY" --insecure
+zed schema write schema.zed
+
+<span class="c"># 3. the sidecar, next to Postgres</span>
+SPICEDB_URL=http://localhost:8443 SPICEDB_TOKEN="$KEY" \
+PG_AUTH_DATABASE_URL=postgres://pg_auth_sidecar@/app?host=/run/postgresql \
+PG_AUTH_SOCKET=/run/pg_auth/authz.sock pg-auth-sidecar
+
+<span class="c">-- 4. in Postgres, as a superuser</span>
+create extension pg_auth;
+alter system set pg_auth.sidecar_socket = '/run/pg_auth/authz.sock';
+select pg_reload_conf();
+select authz.configure(subject => 'jwt');         <span class="c">-- the token's sub</span>
+select authz.protect('documents', type => 'document',
+  id => 'id', read => 'viewer', write => 'editor');</code></pre>
+<pre class="pa-code" data-setup-for="cerbos" hidden><code><span class="c"># 1. pg_auth, built into your Postgres (15 to 18) and preloaded</span>
+mise install && cargo pgrx install --release --pg-config "$(which pg_config)"
+<span class="c">#    postgresql.conf: shared_preload_libraries = 'pg_auth', then restart</span>
+
+<span class="c"># 2. Cerbos with your policies (a folder of YAML)</span>
+docker run -d -p 3592:3592 -v "$PWD/policies:/policies" ghcr.io/cerbos/cerbos
+
+<span class="c"># 3. the sidecar, next to Postgres</span>
+CERBOS_URL=http://localhost:3592 \
+PG_AUTH_SOCKET=/run/pg_auth/authz.sock pg-auth-sidecar
+
+<span class="c">-- 4. in Postgres, as a superuser</span>
+create extension pg_auth;
+alter system set pg_auth.sidecar_socket = '/run/pg_auth/authz.sock';
+select pg_reload_conf();
+select authz.configure(subject => 'jwt');         <span class="c">-- sub, roles from the role claim</span>
+select authz.protect('documents', type => 'document',
+  id => 'id', read => 'read', write => 'update',
+  attributes => array['owner', 'status']);        <span class="c">-- the columns its rules read</span></code></pre>
+    <p class="pa-setups__note" data-setup-for="openfga">Relationship tables (<code>authz.relate</code>) need the sidecar's <code>PG_AUTH_DATABASE_URL</code>; without them, write tuples to OpenFGA as you do today.</p>
+    <p class="pa-setups__note" data-setup-for="spicedb" hidden>Relationship tables (<code>authz.relate</code>) need the sidecar's <code>PG_AUTH_DATABASE_URL</code>; without them, write relationships to SpiceDB as you do today.</p>
+    <p class="pa-setups__note" data-setup-for="cerbos" hidden>Cerbos decides on the row's fields and the user's roles, so there are no relationships to write: the policy's conditions become a filter on the columns you list.</p>
+  </div>
 </section>
 {% endblock %}

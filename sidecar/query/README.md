@@ -151,7 +151,7 @@ the socket.
 | `CHECK_CONCURRENCY` | 8 | engine check calls in flight at once for one check request (OpenFGA: a 1000-id batch is 20 calls; SpiceDB: one) |
 | `PG_AUTH_DATABASE_URL` | none | enables the permission index (see above), e.g. `postgres://pg_auth_sidecar@/app?host=/run/postgresql` |
 | `INDEX_POLL_MS` | 500 | how often OpenFGA's change feed is read; the retry interval for both |
-| `REQUEST_LOG` | off | `1` prints one line per request on stderr: what Postgres asked, the answer (a plan as the SQL filter it becomes), and whether the engine or the cache answered. For watching a setup, as the in-browser demo's log pane does |
+| `REQUEST_LOG` | off | `1` prints one line per request on stderr: what Postgres asked, the answer (a plan as the SQL filter it becomes), and whether the engine or the cache answered. For watching a setup |
 
 Run it as a user in the Postgres OS user's group so the socket (0660) is reachable only by
 Postgres. The code forbids `unsafe`.

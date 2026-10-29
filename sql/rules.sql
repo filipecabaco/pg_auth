@@ -62,15 +62,20 @@ language sql stable as $$
     order by r.engine, r.name, r.version desc
 $$;
 
--- For the sidecar: the latest version of each of `p_engine`'s rules not pushed yet, to the one
--- sidecar pushing (an advisory lock held until the caller's transaction ends).
-create function authz.rules_pending(p_engine text) returns table (name text, version int, body text)
+-- For the sidecar: the latest version of each of `p_engine`'s rules not pushed yet, with the one
+-- the engine runs now (`previous`: Cerbos stores policies it cannot compile, and the sidecar puts
+-- that one back), to the one sidecar pushing (an advisory lock held until the transaction ends).
+create function authz.rules_pending(p_engine text) returns table (name text, version int, body text, previous text)
 language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
 begin
     if not pg_try_advisory_xact_lock(hashtext('pg_auth.rules')) then
         return;
     end if;
-    return query select l.name, l.version, l.body from authz.rules(p_engine) l where l.pushed_at is null and l.error is null;
+    return query
+    select l.name, l.version, l.body,
+           (select r.body from authz.rules r
+            where r.engine = p_engine and r.name = l.name and r.pushed_at is not null order by r.version desc limit 1)
+    from authz.rules(p_engine) l where l.pushed_at is null and l.error is null;
 end
 $$;
 
@@ -86,3 +91,111 @@ revoke execute on function authz.set_rules(text, text, text) from public;
 revoke execute on function authz.rules(text) from public;
 revoke execute on function authz.rules_pending(text) from public;
 revoke execute on function authz.rules_pushed(text, text, int, text) from public;
+
+-- What the setup names that the stored rules do not have: a protected table's type, permission or
+-- action; a relationship table's type, a relation that is computed rather than written, a subject
+-- its relation does not take. Checked against the latest version stored, pushed or not, when the
+-- rules of one engine are stored (several: which one a table is asked of is the sidecar's to say).
+-- Parts read from a row's columns are the write's to check (`relations => array[...]`).
+create function authz.rules_problems() returns table (item text, problem text)
+language plpgsql stable as $$
+declare
+    eng text;
+    rules text;
+    names jsonb;
+begin
+    select min(r.engine) into eng from authz.rules() r having count(distinct r.engine) = 1;
+    if eng is null then
+        return;
+    end if;
+    rules := case eng when 'openfga' then 'the openfga model' when 'spicedb' then 'the spicedb schema' else 'the cerbos policies' end;
+    select jsonb_agg(to_jsonb(n)) into names from authz.rules() r, authz.rules_names(r.engine, r.body) n;
+    if jsonb_path_exists(names, '$[*] ? (@.kind == "unreadable")') then
+        return;  -- the engine says what is wrong with them (authz.doctor)
+    end if;
+
+    return query
+    with n as materialized (
+        select * from jsonb_to_recordset(names) as x(object_type text, name text, kind text, subjects text[])
+    ), uses as (
+        -- protected tables: each permission (Cerbos: action) on the row's type, and on the parent's for inserts
+        select b.rel::text || case when b.name <> 'pg_auth' then ' (' || b.name || ')' else '' end as item, u.t, u.p
+        from authz.bindings b,
+             lateral (values (b.object_type, null), (b.object_type, b.permission), (b.object_type, b.write_permission),
+                             (b.object_type, b.update_permission), (b.object_type, b.delete_permission),
+                             (b.insert_object_type, null), (b.insert_object_type, b.insert_permission)) u(t, p)
+        where u.t is not null
+    ), decl as (
+        select r.rel::text || case when r.name <> 'pg_auth' then ' (' || r.name || ')' else '' end as item, r.*
+        from authz.relationships r
+        where eng <> 'cerbos'
+    ), types as (
+        -- relationship tables: their types, and each relation a row may write with the subject it names
+        select d.item, t from decl d, lateral (values (d.object_type), (d.subject_type)) v(t) where t is not null
+    ), writes as (
+        select d.item, d.object_type as t, u.wr as w,
+               case when d.subject_type is not null and d.subject_relation_column is null
+                    then d.subject_type || case when d.subject_id = '*' then ':*' else '' end || coalesce('#' || d.subject_relation, '') end as subject
+        from decl d, unnest(case when d.relation is not null then array[d.relation] else d.relations end) as u(wr)
+        where d.object_type is not null and exists (select 1 from n where n.object_type = d.object_type)
+    ), lists as (
+        select n.object_type, string_agg(distinct n.name, ', ') filter (where n.kind <> 'type') as defined,
+               string_agg(distinct n.name, ', ') filter (where n.kind = 'relation') as relations
+        from n group by n.object_type
+    ), all_types as (
+        select string_agg(distinct n.object_type, ', ') as types from n
+    )
+    select distinct u.item,
+           case when u.p is null and eng = 'cerbos' then format('%s have no resource policy for %s', rules, u.t)
+                when u.p is null then format('%s has no type %s (its types: %s)', rules, u.t, (select types from all_types))
+                when eng = 'cerbos' then format('the cerbos policies for %s have no action %s (they have: %s)', u.t, u.p,
+                                                coalesce((select defined from lists l where l.object_type = u.t), 'none'))
+                else format('%s has no %s in %s (it has: %s)', u.t, u.p, rules, coalesce((select defined from lists l where l.object_type = u.t), 'none')) end
+    from uses u
+    where case when u.p is null then not exists (select 1 from n where n.object_type = u.t)
+               else exists (select 1 from n where n.object_type = u.t)
+                    and not exists (select 1 from n
+                                    where n.object_type = u.t and n.kind <> 'type'
+                                      and (n.name = u.p or (eng = 'cerbos' and (n.name = '*' or (n.name like '%:*' and starts_with(u.p, left(n.name, -1))))))) end
+    union
+    select t.item, format('%s has no type %s (its types: %s)', rules, t.t, (select types from all_types))
+    from types t
+    where not exists (select 1 from n where n.object_type = t.t)
+    union
+    select w.item,
+           case when x.name is null then format('%s has no relation %s in %s (it has: %s)', w.t, w.w, rules,
+                                                coalesce((select relations from lists l where l.object_type = w.t), 'none'))
+                when x.kind = 'permission' then format('%s#%s is computed in %s: rows write the relations it assigns (%s)', w.t, w.w, rules,
+                                                       coalesce((select relations from lists l where l.object_type = w.t), 'none'))
+                else format('%s#%s does not take %s in %s (it takes: %s)', w.t, w.w, w.subject, rules, array_to_string(x.subjects, ', ')) end
+    from writes w
+    left join n x on x.object_type = w.t and x.name = w.w and x.kind <> 'type'
+    where x.name is null or x.kind = 'permission' or (w.subject is not null and not w.subject = any(x.subjects));
+end
+$$;
+
+-- At commit: the setup and the rules change together in a migration, and are checked as one.
+create function authz.rules_check() returns trigger
+language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+declare
+    problems text;
+begin
+    select string_agg(p.item || ': ' || p.problem, E'\n' order by p.item, p.problem) into problems from authz.rules_problems() p;
+    if problems is not null then
+        raise exception 'the setup names what the rules stored with authz.set_rules do not have:%', E'\n' || problems
+            using errcode = 'check_violation',
+                  hint = 'correct the setup, or store rules that have them: both are checked when the transaction commits, so they can change together';
+    end if;
+    return null;
+end
+$$;
+
+create constraint trigger rules_match after insert or update on authz.bindings
+    deferrable initially deferred for each row execute function authz.rules_check();
+create constraint trigger rules_match after insert or update on authz.relationships
+    deferrable initially deferred for each row execute function authz.rules_check();
+create constraint trigger rules_match after insert on authz.rules
+    deferrable initially deferred for each row execute function authz.rules_check();
+
+revoke execute on function authz.rules_problems() from public;
+revoke execute on function authz.rules_check() from public;

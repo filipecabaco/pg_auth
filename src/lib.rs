@@ -13,6 +13,7 @@ mod ffi;
 mod jwt;
 mod lint;
 mod nodetree;
+mod rules;
 #[allow(unsafe_code)]
 mod pg;
 mod rewrite;
@@ -38,7 +39,7 @@ extension_sql_file!(
     ]
 );
 extension_sql_file!("../sql/setup.sql", name = "authz_setup", requires = ["authz_api"]);
-extension_sql_file!("../sql/rules.sql", name = "authz_rules", requires = ["authz_schema"]);
+extension_sql_file!("../sql/rules.sql", name = "authz_rules", requires = ["authz_schema", "authz_relationships", rules::rules_names]);
 extension_sql_file!("../sql/lint.sql", name = "authz_lint", requires = ["authz_schema", lint::lint_policies]);
 extension_sql_file!("../sql/index.sql", name = "authz_index", requires = ["authz_schema", subject::subject_id, subject::subject_type]);
 extension_sql_file!("../sql/relationships.sql", name = "authz_relationships", requires = ["authz_schema"]);
@@ -831,6 +832,90 @@ mod tests {
             .unwrap()
             .unwrap_or_default();
         assert!(doctor.starts_with("fail") && doctor.contains("cerbos resource/doc version 1 (invalid policy)"), "{doctor}");
+    }
+
+    /// The error `sql` meets when its transaction commits (deferred checks run at once), if any.
+    fn error_at_commit(sql: &str) -> Option<String> {
+        Spi::run(
+            "do $d$ begin if to_regprocedure('pg_temp.error_at_commit(text)') is null then
+                 create function pg_temp.error_at_commit(q text) returns text language plpgsql as $f$
+                 begin execute q; set constraints all immediate; set constraints all deferred; return null;
+                 exception when others then return sqlerrm; end $f$;
+             end if; end $d$",
+        )
+        .unwrap();
+        Spi::get_one_with_args::<String>("select pg_temp.error_at_commit($1)", &[sql.into()]).unwrap()
+    }
+
+    #[pg_test]
+    fn a_setup_naming_what_the_stored_rules_lack_fails_at_commit() {
+        Spi::run(
+            "create table public.rdocs (id int primary key, org_id int not null);
+             create table public.rmembers (org_id int, user_id text, role text, primary key (org_id, user_id));
+             select authz.set_rules('openfga', 'model', 'model\n  schema 1.1\ntype user\ntype org\n  relations\n    define admin: [user]\n    \
+                                    define member: [user]\n    define can_read: member or admin\ntype document\n  relations\n    \
+                                    define org: [org]\n    define viewer: can_read from org\n')",
+        )
+        .unwrap();
+        let fails_with = |sql: &str, expected: &str| {
+            let error = error_at_commit(sql).unwrap_or_default();
+            assert!(error.contains(expected), "{sql}\n  expected: {expected}\n  got: {error}");
+        };
+        fails_with("select authz.protect('public.rdocs', type => 'document', id => 'id', read => 'vewer')",
+                   "public.rdocs: document has no vewer in the openfga model (it has: org, viewer)");
+        fails_with("select authz.protect('public.rdocs', type => 'doc', id => 'id', read => 'viewer')",
+                   "public.rdocs: the openfga model has no type doc (its types: document, org, user)");
+        fails_with("select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation_column => 'role',
+                                        relations => array['admin', 'owner'], subject_type => 'user', subject_column => 'user_id')",
+                   "org has no relation owner in the openfga model (it has: admin, member)");
+        fails_with("select authz.relate('public.rdocs', object_type => 'document', object_column => 'id', relation => 'viewer',
+                                        subject_type => 'org', subject_column => 'org_id')",
+                   "document#viewer is computed in the openfga model: rows write the relations it assigns (org)");
+        fails_with("select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation => 'member',
+                                        subject_type => 'user', subject_id => '*')",
+                   "org#member does not take user:* in the openfga model (it takes: user)");
+        // what the model has commits
+        let valid = "select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation_column => 'role',
+                                         relations => array['admin', 'member'], subject_type => 'user', subject_column => 'user_id'),
+                            authz.relate('public.rdocs', object_type => 'document', object_column => 'id', relation => 'org',
+                                         subject_type => 'org', subject_column => 'org_id'),
+                            authz.protect('public.rdocs', type => 'document', id => 'id', read => 'viewer')";
+        assert_eq!(error_at_commit(valid), None);
+        // a new model dropping what the setup uses fails; changed together with the setup it commits
+        let without_viewer = "model\n  schema 1.1\ntype user\ntype org\n  relations\n    define admin: [user]\n    define member: [user]\n    \
+                              define can_read: member or admin\ntype document\n  relations\n    define org: [org]\n    define reader: can_read from org\n";
+        fails_with(&format!("select authz.set_rules('openfga', 'model', {})", quote(without_viewer)), "document has no viewer in the openfga model");
+        assert_eq!(
+            error_at_commit(&format!(
+                "select authz.set_rules('openfga', 'model', {}), authz.protect('public.rdocs', type => 'document', id => 'id', read => 'reader')",
+                quote(without_viewer)
+            )),
+            None
+        );
+        let doctor = Spi::get_one::<String>("select status || ': ' || detail from authz.doctor() where check_name = 'setup matches rules'").unwrap();
+        assert_eq!(doctor.as_deref(), Some("ok: every protected and relationship table names what the stored rules have"));
+    }
+
+    #[pg_test]
+    fn a_protected_table_needs_a_cerbos_policy_with_its_actions() {
+        Spi::run(
+            "create table public.expenses (id int primary key, owner text);
+             select authz.set_rules('cerbos', 'resource/expense', 'apiVersion: api.cerbos.dev/v1\nresourcePolicy:\n  version: default\n  \
+                                    resource: expense\n  rules:\n    - actions: [\"view\", \"approve:*\"]\n      effect: EFFECT_ALLOW\n      roles: [\"user\"]\n')",
+        )
+        .unwrap();
+        // approve:* covers approve:big
+        assert_eq!(error_at_commit("select authz.protect('public.expenses', type => 'expense', id => 'id', read => 'view', write => 'approve:big')"), None);
+        assert!(error_at_commit("select authz.protect('public.expenses', type => 'expense', id => 'id', read => 'view', on_delete => 'delete')")
+            .unwrap_or_default()
+            .contains("the cerbos policies for expense have no action delete (they have: approve:*, view)"));
+        assert!(error_at_commit("select authz.protect('public.expenses', type => 'invoice', id => 'id', read => 'view')")
+            .unwrap_or_default()
+            .contains("the cerbos policies have no resource policy for invoice"));
+    }
+
+    fn quote(text: &str) -> String {
+        format!("'{}'", text.replace('\'', "''"))
     }
 
     #[pg_test]

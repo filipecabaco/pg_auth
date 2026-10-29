@@ -20,7 +20,7 @@ defmodule Rules do
   @bare "model\n  schema 1.1\ntype user\n"
 
   # members of an org read its documents (version 1), then only its admins (version 2), then rules
-  # the engine refuses (version 3)
+  # the engine refuses (version 3: what pg_auth checks is there, what only the engine checks is not)
   @rules %{
     "openfga" => [
       """
@@ -51,8 +51,21 @@ defmodule Rules do
           define org: [org]
           define viewer: can_read from org
       """,
-      # a relation the type does not have
-      "model\n  schema 1.1\ntype user\ntype document\n  relations\n    define viewer: nobody\n"
+      # names what the setup uses, but computes from a relation the type does not have
+      """
+      model
+        schema 1.1
+      type user
+      type org
+        relations
+          define admin: [user]
+          define member: [user]
+          define can_read: admin or ghost
+      type document
+        relations
+          define org: [org]
+          define viewer: can_read from org
+      """
     ],
     "spicedb" => [
       """
@@ -79,7 +92,18 @@ defmodule Rules do
         permission viewer = org->can_read
       }
       """,
-      "definition document { permission viewer = nobody }"
+      """
+      definition user {}
+      definition org {
+        relation admin: user
+        relation member: user
+        permission can_read = admin + ghost
+      }
+      definition document {
+        relation org: org
+        permission viewer = org->can_read
+      }
+      """
     ],
     "cerbos" => [
       """
@@ -111,8 +135,20 @@ defmodule Rules do
                     - expr: request.resource.attr.owner == request.principal.id
                     - expr: request.resource.attr.status == "published"
       """,
-      # not a policy Cerbos takes
-      "apiVersion: api.cerbos.dev/v1\nresourcePolicy:\n  resource: document\n  rules: nonsense\n"
+      # a condition that does not compile
+      """
+      apiVersion: api.cerbos.dev/v1
+      resourcePolicy:
+        version: default
+        resource: document
+        rules:
+          - actions: ["view"]
+            effect: EFFECT_ALLOW
+            roles: ["user"]
+            condition:
+              match:
+                expr: request.resource.attr.owner ==
+      """
     ]
   }
 
@@ -181,6 +217,10 @@ defmodule Rules do
         3 = set_rules(conn, engine, name, refused)
         after_v2 = if engine == "cerbos", do: [1, 2, 3], else: []
         eventually(fn -> refused?(conn, engine) end) and doctor_fails?(conn) and visible(conn, "anne") == after_v2
+      end),
+      check("a setup naming what the rules lack fails at commit", fn ->
+        sql = "select authz.protect('app.documents', type => 'document', id => 'id', read => 'vewer')"
+        match?({:error, %Postgrex.Error{postgres: %{code: :check_violation, message: "the setup names what the rules" <> _}}}, Postgrex.query(conn, sql, []))
       end),
       check("every version is kept, the refused one with the engine's reason", fn ->
         Postgrex.query!(conn, "select count(*), count(error) from authz.rules where engine = $1", [engine]).rows == [[3, 1]]

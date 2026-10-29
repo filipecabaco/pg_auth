@@ -126,7 +126,9 @@ pg_auth_rules`, takes the latest version of each not yet pushed (one sidecar at 
 advisory lock), and writes them: OpenFGA's WriteAuthorizationModel (the DSL converted to its JSON
 by `src/openfga_dsl.rs`; later requests name the new model), SpiceDB's WriteSchema, Cerbos's Admin
 API (`PUT /admin/policy`, the YAML sent as JSON, with `CERBOS_ADMIN_USER` and
-`CERBOS_ADMIN_PASSWORD`). The result is recorded beside each version in the same transaction,
+`CERBOS_ADMIN_PASSWORD`; Cerbos stores policies that do not compile and goes on with the ones
+before, so InspectPolicies is asked after, and when they do not compile the versions before are
+stored again, a new policy disabled, and the push refused). The result is recorded beside each version in the same transaction,
 which calls `authz.answers_changed()` and clears the sidecar's own caches when the engine took
 them. Rules the engine refuses are recorded with its reason and not retried; an unreachable engine
 is retried every `INDEX_POLL_MS`.

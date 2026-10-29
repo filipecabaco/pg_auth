@@ -404,6 +404,23 @@ begin
             detail := (select string_agg(format('%s %s version %s', r.engine, r.name, r.version), ', ') from authz.rules() r) || ': in force';
         end if;
         return next;
+
+        -- what the setup names, against those rules (also checked at every commit that changes either)
+        check_name := 'setup matches rules';
+        if (select count(distinct r.engine) from authz.rules r) > 1 then
+            status := 'warn';
+            detail := 'rules are stored for ' || (select string_agg(distinct r.engine, ', ') from authz.rules r)
+                      || ': the setup is checked against one engine''s only';
+            fix := 'keep the rules of the engine this database uses';
+        elsif exists (select 1 from authz.rules_problems()) then
+            status := 'fail';
+            detail := (select string_agg(p.item || ': ' || p.problem, '; ' order by p.item) from authz.rules_problems() p);
+            fix := 'correct the setup, or store rules that have what it names';
+        else
+            status := 'ok'; fix := null;
+            detail := 'every protected and relationship table names what the stored rules have';
+        end if;
+        return next;
     end if;
 
     -- tables an API role can read with no row level security at all

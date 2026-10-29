@@ -170,6 +170,8 @@ teams that want their rules versioned with their schema. In order:
    whether the engine took it, and `authz.doctor()` fails on rules it refused, which keeps the
    version before. Teams that manage rules in the engine keep doing so: C is optional, and when it
    is used Postgres is the source of truth. `compare/rules.exs` checks it on the three engines.
+   The setup is checked against the stored rules when a transaction commits: a type, permission,
+   relation, subject or Cerbos action they do not have fails it, naming what they have.
 5. **Context, last and per engine:** expiring relationships first (SpiceDB takes an expiry on write,
    and a row column can supply it), then request-level context (time, client IP from a setting) for
    OpenFGA conditions and SpiceDB caveats, then per-row context, which BatchCheck accepts but

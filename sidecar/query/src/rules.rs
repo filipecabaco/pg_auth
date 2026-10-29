@@ -8,7 +8,7 @@
 //! new rules may change any of them. It wakes on authz.set_rules's NOTIFY, and every `poll` in case
 //! one was missed. Optional: enabled by PG_AUTH_DATABASE_URL.
 
-use crate::engine::Engine;
+use crate::engine::{Engine, Rule};
 use futures_util::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,12 +72,12 @@ async fn push(url: &str, engine: &Engine, poll: Duration, pushed: &(impl Fn() + 
 async fn once(client: &mut Client, engine: &Engine) -> Result<bool, String> {
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
     let tx = client.transaction().await.map_err(pg)?;
-    let rows = tx.query("select name, version, body from authz.rules_pending($1)", &[&engine.name()]).await.map_err(pg)?;
+    let rows = tx.query("select name, version, body, previous from authz.rules_pending($1)", &[&engine.name()]).await.map_err(pg)?;
     if rows.is_empty() {
         tx.commit().await.map_err(pg)?;
         return Ok(false);
     }
-    let rules: Vec<(String, String)> = rows.iter().map(|r| (r.get(0), r.get(2))).collect();
+    let rules: Vec<Rule> = rows.iter().map(|r| Rule { name: r.get(0), body: r.get(2), previous: r.get(3) }).collect();
     let versions: Vec<(String, i32)> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
     let error = match engine.push_rules(&rules).await {
         Ok(()) => None,

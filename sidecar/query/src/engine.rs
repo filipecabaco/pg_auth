@@ -157,26 +157,26 @@ impl Engine {
         Ok(())
     }
 
-    /// Make the engine run these rules (name, text), kept in Postgres (authz.set_rules): OpenFGA's
+    /// Make the engine run these rules, kept in Postgres (authz.set_rules): OpenFGA's
     /// model (its DSL, converted to the JSON its API takes; JSON as is), SpiceDB's schema, or
     /// Cerbos's policies. Rules the engine (or the conversion) refuses are a permanent error.
-    pub async fn push_rules(&self, rules: &[(String, String)]) -> Result<(), CallError> {
+    pub async fn push_rules(&self, rules: &[Rule]) -> Result<(), CallError> {
         let permanent = |message: String| CallError { permanent: true, message };
         match self {
             Engine::OpenFga(e) => {
-                let [(_, text)] = rules else { return Err(permanent("openfga keeps one model".into())) };
-                let model = if text.trim_start().starts_with('{') {
-                    serde_json::from_str(text).map_err(|m| permanent(format!("openfga model: {m}")))?
+                let [rule] = rules else { return Err(permanent("openfga keeps one model".into())) };
+                let model = if rule.body.trim_start().starts_with('{') {
+                    serde_json::from_str(&rule.body).map_err(|m| permanent(format!("openfga model: {m}")))?
                 } else {
-                    crate::openfga_dsl::to_json(text).map_err(|m| permanent(format!("openfga model: {m}")))?
+                    crate::openfga_dsl::to_json(&rule.body).map_err(|m| permanent(format!("openfga model: {m}")))?
                 };
                 e.write_model(&model).await
             }
             Engine::SpiceDb(e) => {
-                let [(_, schema)] = rules else { return Err(permanent("spicedb keeps one schema".into())) };
-                e.write_schema(schema).await
+                let [rule] = rules else { return Err(permanent("spicedb keeps one schema".into())) };
+                e.write_schema(&rule.body).await
             }
-            Engine::Cerbos(e) => e.put_policies(&rules.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>()).await,
+            Engine::Cerbos(e) => e.put_policies(rules).await,
         }
     }
 
@@ -207,6 +207,16 @@ impl Engine {
 /// server's message (or the start of the body when it is not JSON, a proxy's error page say).
 pub async fn send(request: reqwest::RequestBuilder, what: &str) -> Result<String, String> {
     send_classified(request, what).await.map_err(|e| e.message)
+}
+
+/// Rules kept in Postgres (authz.set_rules): a name (`model`, `resource/expense`), the version
+/// to push, and the version the engine runs now, if any (put back when Cerbos cannot compile the
+/// new one).
+#[derive(Debug, Default)]
+pub struct Rule {
+    pub name: String,
+    pub body: String,
+    pub previous: Option<String>,
 }
 
 /// A failed call: `permanent` when the engine refused the request for good (a 4xx other than a
@@ -269,6 +279,10 @@ mod tests {
         (subject.into(), object_type.into(), permission.into())
     }
 
+    fn rule(name: &str, body: &str) -> Rule {
+        Rule { name: name.into(), body: body.into(), previous: None }
+    }
+
     fn openfga(server: &MockServer) -> Engine {
         let e = OpenFga::new(
             &server.uri(),
@@ -305,11 +319,11 @@ mod tests {
             .mount(&server)
             .await;
         let e = openfga(&server);
-        e.push_rules(&[("model".into(), "model\n  schema 1.1\ntype user\n".into())]).await.unwrap();
+        e.push_rules(&[rule("model", "model\n  schema 1.1\ntype user\n")]).await.unwrap();
         e.list(&key("user:anne", "doc", "viewer"), 10).await.unwrap();
         // a model with a condition is refused for good, without asking OpenFGA
         let refused =
-            e.push_rules(&[("model".into(), "model\n  schema 1.1\ntype doc\n  relations\n    define v: [user with c]\n".into())]).await;
+            e.push_rules(&[rule("model", "model\n  schema 1.1\ntype doc\n  relations\n    define v: [user with c]\n")]).await;
         assert!(refused.as_ref().is_err_and(|e| e.permanent && e.message.contains("conditions")), "{:?}", refused.err().map(|e| e.message));
 
         // SpiceDB: the schema's text
@@ -321,7 +335,7 @@ mod tests {
             .mount(&server)
             .await;
         let e = Engine::SpiceDb(crate::spicedb::SpiceDb::new(&server.uri(), "key", None, Duration::from_secs(5)).unwrap());
-        e.push_rules(&[("schema".into(), "definition user {}".into())]).await.unwrap();
+        e.push_rules(&[rule("schema", "definition user {}")]).await.unwrap();
 
         // Cerbos: each policy's YAML as JSON, through the Admin API with its credentials
         let server = MockServer::start().await;
@@ -333,13 +347,64 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
+        Mock::given(method("GET"))
+            .and(path("/admin/policies/inspect"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"results": {}})))
+            .expect(1)
+            .mount(&server)
+            .await;
         let admin = Some(("cerbos".to_owned(), "secret".to_owned()));
         let e = Engine::Cerbos(Cerbos::new(&server.uri(), Duration::from_secs(5), admin).unwrap());
         let policy = "apiVersion: api.cerbos.dev/v1\nresourcePolicy:\n  resource: doc\n  version: default\n";
-        e.push_rules(&[("resource/doc".into(), policy.into())]).await.unwrap();
+        e.push_rules(&[rule("resource/doc", policy)]).await.unwrap();
         // without the Admin API's credentials it cannot store them: a permanent error
-        let refused = cerbos(&server).push_rules(&[("resource/doc".into(), policy.into())]).await;
+        let refused = cerbos(&server).push_rules(&[rule("resource/doc", policy)]).await;
         assert!(refused.as_ref().is_err_and(|e| e.permanent && e.message.contains("Admin API")));
+    }
+
+    // Cerbos stores policies it cannot compile and says so only in its log: inspected after, the
+    // versions before go back (a policy new to it is disabled) and the push is refused
+    #[tokio::test]
+    async fn cerbos_policies_that_do_not_compile_are_replaced_by_the_versions_before() {
+        let server = MockServer::start().await;
+        let condition = |expr: &str| json!({"policies": [{"resourcePolicy": {"rules": [{"condition": {"match": {"expr": expr}}}]}}]});
+        for expr in ["request.resource.attr.nope(1)", "request.resource.attr.ok"] {
+            Mock::given(method("PUT"))
+                .and(path("/admin/policy"))
+                .and(body_partial_json(condition(expr)))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": {}})))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/admin/policies/inspect"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({"code": 13, "message": "could not inspect policies"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/admin/policy"))
+            .and(query_param("id", "resource.report.vdefault/acme"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"disabledPolicies": 1})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let admin = Some(("cerbos".to_owned(), "secret".to_owned()));
+        let e = Engine::Cerbos(Cerbos::new(&server.uri(), Duration::from_secs(5), admin).unwrap());
+        let policy = |resource: &str, scope: &str, expr: &str| {
+            format!(
+                "apiVersion: api.cerbos.dev/v1\nresourcePolicy:\n  resource: {resource}\n  version: default\n  scope: \"{scope}\"\n  rules:\n    \
+                 - actions: [view]\n      effect: EFFECT_ALLOW\n      roles: [user]\n      condition:\n        match:\n          expr: {expr}\n"
+            )
+        };
+        let refused = e
+            .push_rules(&[
+                Rule { name: "resource/doc".into(), body: policy("doc", "", "request.resource.attr.nope(1)"), previous: Some(policy("doc", "", "request.resource.attr.ok")) },
+                Rule { name: "resource/report.acme".into(), body: policy("report", "acme", "request.resource.attr.nope(1)"), previous: None },
+            ])
+            .await;
+        assert!(refused.as_ref().is_err_and(|e| e.permanent && e.message.contains("does not compile resource/doc, resource/report.acme")), "{:?}", refused.err());
     }
 
     #[tokio::test]

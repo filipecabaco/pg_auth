@@ -4,7 +4,7 @@
 //! CheckResources answers for resources given with their attributes. Cerbos keeps no data: it
 //! cannot list a subject's objects, fill the permission index, or report changes.
 
-use crate::engine::{CallError, send_classified, send_json};
+use crate::engine::{CallError, Rule, send_classified, send_json};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 
@@ -34,21 +34,58 @@ impl Cerbos {
         Ok(Self { client, base: url.trim_end_matches('/').to_string(), admin })
     }
 
-    /// Store policies (each a YAML document, as Cerbos's files are) through the Admin API, which
-    /// needs a mutable policy store (a database, not a directory) and the admin credentials.
-    pub async fn put_policies(&self, policies: &[&str]) -> Result<(), CallError> {
+    /// Store policies (each a YAML document, as Cerbos's files are, with the version it replaces)
+    /// through the Admin API, which needs a mutable policy store (a database, not a directory) and
+    /// the admin credentials. Cerbos stores a policy that does not compile and goes on with the
+    /// last policies that did, saying so only in its log: so the policies are inspected after, and
+    /// when they do not compile the versions before are stored again (a new policy is disabled),
+    /// and the push is refused.
+    pub async fn put_policies(&self, policies: &[Rule]) -> Result<(), CallError> {
         let permanent = |message: String| CallError { permanent: true, message };
         let (user, password) = self
             .admin
             .as_ref()
             .ok_or_else(|| permanent("cerbos: storing policies needs its Admin API (CERBOS_ADMIN_USER, CERBOS_ADMIN_PASSWORD)".into()))?;
-        let policies = policies
-            .iter()
-            .map(|p| serde_norway::from_str::<Value>(p).map_err(|e| permanent(format!("cerbos: a policy is not YAML: {e}"))))
-            .collect::<Result<Vec<_>, _>>()?;
+        let yaml = |p: &str| serde_norway::from_str::<Value>(p).map_err(|e| permanent(format!("cerbos: a policy is not YAML: {e}")));
+        let new = policies.iter().map(|p| yaml(&p.body)).collect::<Result<Vec<_>, _>>()?;
+        self.put(&new, user, password).await?;
+        if self.compiles(user, password).await? {
+            return Ok(());
+        }
+        let mut before = Vec::new();
+        let mut disable = Vec::new();
+        for (rule, policy) in policies.iter().zip(&new) {
+            match &rule.previous {
+                Some(p) => before.push(yaml(p)?),
+                None => disable.extend(policy_id(policy)),
+            }
+        }
+        if !before.is_empty() {
+            self.put(&before, user, password).await?;
+        }
+        if !disable.is_empty() {
+            let ids: Vec<_> = disable.iter().map(|id| ("id", id.as_str())).collect();
+            let request = self.client.delete(format!("{}/admin/policy", self.base)).basic_auth(user, Some(password)).query(&ids);
+            send_classified(request, "cerbos disable policy").await?;
+        }
+        let names = policies.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
+        Err(permanent(format!("cerbos does not compile {names} (its log says why); the versions before are back in force")))
+    }
+
+    async fn put(&self, policies: &[Value], user: &str, password: &str) -> Result<(), CallError> {
         let request =
             self.client.put(format!("{}/admin/policy", self.base)).basic_auth(user, Some(password)).json(&json!({"policies": policies}));
         send_classified(request, "cerbos add or update policy").await.map(|_| ())
+    }
+
+    /// Whether the stored policies compile: InspectPolicies fails with INTERNAL (13) when not.
+    async fn compiles(&self, user: &str, password: &str) -> Result<bool, CallError> {
+        let request = self.client.get(format!("{}/admin/policies/inspect", self.base)).basic_auth(user, Some(password));
+        match send_classified(request, "cerbos inspect policies").await {
+            Ok(_) => Ok(true),
+            Err(e) if e.message.contains("500") && e.message.contains("could not inspect policies") => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     pub async fn plan(&self, subject: &str, permission: &str, object_type: &str, principal: Option<&Value>) -> Result<Plan, String> {
@@ -172,6 +209,26 @@ fn condition(operand: &Value) -> Option<Value> {
         // a list of values, as `in` takes it
         "list" => args.iter().map(|a| a.get("value").cloned()).collect::<Option<Vec<_>>>().map(|vs| json!({"value": vs})),
         _ => None,
+    }
+}
+
+/// The id Cerbos stores a policy under (`resource.expense.vdefault/acme`), to disable it.
+fn policy_id(policy: &Value) -> Option<String> {
+    let scoped = |p: &Value| p["scope"].as_str().filter(|s| !s.is_empty()).map(|s| format!("/{s}")).unwrap_or_default();
+    let version = |p: &Value| p["version"].as_str().unwrap_or("default").to_owned();
+    let named = |kind: &str, field: &str| policy.get(kind).and_then(|p| p[field].as_str().map(|n| (p, n)));
+    if let Some((p, n)) = named("resourcePolicy", "resource") {
+        Some(format!("resource.{n}.v{}{}", version(p), scoped(p)))
+    } else if let Some((p, n)) = named("principalPolicy", "principal") {
+        Some(format!("principal.{n}.v{}{}", version(p), scoped(p)))
+    } else if let Some((p, n)) = named("rolePolicy", "role") {
+        Some(format!("role.{n}.v{}{}", version(p), scoped(p)))
+    } else if let Some((_, n)) = named("derivedRoles", "name") {
+        Some(format!("derived_roles.{n}"))
+    } else if let Some((_, n)) = named("exportVariables", "name") {
+        Some(format!("export_variables.{n}"))
+    } else {
+        named("exportConstants", "name").map(|(_, n)| format!("export_constants.{n}"))
     }
 }
 

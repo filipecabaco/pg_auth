@@ -246,9 +246,24 @@ select engine, name, version, pushed_at, error from authz.rules();   -- the vers
   authorization model, which it then reads with; SpiceDB: WriteSchema; Cerbos: its Admin API), and
   every backend asks again, since new rules may change any answer. Each push is recorded in
   `pushed_at`.
-- **Refused.** Rules the engine refuses (an undefined relation, a policy that does not parse) are
+- **Checked against the setup.** A protected table naming a type or permission the stored rules do
+  not have, or a relationship table writing a relation they compute, or a subject its relation
+  does not take, fails when the transaction commits, naming what they have:
+
+  ```text
+  ERROR:  the setup names what the rules stored with authz.set_rules do not have:
+  public.docs: document has no vewer in the openfga model (it has: editor, org, viewer)
+  ```
+
+  The check runs at commit, so a migration can change the rules and the tables using them
+  together. Cerbos policies are checked for their resource and actions (`approve:*` covers
+  `approve:big`). What the stored rules do not show, the engine still checks when they are pushed
+  (a relation computed from one that does not exist, a condition that does not compile).
+- **Refused.** Rules the engine refuses (an undefined relation, a policy that does not compile) are
   kept with its reason in `error`, `authz.doctor()` fails its `rules` check, and the engine keeps
-  the version before. Store a corrected version to replace it.
+  the version before. Cerbos stores policies it cannot compile and goes on with the ones before:
+  the sidecar asks it whether they compile, and puts the versions before back when they do not.
+  Store a corrected version to replace it.
 - **OpenFGA's DSL** is converted to the API's JSON by the sidecar (schema 1.1: types, relations,
   `[user, user:*, team#member]`, `or`, `and`, `but not`, `from`); conditions and modules are refused,
   as pg_auth sends no context for them. JSON is taken as is.

@@ -1,0 +1,21 @@
+model
+  schema 1.1
+type user
+type org
+  # pg_auth: rows of memberships (org_id, role, user_id)
+  # pg_auth: protects memberships (org_id): read can_read, write can_manage
+  relations
+    define admin: [user]
+    define member: [user]
+    define can_read: member or admin
+    define can_manage: admin
+type document
+  # pg_auth: protects documents (id): read viewer, write editor
+  # pg_auth: protects shares (doc_id): read viewer, write editor
+  # pg_auth: org from documents.org_id
+  # pg_auth: shared_with from shares(doc_id).user_id: until expires_at
+  relations
+    define org: [org]
+    define shared_with: [user]
+    define viewer: shared_with or can_read from org
+    define editor: can_manage from org

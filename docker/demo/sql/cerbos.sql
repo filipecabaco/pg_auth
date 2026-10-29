@@ -9,9 +9,10 @@ grant select, insert, update, delete on documents to authenticated;
 insert into documents values (1, 'Roadmap', 'anne', 'published'), (2, 'Budget', 'anne', 'draft'),
   (3, 'Launch plan', 'anne', 'draft'), (4, 'Hiring', 'carl', 'published'), (5, 'Pricing', 'carl', 'draft');
 
--- read: anyone signed in reads published documents and their own drafts; update: the owner
-select authz.protect('documents', type => 'document', id => 'id', read => 'read', write => 'update',
-                     attributes => array['owner', 'status']);
+-- the policy, with a note protecting this table: anyone signed in reads published documents and
+-- their own drafts, and only the owner edits
+\set rules `cat /etc/demo/rules/cerbos.yaml`
+select authz.set_rules('cerbos', 'resource/document', :'rules');
 
 -- The page calls this when a visitor switches to this engine: the data back as the demo starts,
 -- so its steps tell the same story on a second visit. It runs as its owner (a superuser).

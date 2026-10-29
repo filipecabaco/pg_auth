@@ -17,11 +17,10 @@ COPY --from=openfga /openfga /usr/local/bin/openfga
 COPY --from=spicedb /usr/local/bin/spicedb /usr/local/bin/spicedb
 COPY --from=cerbos /cerbos /usr/local/bin/cerbos
 
-COPY models/model.json /etc/demo/model.json
-COPY models/schema.zed /etc/demo/schema.zed
-RUN jq -Rs '{schema: .}' /etc/demo/schema.zed > /etc/demo/schema.json
+# each engine's rules, in its own language, with pg_auth's notes: stored in Postgres at build and
+# pushed to the engines by their sidecars at boot (the page's Setup view shows these files)
+COPY rules/ /etc/demo/rules/
 COPY cerbos/conf.yaml /etc/demo/cerbos/conf.yaml
-COPY cerbos/document.yaml /etc/demo/cerbos/policies/document.yaml
 COPY sql/ /etc/demo/sql/
 COPY train/ /etc/demo/train/
 
@@ -53,8 +52,13 @@ RUN install -d -o postgres -g postgres -m 700 "$PGDATA" && \
     for db in openfga spicedb cerbos; do \
       $psql -c "create database $db" && \
       $psql -c "alter database $db set pg_auth.sidecar_socket = '/run/pg_auth/$db.sock'" && \
-      if [ $db = cerbos ]; then $psql -d $db -f /etc/demo/sql/cerbos.sql; \
-      else $psql -d $db -f /etc/demo/sql/relationships.sql; fi || exit 1; \
+      case $db in \
+        cerbos) $psql -d $db -f /etc/demo/sql/cerbos.sql ;; \
+        openfga) $psql -d $db -v engine=openfga -v rules_name=model -v rules_file=/etc/demo/rules/openfga.fga \
+                   -f /etc/demo/sql/relationships.sql ;; \
+        spicedb) $psql -d $db -v engine=spicedb -v rules_name=schema -v rules_file=/etc/demo/rules/spicedb.zed \
+                   -f /etc/demo/sql/relationships.sql ;; \
+      esac || exit 1; \
     done && \
     su-exec postgres pg_ctl -D "$PGDATA" -w -s stop
 

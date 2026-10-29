@@ -29,23 +29,25 @@ if [ ! -S /run/pg_auth/cerbos.sock ]; then
     --log-level error > /run/pg_auth/spicedb.log 2>&1 &
   cerbos server --config=/etc/demo/cerbos/conf.yaml > /run/pg_auth/cerbos.log 2>&1 &
 
-  # OpenFGA: a store and the model (the store id is new each boot, so the sidecar learns it here)
+  # the engines start empty: each sidecar pushes the rules its database keeps (authz.set_rules)
+  # OpenFGA needs a store (its id is new each boot, so the sidecar learns it here)
   wait_for http://127.0.0.1:8080/healthz
   store=$(curl -sf -X POST http://127.0.0.1:8080/stores -d '{"name": "demo"}' | jq -r .id)
-  model=$(curl -sf -X POST "http://127.0.0.1:8080/stores/$store/authorization-models" -d @/etc/demo/model.json \
-    | jq -r .authorization_model_id)
-  # SpiceDB: the schema, once its HTTP gateway answers
-  until curl -sf -o /dev/null -X POST http://127.0.0.1:8443/v1/schema/write \
-    -H 'Authorization: Bearer demo' -d @/etc/demo/schema.json; do sleep 0.3; done
+  until [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8443/v1/schema/read \
+    -H 'Authorization: Bearer demo' -d '{}')" != 000 ]; do sleep 0.3; done
   wait_for http://127.0.0.1:3592/_cerbos/health
 
-  sidecar openfga OPENFGA_URL=http://127.0.0.1:8080 OPENFGA_STORE_ID="$store" OPENFGA_MODEL_ID="$model" \
+  sidecar openfga OPENFGA_URL=http://127.0.0.1:8080 OPENFGA_STORE_ID="$store" \
     PG_AUTH_DATABASE_URL="host=/run/postgresql user=postgres dbname=openfga"
   sidecar spicedb SPICEDB_URL=http://127.0.0.1:8443 SPICEDB_TOKEN=demo \
     PG_AUTH_DATABASE_URL="host=/run/postgresql user=postgres dbname=spicedb"
-  sidecar cerbos CERBOS_URL=http://127.0.0.1:3592
+  sidecar cerbos CERBOS_URL=http://127.0.0.1:3592 CERBOS_ADMIN_USER=cerbos CERBOS_ADMIN_PASSWORD=cerbosAdmin \
+    PG_AUTH_DATABASE_URL="host=/run/postgresql user=postgres dbname=cerbos"
 
-  # the relationships already in the tables reach their engines before the snapshot
+  # the rules reach their engines, then the relationships already in the tables, before the snapshot
+  for db in openfga spicedb cerbos; do
+    until [ "$($PSQL -d $db -c 'select count(*) from authz.rules() where pushed_at is null')" = 0 ]; do sleep 0.3; done
+  done
   for db in openfga spicedb; do
     until [ "$($PSQL -d $db -c 'select count(*) from authz.outbox')" = 0 ]; do sleep 0.3; done
   done

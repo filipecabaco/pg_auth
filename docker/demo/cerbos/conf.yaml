@@ -1,10 +1,13 @@
+# Policies are stored by the sidecar through the Admin API (authz.set_rules keeps them in
+# Postgres), in memory: Cerbos's default admin credentials, as the demo's tab is its only client.
 server:
   httpListenAddr: "127.0.0.1:3592"
   grpcListenAddr: "127.0.0.1:3593"
+  adminAPI:
+    enabled: true
 storage:
-  driver: disk
-  disk:
-    directory: /etc/demo/cerbos/policies
-    watchForChanges: false
+  driver: sqlite3
+  sqlite3:
+    dsn: ":memory:?_fk=true"
 telemetry:
   disabled: true

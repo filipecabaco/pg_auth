@@ -1,0 +1,23 @@
+# pg_auth: protects documents (id): read view, write edit, attributes (owner, status)
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: document
+  rules:
+    # anyone signed in reads published documents and their own drafts
+    - actions: ["view"]
+      effect: EFFECT_ALLOW
+      roles: ["authenticated"]
+      condition:
+        match:
+          any:
+            of:
+              - expr: request.resource.attr.owner == request.principal.id
+              - expr: request.resource.attr.status == "published"
+    # only the owner edits
+    - actions: ["edit"]
+      effect: EFFECT_ALLOW
+      roles: ["authenticated"]
+      condition:
+        match:
+          expr: request.resource.attr.owner == request.principal.id

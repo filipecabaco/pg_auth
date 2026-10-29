@@ -15,8 +15,10 @@
 //!
 //! - `protects <table> (<id>)`: the table's rows are objects of this type, `<id>` a column or an
 //!   expression over the row. Clauses: `read <permission>` (required), `write`, `update`,
-//!   `delete`, `insert <type>#<permission> from <column>` (checked on a parent), and
-//!   `attributes (<column>, <column> as <name>, ...)` (the values Cerbos rules or caveats read).
+//!   `delete`, `insert <type>#<permission> from <column>` (checked on a parent),
+//!   `attributes (<column>, <column> as <name>, ...)` (the values Cerbos rules or caveats read),
+//!   and `tree <table>(<id>, <parent>) from <permission>` (the read permission inherited down a
+//!   tree the app stores: the engine lists the subject's direct grants of `<permission>`).
 //! - `rows of <table> (<object>, <relation>, <subject>)`: each row is a relationship, its relation
 //!   read from the middle column. The subject's type, and the relations a row may name, come from
 //!   the model.
@@ -350,6 +352,12 @@ fn protects(owner: &str, rest: &str) -> Result<Value, String> {
                     target.trim().split_once('#').ok_or_else(|| format!("`{c}`: write `insert <type>#<permission> from <column>`"))?;
                 p.insert("insert".into(), json!({"type": ty, "permission": permission, "column": column.trim()}));
             }
+            "tree" => {
+                // tree <table>(<id>, <parent>) from <direct permission>
+                let (tree, direct) =
+                    arg.rsplit_once(" from ").ok_or_else(|| format!("`{c}`: write `tree <table>(<id>, <parent>) from <permission>`"))?;
+                p.insert("hierarchy".into(), json!({"tree": tree.trim(), "direct": direct.trim()}));
+            }
             "attributes" => {
                 let (_, list, _) = parenthesized(arg)?;
                 let list = list.ok_or_else(|| format!("`{c}`: write `attributes (<column>, <column> as <name>)`"))?;
@@ -372,7 +380,7 @@ fn protects(owner: &str, rest: &str) -> Result<Value, String> {
                     },
                 );
             }
-            _ => return Err(format!("`{c}`: a protection takes read, write, update, delete, insert and attributes")),
+            _ => return Err(format!("`{c}`: a protection takes read, write, update, delete, insert, attributes and tree")),
         }
     }
     if !p.contains_key("select") {
@@ -586,6 +594,17 @@ mod tests {
         assert_eq!(r[3]["subject"], json!({"type": "team", "relation": "member", "column": "team_id"}));
         assert_eq!(r[3]["name"], "document_shared_with_2");
         assert_eq!(r[4]["subject"], json!({"type": "user", "id": "*"}));
+    }
+
+    #[test]
+    fn a_permission_inherited_down_a_tree_is_a_protection_clause() {
+        let model = "model\n  schema 1.1\ntype user\ntype folder\n  \
+                     # pg_auth: protects app.folders (id): read viewer, tree app.folders(id, parent_id) from viewer_direct\n  \
+                     relations\n    define parent: [folder]\n    define viewer_direct: [user]\n    define viewer: viewer_direct or viewer from parent\n";
+        assert_eq!(
+            document("openfga", model).unwrap()["protect"][0]["hierarchy"],
+            json!({"tree": "app.folders(id, parent_id)", "direct": "viewer_direct"})
+        );
     }
 
     #[test]

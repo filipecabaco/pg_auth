@@ -140,6 +140,24 @@ select authz.protect('app.memberships', type => 'org', id => 'org_id', read => '
   `authz.outbox` with the write itself, so a rolled-back write never reaches the engine. The
   sidecar delivers it on commit, and every backend asks again: the change shows within tens of
   milliseconds (`compare/relationships.exs`).
+- **Grants that end.** `expires_column => 'expires_at'` names a timestamp column: the
+  relationship holds until then (null: for good). The sidecar deletes it from the engine when it
+  is due, and every backend asks again, as for any revocation: it goes within a few hundred
+  milliseconds of its end. An end moved later keeps it, one moved earlier or into the past ends it
+  now, a renewal writes it again; a row whose end has passed is no relationship at all.
+
+  ```sql
+  select authz.relate('app.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+                      subject_type => 'user', subject_column => 'user_id', expires_column => 'expires_at');
+  insert into app.shares values (1, 'bob', now() + interval '7 days');   -- bob sees doc 1 for a week
+  ```
+
+  SpiceDB also gets the end as the relationship's expiration, so the engine ends it itself if the
+  sidecar is down (within its revision window, a few seconds). Its schema says so: `use expiration`,
+  and `relation viewer: user | user with expiration` (`user with expiration` alone when every row
+  has an end: a `not null` column). OpenFGA has no expiry of its own: its grants end when the
+  sidecar deletes them, so while the sidecar is down an ended grant stays, like any revocation.
+  Ends waiting in the outbox are not changes waiting: `authz.doctor()` counts them apart.
 - **If the engine is down,** changes wait and are delivered when it is back. A change the engine
   refuses (a relation the model does not have) is set aside with its reason, and `authz.doctor()`
   reports it; the changes after it go on.
@@ -177,6 +195,7 @@ select authz.setup($${
 - `"column"` names a column of the row; `"id"` is a fixed value (`"*"`: everyone).
 - `"by"` declares a table once per value of a column: the subject is a map from those values.
 - `"relation"` is a name, or `{"column": ..., "allowed": [...]}`.
+- `"expires": {"column": ...}` ends each relationship at the row's timestamp (`expires_column`).
 - A protection takes `"select"`, `"write"`, `"update"`, `"delete"`, `"insert"` (a permission, or
   `{"type", "column", "permission"}` on the parent), `"column"` or `"key"`, `"attributes"` (a list of
   columns, or `{"name": "column"}`), `"hierarchy"` (`{"tree", "direct"}`), `"name"` and `"force"`.
@@ -256,7 +275,9 @@ select engine, name, version, pushed_at, error from authz.rules();   -- the vers
   ```
 
   The check runs at commit, so a migration can change the rules and the tables using them
-  together. Cerbos policies are checked for their resource and actions (`approve:*` covers
+  together. A table whose relationships end needs, on SpiceDB, a relation that takes them with an
+  expiration (and as they are, when the column may be null). Subjects that need an OpenFGA
+  condition or a SpiceDB caveat are not ones pg_auth writes. Cerbos policies are checked for their resource and actions (`approve:*` covers
   `approve:big`). What the stored rules do not show, the engine still checks when they are pushed
   (a relation computed from one that does not exist, a condition that does not compile).
 - **Refused.** Rules the engine refuses (an undefined relation, a policy that does not compile) are

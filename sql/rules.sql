@@ -133,9 +133,14 @@ begin
         -- relationship tables: their types, and each relation a row may write with the subject it names
         select d.item, t from decl d, lateral (values (d.object_type), (d.subject_type)) v(t) where t is not null
     ), writes as (
-        select d.item, d.object_type as t, u.wr as w,
+        -- what each written relationship needs: its subject as it is, unless every row has an end
+        -- (expires_column not null) and SpiceDB is given it; with an expiration, when it is
+        select d.item, d.object_type as t, u.wr as w, d.expires_column,
                case when d.subject_type is not null and d.subject_relation_column is null
-                    then d.subject_type || case when d.subject_id = '*' then ':*' else '' end || coalesce('#' || d.subject_relation, '') end as subject
+                    then d.subject_type || case when d.subject_id = '*' then ':*' else '' end || coalesce('#' || d.subject_relation, '') end as subject,
+               eng = 'spicedb' and d.expires_column is not null as needs_expiring,
+               not (eng = 'spicedb' and d.expires_column is not null
+                    and (select a.attnotnull from pg_attribute a where a.attrelid = d.rel and a.attname = d.expires_column)) as needs_plain
         from decl d, unnest(case when d.relation is not null then array[d.relation] else d.relations end) as u(wr)
         where d.object_type is not null and exists (select 1 from n where n.object_type = d.object_type)
     ), lists as (
@@ -167,10 +172,20 @@ begin
                                                 coalesce((select relations from lists l where l.object_type = w.t), 'none'))
                 when x.kind = 'permission' then format('%s#%s is computed in %s: rows write the relations it assigns (%s)', w.t, w.w, rules,
                                                        coalesce((select relations from lists l where l.object_type = w.t), 'none'))
-                else format('%s#%s does not take %s in %s (it takes: %s)', w.t, w.w, w.subject, rules, array_to_string(x.subjects, ', ')) end
+                when w.subject is not null and w.needs_plain and not w.subject = any(x.subjects) and w.subject = any(e.subjects)
+                    then format('%s#%s takes %s only with an expiration in the spicedb schema, and %s may be null: write `%s | %s with expiration`, or make the column not null',
+                                w.t, w.w, w.subject, w.expires_column, w.subject, w.subject)
+                when w.subject is not null and w.needs_plain and not w.subject = any(x.subjects)
+                    then format('%s#%s does not take %s in %s (it takes: %s)', w.t, w.w, w.subject, rules,
+                                coalesce(nullif(array_to_string(x.subjects || array(select s || ' with expiration' from unnest(e.subjects) s), ', '), ''), 'none'))
+                else format('%s#%s takes no expiration%s in the spicedb schema: write `%s with expiration` (and `use expiration`)',
+                            w.t, w.w, coalesce(' for ' || w.subject, ''), coalesce(w.subject, x.subjects[1], e.subjects[1])) end
     from writes w
-    left join n x on x.object_type = w.t and x.name = w.w and x.kind <> 'type'
-    where x.name is null or x.kind = 'permission' or (w.subject is not null and not w.subject = any(x.subjects));
+    left join n x on x.object_type = w.t and x.name = w.w and x.kind in ('relation', 'permission')
+    left join n e on e.object_type = w.t and e.name = w.w and e.kind = 'expiring'
+    where x.name is null or x.kind = 'permission'
+       or (w.subject is not null and w.needs_plain and not w.subject = any(x.subjects))
+       or (w.needs_expiring and (e.name is null or (w.subject is not null and not w.subject = any(e.subjects))));
 end
 $$;
 

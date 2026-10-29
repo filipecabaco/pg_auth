@@ -80,14 +80,17 @@ async fn deliver(url: &str, engine: &Engine, poll: Duration, delivered: &(impl F
 async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
     let tx = client.transaction().await.map_err(pg)?;
-    let rows = tx.query("select id, op, object, relation, subject from authz.outbox_claim($1)", &[&CLAIM]).await.map_err(pg)?;
+    let rows = tx.query("select id, op, object, relation, subject, expires_at from authz.outbox_claim($1)", &[&CLAIM]).await.map_err(pg)?;
     if rows.is_empty() {
         tx.commit().await.map_err(pg)?;
         return Ok(0);
     }
     let changes: Vec<(i64, Change)> = rows
         .iter()
-        .map(|r| (r.get(0), Change { write: r.get::<_, String>(1) == "write", object: r.get(2), relation: r.get(3), subject: r.get(4) }))
+        .map(|r| {
+            let write = r.get::<_, String>(1) == "write";
+            (r.get(0), Change { write, object: r.get(2), relation: r.get(3), subject: r.get(4), expires_at: r.get(5) })
+        })
         .collect();
     let all: Vec<Change> = changes.iter().map(|(_, c)| c.clone()).collect();
     // a failure the engine may get over (it is unreachable) leaves the transaction to roll back:

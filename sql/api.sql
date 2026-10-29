@@ -370,7 +370,10 @@ begin
     -- relationship tables: changes waiting for the sidecar, and changes the engine refused
     if exists (select 1 from authz.relationships) then
         check_name := 'relationship tables';
-        select count(*) filter (where error is not null) as refused, min(at) filter (where error is null) as oldest
+        -- an expiry is waiting only once it is due
+        select count(*) filter (where error is not null) as refused,
+               min(coalesce(not_before, at)) filter (where error is null and (not_before is null or not_before <= now())) as oldest,
+               count(*) filter (where error is null and not_before > now()) as scheduled
         into t from authz.outbox;
         if t.refused > 0 then
             status := 'fail';
@@ -381,7 +384,9 @@ begin
             detail := 'changes waiting since ' || t.oldest || ': is a sidecar with PG_AUTH_DATABASE_URL running?';
             fix := 'start the sidecar with PG_AUTH_DATABASE_URL and grant it authz.outbox_claim, outbox_done, outbox_failed, answers_changed';
         else
-            status := 'ok'; detail := (select count(*) from authz.relationships) || ' declared, delivered'; fix := null;
+            status := 'ok'; fix := null;
+            detail := (select count(*) from authz.relationships) || ' declared, delivered'
+                      || case when t.scheduled > 0 then ', ' || t.scheduled || ' expiries scheduled' else '' end;
         end if;
         return next;
     end if;

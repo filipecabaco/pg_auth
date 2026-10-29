@@ -683,6 +683,97 @@ mod tests {
     }
 
     #[pg_test]
+    fn a_relationship_ending_at_a_time_is_deleted_when_it_is_due() {
+        let outbox = || -> Vec<String> {
+            Spi::connect(|client| {
+                client
+                    .select(
+                        "select op || ' ' || object || ' ' || subject || case when expires_at is not null then ' ending' else '' end
+                                || case when not_before is not null then ' when due' else '' end
+                         from authz.outbox order by id",
+                        None,
+                        &[],
+                    )
+                    .unwrap()
+                    .map(|row| row.get::<String>(1).unwrap().unwrap())
+                    .collect()
+            })
+        };
+        let claimed =
+            || Spi::get_one::<String>("select string_agg(op || ' ' || object, ', ' order by id) from authz.outbox_claim(10)").unwrap();
+        let delivered = || Spi::run("delete from authz.outbox where not_before is null").unwrap();
+        Spi::run(
+            "create table public.shares (doc_id int, user_id text, expires_at timestamptz, primary key (doc_id, user_id));
+             insert into public.shares values (1, 'anne', now() + interval '1 hour'), (2, 'bob', now() - interval '1 hour'), (3, 'carl', null)",
+        )
+        .unwrap();
+        // the rows already there: bob's ended (not delivered); anne's written with its end, and its delete held until then
+        let queued = Spi::get_one::<i64>(
+            "select authz.relate('public.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+                                 subject_type => 'user', subject_column => 'user_id', expires_column => 'expires_at')",
+        )
+        .unwrap();
+        assert_eq!(queued, Some(2));
+        assert_eq!(outbox(), ["write doc:1 user:anne ending", "delete doc:1 user:anne when due", "write doc:3 user:carl"]);
+        // the sidecar gets what is due, the end in RFC 3339
+        assert_eq!(claimed().as_deref(), Some("write doc:1, write doc:3"));
+        let end =
+            Spi::get_one::<String>("select expires_at from authz.outbox_claim(10) where object = 'doc:1'").unwrap().unwrap_or_default();
+        assert!(end.len() == 27 && end.ends_with('Z') && end.as_bytes()[10] == b'T', "{end}");
+        delivered();
+
+        // extended: written again with its new end, the delete held before dropped
+        Spi::run("update public.shares set expires_at = now() + interval '2 hours' where user_id = 'anne'").unwrap();
+        assert_eq!(outbox(), ["write doc:1 user:anne ending", "delete doc:1 user:anne when due"]);
+        let held_until_new_end =
+            "select count(*) from authz.outbox o, public.shares s where s.user_id = 'anne' and o.not_before = s.expires_at";
+        assert_eq!(Spi::get_one::<i64>(held_until_new_end).unwrap(), Some(1));
+        delivered();
+        // ended early: deleted now; renewed with no end: written, nothing held
+        Spi::run(
+            "update public.shares set expires_at = now() - interval '1 minute' where user_id = 'anne';
+             update public.shares set expires_at = null where user_id = 'bob'",
+        )
+        .unwrap();
+        assert_eq!(outbox(), ["delete doc:1 user:anne", "write doc:2 user:bob"]);
+        delivered();
+
+        // an end that came: the delete is due
+        Spi::run(
+            "insert into public.shares values (4, 'dave', now() + interval '1 hour');
+             update authz.outbox set not_before = now() - interval '1 second' where not_before is not null",
+        )
+        .unwrap();
+        assert_eq!(claimed().as_deref(), Some("write doc:4, delete doc:4"));
+        // held expiries are not changes waiting
+        Spi::run("delete from authz.outbox; insert into public.shares values (5, 'eve', now() + interval '1 day')").unwrap();
+        delivered();
+        let doctor =
+            Spi::get_one::<String>("select status || ': ' || detail from authz.doctor() where check_name = 'relationship tables'").unwrap();
+        assert_eq!(doctor.as_deref(), Some("ok: 1 declared, delivered, 1 expiries scheduled"));
+        assert!(
+            error_of(
+                "select authz.relate('public.shares', name => 'x', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+                                               subject_type => 'user', subject_column => 'user_id', expires_column => 'user_id')"
+            )
+            .unwrap_or_default()
+            .contains("is not a timestamp")
+        );
+        // the same from a setup document's relationship (authz.setup itself would take a version
+        // from the sequence other tests count on)
+        let setup = |expires: &str| {
+            format!(
+                r#"select authz.setup_relate('public.shares', 'doc', null, '{{"type": "doc", "column": "doc_id"}}', '"viewer"',
+                                             '{{"type": "user", "column": "user_id"}}', 'a relationship', '{expires}')"#
+            )
+        };
+        Spi::run(&setup(r#"{"column": "expires_at"}"#)).unwrap();
+        let declared = Spi::get_one::<String>("select expires_column::text from authz.relationships where name = 'doc'").unwrap();
+        assert_eq!(declared.as_deref(), Some("expires_at"));
+        assert!(error_of(&setup(r#"{"at": "expires_at"}"#)).unwrap_or_default().contains(r#"has no key "at""#));
+    }
+
+    #[pg_test]
     fn relationship_tables_send_their_changes_to_the_engine() {
         Spi::run(
             "create table public.memberships (org_id int not null, user_id text not null, role text, primary key (org_id, user_id));
@@ -908,6 +999,33 @@ mod tests {
         let doctor =
             Spi::get_one::<String>("select status || ': ' || detail from authz.doctor() where check_name = 'setup matches rules'").unwrap();
         assert_eq!(doctor.as_deref(), Some("ok: every protected and relationship table names what the stored rules have"));
+    }
+
+    #[pg_test]
+    fn an_ending_relationship_needs_a_spicedb_relation_that_expires() {
+        Spi::run(
+            "create table public.eshares (doc_id int, user_id text, expires_at timestamptz, primary key (doc_id, user_id));
+             select authz.set_rules('spicedb', 'schema', 'use expiration\ndefinition user {}\ndefinition doc {\n  \
+                                    relation viewer: user | user with expiration\n  relation ending: user with expiration\n  relation reader: user\n}\n')",
+        )
+        .unwrap();
+        let ending = |relation: &str| {
+            error_at_commit(&format!(
+                "select authz.relate('public.eshares', object_type => 'doc', object_column => 'doc_id', relation => '{relation}',
+                                     subject_type => 'user', subject_column => 'user_id', expires_column => 'expires_at')"
+            ))
+        };
+        assert_eq!(ending("viewer"), None);
+        let error = ending("reader").unwrap_or_default();
+        assert!(error.contains("doc#reader takes no expiration for user in the spicedb schema: write `user with expiration`"), "{error}");
+        // only with an expiration: every row must have an end
+        let error = ending("ending").unwrap_or_default();
+        assert!(
+            error.contains("doc#ending takes user only with an expiration in the spicedb schema, and expires_at may be null"),
+            "{error}"
+        );
+        Spi::run("alter table public.eshares alter column expires_at set not null").unwrap();
+        assert_eq!(ending("ending"), None);
     }
 
     #[pg_test]

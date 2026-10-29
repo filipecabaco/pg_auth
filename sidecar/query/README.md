@@ -117,6 +117,9 @@ A failure the engine may get over (unreachable, 5xx, 429) is retried every `INDE
 change it refuses for good (another 4xx) is set aside in the outbox with its reason, and the others
 go on. Afterwards reads skip the engine's caches: OpenFGA with `HIGHER_CONSISTENCY` for 10 s,
 SpiceDB at least as fresh as the write's ZedToken. A change shows within tens of milliseconds.
+A relationship that ends (`expires_column`) is written with its end, which SpiceDB takes as the
+relationship's expiration (`optional_expires_at`); its delete waits in the outbox until it is due,
+and is delivered like any other change, on both engines.
 
 ## Engine rules
 
@@ -130,7 +133,7 @@ API (`PUT /admin/policy`, the YAML sent as JSON, with `CERBOS_ADMIN_USER` and
 before, so InspectPolicies is asked after, and when they do not compile the versions before are
 stored again, a new policy disabled, and the push refused). The result is recorded beside each version in the same transaction,
 which calls `authz.answers_changed()` and clears the sidecar's own caches when the engine took
-them. Rules the engine refuses are recorded with its reason and not retried; an unreachable engine
+them; SpiceDB is read from then on at least as fresh as the schema written. Rules the engine refuses are recorded with its reason and not retried; an unreachable engine
 is retried every `INDEX_POLL_MS`.
 
 ## Run

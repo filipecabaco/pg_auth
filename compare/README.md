@@ -210,6 +210,17 @@ from its commit to the moment the subject sees it.
     elixir compare/relationships.exs                    # OpenFGA, then SpiceDB
     elixir compare/relationships.exs --engine spicedb --no-build
 
+## Grants that end
+
+`expiry.exs` checks relationship tables whose rows end (`authz.relate` `expires_column`), on a
+real OpenFGA and SpiceDB, the rules stored in Postgres (`authz.set_rules`): a share shows until its
+end and goes after it (timed from the end), an end moved later keeps it and one moved earlier ends
+it, a renewal brings it back, the ends waiting in the outbox are not changes waiting, and SpiceDB,
+given the end as an expiration, ends it itself with the sidecar paused.
+
+    elixir compare/expiry.exs                           # OpenFGA, then SpiceDB
+    elixir compare/expiry.exs --engine spicedb --no-build
+
 ## History
 
 This harness first compared OpenFGA with the authorization engine pg_auth used to embed

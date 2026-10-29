@@ -34,6 +34,9 @@ create table authz.relationships (
     filter                  text,
     -- the relations a row may name; another one fails the write, at once
     relations               text[],
+    -- a timestamp column: the relationship ends then (null: it does not), deleted from the engine
+    -- when it is due, and given to SpiceDB as the relationship's expiration
+    expires_column          name,
     check ((object_type is null) <> (object_type_column is null)),
     check ((object_id is null) <> (object_column is null)),
     check ((relation is null) <> (relation_column is null)),
@@ -52,8 +55,47 @@ create table authz.outbox (
     at       timestamptz not null default now(),
     -- why the engine refused it, for good (an invalid relation, an unknown type): set aside, the
     -- changes after it delivered; authz.doctor() reports it, and deleting the row drops it
-    error    text
+    error    text,
+    -- a write: when the relationship ends, if it does (SpiceDB enforces it itself)
+    expires_at timestamptz,
+    -- a delete not delivered before then: a relationship's expiry, scheduled with its write and
+    -- dropped when the relationship changes again
+    not_before timestamptz
 );
+
+-- what the sidecar claims: changes to deliver now, by id, and expiries by when they are due
+create index outbox_now on authz.outbox (id) where error is null and not_before is null;
+create index outbox_expiries on authz.outbox (not_before) where error is null and not_before is not null;
+-- a relationship's scheduled expiry, found when the relationship changes again
+create index outbox_expiry_of on authz.outbox (object, relation, subject) where not_before is not null;
+
+-- When the row's relationship ends (`expires_column`), or null.
+create function authz.relationship_expires(r authz.relationships, row_ jsonb) returns timestamptz
+language sql stable as $$
+    select case when r.expires_column is not null then (row_ ->> r.expires_column)::timestamptz end
+$$;
+
+-- Record the change from relationship `before` to `after` (either null) in the outbox, `after`
+-- ending at `expires` (null: it does not). An expiry is a delete the outbox holds until it is
+-- due; a change to the relationship drops the one scheduled before.
+create function authz.outbox_record(before text[], after text[], expires timestamptz) returns void
+language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+begin
+    delete from authz.outbox o
+    where o.not_before is not null and o.error is null
+      and ((o.object = before[1] and o.relation = before[2] and o.subject = before[3])
+           or (o.object = after[1] and o.relation = after[2] and o.subject = after[3]));
+    if before is not null and before is distinct from after then
+        insert into authz.outbox (op, object, relation, subject) values ('delete', before[1], before[2], before[3]);
+    end if;
+    if after is not null then
+        insert into authz.outbox (op, object, relation, subject, expires_at) values ('write', after[1], after[2], after[3], expires);
+        if expires is not null then
+            insert into authz.outbox (op, object, relation, subject, not_before) values ('delete', after[1], after[2], after[3], expires);
+        end if;
+    end if;
+end
+$$;
 
 -- The relationship a row of `r`'s table describes (object, relation, subject), or null when one
 -- of its parts is null.
@@ -91,6 +133,8 @@ declare
     r authz.relationships;
     before text[];
     after text[];
+    expired_before timestamptz;
+    expires timestamptz;
 begin
     select * into r from authz.relationships where rel = tg_relid and name = tg_argv[0];
     if r is null then
@@ -98,9 +142,14 @@ begin
     end if;
     if tg_op in ('UPDATE', 'DELETE') and authz.relationship_applies(r, old) then
         before := authz.relationship_of(r, to_jsonb(old));
+        expired_before := authz.relationship_expires(r, to_jsonb(old));
     end if;
     if tg_op in ('UPDATE', 'INSERT') and authz.relationship_applies(r, new) then
         after := authz.relationship_of(r, to_jsonb(new));
+        expires := authz.relationship_expires(r, to_jsonb(new));
+        if expires <= now() then
+            after := null;  -- ended already: no relationship
+        end if;
         -- a relation the model does not have fails here, where the app sees it, rather than when
         -- the engine refuses it after the commit
         if after is not null and r.relations is not null and not after[2] = any (r.relations) then
@@ -109,15 +158,10 @@ begin
                       hint = format('%s declares the relations its rows may name (authz.relate relations => ...)', tg_relid::regclass);
         end if;
     end if;
-    if before is not distinct from after then
+    if before is not distinct from after and expired_before is not distinct from expires then
         return null;
     end if;
-    if before is not null then
-        insert into authz.outbox (op, object, relation, subject) values ('delete', before[1], before[2], before[3]);
-    end if;
-    if after is not null then
-        insert into authz.outbox (op, object, relation, subject) values ('write', after[1], after[2], after[3]);
-    end if;
+    perform authz.outbox_record(before, after, expires);
     perform pg_notify('pg_auth_outbox', '');
     return null;
 end
@@ -140,6 +184,9 @@ $$;
 --   select authz.relate('app.shares', name => 'public', filter => 'grantee_kind = ''public''',
 --                       object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
 --                       subject_type => 'user', subject_id => '*');
+--   -- a share until its expires_at: deleted from the engine then (SpiceDB also expires it itself)
+--   select authz.relate('app.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+--                       subject_type => 'user', subject_column => 'user_id', expires_column => 'expires_at');
 --
 -- Rows already there are delivered too. Give the table a unique key over these columns: two rows
 -- that are one relationship would race each other's deletes.
@@ -159,7 +206,8 @@ create function authz.relate(
     subject_id text default null,
     subject_relation_column name default null,
     filter text default null,
-    relations text[] default null
+    relations text[] default null,
+    expires_column name default null
 ) returns bigint
 language plpgsql volatile as $$
 #variable_conflict use_column
@@ -168,6 +216,7 @@ declare
     col name;
     queued bigint;
     bad text;
+    row_ record;
 begin
     foreach bad in array array[
         case when (relate.object_type is null) = (relate.object_type_column is null)
@@ -188,27 +237,34 @@ begin
         end if;
     end loop;
     foreach col in array array[relate.object_type_column, relate.object_column, relate.relation_column, relate.subject_type_column,
-                               relate.subject_column, relate.subject_relation_column] loop
+                               relate.subject_column, relate.subject_relation_column, relate.expires_column] loop
         if col is not null and not exists (select 1 from pg_attribute where attrelid = relate.rel and attname = col and attnum > 0 and not attisdropped) then
             raise exception 'column % does not exist on %', col, relate.rel;
         end if;
     end loop;
+    if relate.expires_column is not null and (select atttypid from pg_attribute where attrelid = relate.rel and attname = relate.expires_column)
+                                              not in ('timestamptz'::regtype, 'timestamp'::regtype, 'date'::regtype) then
+        raise exception 'expires_column % of % is not a timestamp', relate.expires_column, relate.rel
+            using hint = 'a timestamptz column: when the relationship ends, null when it does not';
+    end if;
     if relate.filter is not null then
         -- a filter that does not parse, or names a missing column, fails here rather than on a write
         execute format('select 1 from %s where %s limit 0', relate.rel, relate.filter);
     end if;
     insert into authz.relationships (rel, name, object_type, object_type_column, object_id, object_column, relation, relation_column,
                                      subject_type, subject_type_column, subject_id, subject_column, subject_relation,
-                                     subject_relation_column, filter, relations)
+                                     subject_relation_column, filter, relations, expires_column)
     values (relate.rel, relate.name, relate.object_type, relate.object_type_column, relate.object_id, relate.object_column,
             relate.relation, relate.relation_column, relate.subject_type, relate.subject_type_column, relate.subject_id,
-            relate.subject_column, relate.subject_relation, relate.subject_relation_column, relate.filter, relate.relations)
+            relate.subject_column, relate.subject_relation, relate.subject_relation_column, relate.filter, relate.relations,
+            relate.expires_column)
     on conflict on constraint relationships_pkey do update set
         object_type = excluded.object_type, object_type_column = excluded.object_type_column, object_id = excluded.object_id,
         object_column = excluded.object_column, relation = excluded.relation, relation_column = excluded.relation_column,
         subject_type = excluded.subject_type, subject_type_column = excluded.subject_type_column, subject_id = excluded.subject_id,
         subject_column = excluded.subject_column, subject_relation = excluded.subject_relation,
-        subject_relation_column = excluded.subject_relation_column, filter = excluded.filter, relations = excluded.relations
+        subject_relation_column = excluded.subject_relation_column, filter = excluded.filter, relations = excluded.relations,
+        expires_column = excluded.expires_column
     returning * into r;
     execute format('create or replace trigger %I after insert or update or delete on %s for each row execute function authz.relationship_changed(%L)',
                    'pg_auth_relate_' || relate.name, relate.rel, relate.name);
@@ -220,10 +276,14 @@ begin
         raise exception 'a row of % names relation %, not one of %', relate.rel, bad, array_to_string(relate.relations, ', ')
             using errcode = 'check_violation';
     end if;
-    execute format('insert into authz.outbox (op, object, relation, subject)
-                    select ''write'', t[1], t[2], t[3] from (select authz.relationship_of($1, to_jsonb(x)) t from %s x where %s) s where t is not null',
-                   relate.rel, coalesce(relate.filter, 'true')) using r;
-    get diagnostics queued = row_count;
+    -- the rows already there that have not ended, each with its expiry
+    queued := 0;
+    for row_ in execute format('select t, e from (select authz.relationship_of($1, to_jsonb(x)) t, authz.relationship_expires($1, to_jsonb(x)) e
+                                from %s x where %s) s where t is not null and (e is null or e > now())',
+                               relate.rel, coalesce(relate.filter, 'true')) using r loop
+        perform authz.outbox_record(null, row_.t, row_.e);
+        queued := queued + 1;
+    end loop;
     perform pg_notify('pg_auth_outbox', '');
     return queued;
 end
@@ -241,14 +301,21 @@ $$;
 
 -- For the sidecar: the oldest changes not delivered yet, in order, to the one sidecar delivering
 -- (an advisory lock held until the caller's transaction ends); nothing while another delivers.
-create function authz.outbox_claim(p_limit int) returns table (id bigint, op text, object text, relation text, subject text)
+create function authz.outbox_claim(p_limit int)
+returns table (id bigint, op text, object text, relation text, subject text, expires_at text)
 language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
 begin
     if not pg_try_advisory_xact_lock(hashtext('pg_auth.outbox')) then
         return;
     end if;
-    return query select o.id, o.op, o.object::text, o.relation::text, o.subject::text from authz.outbox o
-                 where o.error is null order by o.id limit p_limit;
+    -- what is due: changes, and expiries whose time came (expires_at in RFC 3339, as engines take it)
+    return query
+    select o.id, o.op, o.object::text, o.relation::text, o.subject::text,
+           to_char(o.expires_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+    from (select * from (select * from authz.outbox x where x.error is null and x.not_before is null order by x.id limit p_limit) now_
+          union all
+          select * from (select * from authz.outbox x where x.error is null and x.not_before <= now() order by x.not_before limit p_limit) due) o
+    order by o.id limit p_limit;
 end
 $$;
 
@@ -268,7 +335,8 @@ language sql volatile security definer set search_path = pg_catalog, pg_temp as 
 $$;
 
 revoke all on authz.relationships, authz.outbox from public;
-revoke execute on function authz.relate(regclass, text, name, text, name, text, name, text, text, name, text, name, text, name, text, text[]) from public;
+revoke execute on function authz.relate(regclass, text, name, text, name, text, name, text, text, name, text, name, text, name, text, text[], name) from public;
+revoke execute on function authz.outbox_record(text[], text[], timestamptz) from public;
 revoke execute on function authz.unrelate(regclass, text) from public;
 revoke execute on function authz.outbox_claim(int) from public;
 revoke execute on function authz.outbox_done(bigint[]) from public;

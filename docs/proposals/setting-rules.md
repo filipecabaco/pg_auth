@@ -172,8 +172,11 @@ teams that want their rules versioned with their schema. In order:
    is used Postgres is the source of truth. `compare/rules.exs` checks it on the three engines.
    The setup is checked against the stored rules when a transaction commits: a type, permission,
    relation, subject or Cerbos action they do not have fails it, naming what they have.
-5. **Context, last and per engine:** expiring relationships first (SpiceDB takes an expiry on write,
-   and a row column can supply it), then request-level context (time, client IP from a setting) for
+5. **Context, last and per engine:** expiring relationships first: done. `expires_column` on
+   `relate` ends a row's relationship at its timestamp: the outbox holds its delete until then
+   (both engines, within a few hundred milliseconds), and SpiceDB is also given it as an
+   expiration, ending it itself when the sidecar is down; `compare/expiry.exs` checks both. Then
+   request-level context (time, client IP from a setting) for
    OpenFGA conditions and SpiceDB caveats, then per-row context, which BatchCheck accepts but
    ListObjects does not.
 

@@ -2,9 +2,11 @@
 //! from the engine's own language, so a setup naming something they do not have fails when it is
 //! committed instead of when the engine is asked (`authz.rules_problems`).
 //!
-//! One row per type (`type`), per relation a row may write (`relation`, with the subjects it takes:
-//! `user`, `user:*`, `team#member`), per relation computed from others (`permission`), and per
-//! Cerbos action (`action`, its resource as the type). Rules it cannot read give one `unreadable`
+//! One row per type (`type`), per relation a row may write (`relation`, with the subjects it takes
+//! as they are: `user`, `user:*`, `team#member`), per relation computed from others (`permission`),
+//! per SpiceDB relation taking subjects with an expiration (`expiring`, with those subjects), and
+//! per Cerbos action (`action`, its resource as the type). Subjects that need a condition or a
+//! caveat are left out: pg_auth writes none. Rules it cannot read give one `unreadable`
 //! row, and are not checked: the engine says what is wrong with them.
 
 use pgrx::prelude::*;
@@ -24,8 +26,11 @@ impl Entry {
     }
 
     fn relation(t: &str, name: &str, subjects: Vec<String>) -> Self {
-        let kind = if subjects.is_empty() { "permission" } else { "relation" };
-        Self { object_type: t.to_owned(), name: Some(name.to_owned()), kind, subjects: (!subjects.is_empty()).then_some(subjects) }
+        Self { object_type: t.to_owned(), name: Some(name.to_owned()), kind: "relation", subjects: Some(subjects) }
+    }
+
+    fn permission(t: &str, name: &str) -> Self {
+        Self { object_type: t.to_owned(), name: Some(name.to_owned()), kind: "permission", subjects: None }
     }
 
     fn action(resource: &str, action: &str) -> Self {
@@ -70,8 +75,10 @@ fn openfga_dsl(dsl: &str) -> Vec<Entry> {
             current = None;
         } else if let (Some(t), Some((name, expr))) = (&current, line.strip_prefix("define ").and_then(|d| d.split_once(':'))) {
             let direct = expr.find('[').and_then(|s| expr[s + 1..].find(']').map(|e| &expr[s + 1..s + 1 + e]));
-            let subjects = direct.map(|d| d.split(',').map(subject).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
-            names.push(Entry::relation(t, name.trim(), subjects));
+            names.push(match direct {
+                Some(d) => Entry::relation(t, name.trim(), plain(d.split(','))),
+                None => Entry::permission(t, name.trim()),
+            });
         }
     }
     names
@@ -85,10 +92,14 @@ fn openfga_json(body: &str) -> Result<Vec<Entry>, String> {
         let t = def["type"].as_str().ok_or("a type definition without its type")?;
         names.push(Entry::of_type(t));
         for name in def["relations"].as_object().into_iter().flat_map(|r| r.keys()) {
-            let direct = def["metadata"]["relations"][name]["directly_related_user_types"].as_array();
+            let Some(direct) = def["metadata"]["relations"][name]["directly_related_user_types"].as_array().filter(|d| !d.is_empty())
+            else {
+                names.push(Entry::permission(t, name));
+                continue;
+            };
             let subjects = direct
-                .into_iter()
-                .flatten()
+                .iter()
+                .filter(|d| d.get("condition").and_then(Value::as_str).is_none_or(str::is_empty))
                 .filter_map(|d| {
                     let t = d["type"].as_str()?;
                     Some(match (d.get("wildcard"), d["relation"].as_str()) {
@@ -119,9 +130,22 @@ fn spicedb(schema: &str) -> Vec<Entry> {
             for line in after[open + 1..close].split(['\n', ';']) {
                 let line = line.trim();
                 if let Some((name, types)) = line.strip_prefix("relation ").and_then(|r| r.split_once(':')) {
-                    names.push(Entry::relation(t, name.trim(), types.split('|').map(subject).filter(|s| !s.is_empty()).collect()));
+                    names.push(Entry::relation(t, name.trim(), plain(types.split('|'))));
+                    // `user with expiration` (not `user with in_hours and expiration`: that needs a caveat too)
+                    let expiring: Vec<String> = types
+                        .split('|')
+                        .filter_map(|s| s.split_once(" with ").filter(|(_, w)| w.trim() == "expiration").map(|(t, _)| t.trim().to_owned()))
+                        .collect();
+                    if !expiring.is_empty() {
+                        names.push(Entry {
+                            object_type: t.to_owned(),
+                            name: Some(name.trim().to_owned()),
+                            kind: "expiring",
+                            subjects: Some(expiring),
+                        });
+                    }
                 } else if let Some((name, _)) = line.strip_prefix("permission ").and_then(|p| p.split_once('=')) {
-                    names.push(Entry::relation(t, name.trim(), Vec::new()));
+                    names.push(Entry::permission(t, name.trim()));
                 }
             }
         }
@@ -180,9 +204,10 @@ fn strip_comments(text: &str) -> String {
     out
 }
 
-/// `user`, `user:*`, `team#member`, without a condition or caveat (`user with in_hours`).
-fn subject(s: &str) -> String {
-    s.split(" with ").next().unwrap_or_default().trim().to_owned()
+/// The subjects written as they are (`user`, `user:*`, `team#member`): not those that need a
+/// condition, a caveat or an expiration (`user with in_hours`).
+fn plain<'a>(subjects: impl Iterator<Item = &'a str>) -> Vec<String> {
+    subjects.map(str::trim).filter(|s| !s.is_empty() && !s.contains(" with ")).map(str::to_owned).collect()
 }
 
 /// A policy's resource and actions: resource policies, role policies (`allowActions`) and
@@ -237,13 +262,7 @@ mod tests {
                    condition in_hours(x: int) {\n  x > 1\n}\n";
         assert_eq!(
             summary(&openfga_dsl(dsl)),
-            [
-                "type user",
-                "type doc",
-                "relation doc#owner [user]",
-                "relation doc#viewer [user, user:*, team#member]",
-                "permission doc#can_read"
-            ]
+            ["type user", "type doc", "relation doc#owner [user]", "relation doc#viewer [user, user:*]", "permission doc#can_read"]
         );
     }
 
@@ -262,7 +281,7 @@ mod tests {
     #[test]
     fn a_spicedb_schema_names_its_definitions_skipping_caveats_and_comments() {
         let schema = "/** a user */\ndefinition user {}\ncaveat in_hours(x int) {\n  x > 1\n}\n// the docs\n\
-                      definition app/doc {\n  relation owner: user\n  relation viewer: user | user:* | team#member with in_hours\n  \
+                      definition app/doc {\n  relation owner: user\n  relation viewer: user with expiration | user:* | team#member with in_hours and expiration\n  \
                       permission can_read = viewer + owner // either\n}\n";
         assert_eq!(
             summary(&spicedb(schema)),
@@ -270,7 +289,8 @@ mod tests {
                 "type user",
                 "type app/doc",
                 "relation app/doc#owner [user]",
-                "relation app/doc#viewer [user, user:*, team#member]",
+                "relation app/doc#viewer [user:*]",
+                "expiring app/doc#viewer [user]",
                 "permission app/doc#can_read"
             ]
         );

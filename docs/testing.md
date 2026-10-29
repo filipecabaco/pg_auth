@@ -15,6 +15,7 @@ goes wrong. Four layers do that, and a coverage measurement shows what they reac
 | relationship tables | `compare/relationships.exs` | an app with no backend granting and revoking by writing rows through RLS, on a real OpenFGA and SpiceDB: members, shares, teams, a non-admin refused, the engine down (changes wait, then arrive; an invalid one is set aside), and how long each change takes to show | the same |
 | complex setups | `compare/complex.exs` | the engines' published shapes as a backend-less app sets them up, checked through what each user sees and may write: GitHub (teams inside teams, access to a user or a team, the org owner, a ban with `but not`, push to update) and Drive (nested groups, a folder tree, a public `user:*` link) on OpenFGA and SpiceDB; expense approval on Cerbos (derived roles, an amount limit, a tenant's scoped deny) | the same |
 | engine rules | `compare/rules.exs` | the rules kept in Postgres (`authz.set_rules`) pushed by the sidecar to a real OpenFGA (its DSL), SpiceDB (a schema) and Cerbos (YAML through its Admin API, policies in a database): rows show as each version says, the same text is not a new version, rules the engine refuses are recorded with its reason, failed by `authz.doctor()`, while it keeps the version before (Cerbos's put back), and a setup naming what the rules lack fails at commit | the same |
+| grants that end | `compare/expiry.exs` | relationship tables with an end (`expires_column`) on a real OpenFGA and SpiceDB: a share shows until its end and goes after it (timed from the end), an end moved later or earlier, a renewal, ends held in the outbox not counted as waiting, and SpiceDB ending it itself with the sidecar paused | the same |
 | security scenarios | `bench/docker/scenarios` | the correctness scenarios of the [RLS issues catalogue](research/rls-issues.md) (leaking views, recursion, partitions, leaky functions, pooled identity, bypass paths), each with pg_auth's verdict in its README | with the benchmarks |
 
 The extension's tests run on pgrx's Postgres, built without assertions: they do not catch a
@@ -30,6 +31,7 @@ elixir compare/attributes.exs --seed 7 --rows 2000 --principals 200
 elixir compare/relationships.exs                          # OpenFGA, then SpiceDB
 elixir compare/complex.exs                                # OpenFGA, SpiceDB, then Cerbos
 elixir compare/rules.exs                                  # the same
+elixir compare/expiry.exs                                 # OpenFGA, then SpiceDB
 ```
 
 

@@ -26,12 +26,15 @@ pub enum Engine {
 }
 
 /// A change to one relationship, from a relationship table (outbox.rs): written, or deleted.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Change {
     pub write: bool,
     pub object: String,
     pub relation: String,
     pub subject: String,
+    /// a write's end (RFC 3339), when the row gives one: SpiceDB expires the relationship then;
+    /// either way the outbox delivers its delete when it is due
+    pub expires_at: Option<String>,
 }
 
 /// `changes` cut into requests, in order: at most `max` each, and no relationship twice in one
@@ -329,12 +332,20 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(path("/v1/schema/write"))
             .and(body_partial_json(json!({"schema": "definition user {}"})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"writtenAt": {"token": "zed-schema"}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/v1/permissions/checkbulk"))
+            .and(body_partial_json(json!({"consistency": {"at_least_as_fresh": {"token": "zed-schema"}}})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"pairs": []})))
             .expect(1)
             .mount(&server)
             .await;
         let e = Engine::SpiceDb(crate::spicedb::SpiceDb::new(&server.uri(), "key", None, Duration::from_secs(5)).unwrap());
         e.push_rules(&[rule("schema", "definition user {}")]).await.unwrap();
+        // reads after it see its definitions: at least as fresh as the schema
+        e.check(&key("user:anne", "doc", "viewer"), &["1".into()], &Context::default(), 1).await.unwrap();
 
         // Cerbos: each policy's YAML as JSON, through the Admin API with its credentials
         let server = MockServer::start().await;
@@ -671,7 +682,7 @@ mod tests {
     }
 
     fn change(write: bool, object: &str, subject: &str) -> Change {
-        Change { write, object: object.into(), relation: "member".into(), subject: subject.into() }
+        Change { write, object: object.into(), relation: "member".into(), subject: subject.into(), expires_at: None }
     }
 
     #[test]
@@ -732,6 +743,23 @@ mod tests {
         // reads are now at least as fresh as that write
         let lookups = server.received_requests().await.unwrap().len();
         assert_eq!(lookups, 1);
+    }
+
+    // a write with an end carries it as the relationship's expiration; OpenFGA has none (the
+    // outbox deletes it when it is due)
+    #[tokio::test]
+    async fn spicedb_expires_a_relationship_written_with_an_end() {
+        let server = MockServer::start().await;
+        Mock::given(path("/v1/relationships/write"))
+            .and(body_partial_json(json!({"updates": [{"operation": "OPERATION_TOUCH",
+                "relationship": {"relation": "member", "optional_expires_at": "2026-11-01T12:00:00.000000Z"}}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"writtenAt": {"token": "t"}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let e = Engine::SpiceDb(crate::spicedb::SpiceDb::new(&server.uri(), "key", None, Duration::from_secs(5)).unwrap());
+        let ending = Change { expires_at: Some("2026-11-01T12:00:00.000000Z".into()), ..change(true, "org:1", "user:a") };
+        e.write(&[ending]).await.unwrap();
     }
 
     #[tokio::test]

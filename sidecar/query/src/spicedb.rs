@@ -178,14 +178,16 @@ impl SpiceDb {
                     .split_once(':')
                     .filter(|(t, i)| !t.is_empty() && !i.is_empty())
                     .ok_or_else(|| format!("object {:?}: expected type:id", c.object))?;
-                Ok(json!({
-                    "operation": if c.write { "OPERATION_TOUCH" } else { "OPERATION_DELETE" },
-                    "relationship": {
-                        "resource": {"object_type": object_type, "object_id": object_id},
-                        "relation": c.relation,
-                        "subject": subject_reference(&c.subject)?,
-                    }
-                }))
+                let mut relationship = json!({
+                    "resource": {"object_type": object_type, "object_id": object_id},
+                    "relation": c.relation,
+                    "subject": subject_reference(&c.subject)?,
+                });
+                // the schema must allow it (`relation viewer: user with expiration`, `use expiration`)
+                if let (true, Some(at)) = (c.write, &c.expires_at) {
+                    relationship["optional_expires_at"] = json!(at);
+                }
+                Ok(json!({"operation": if c.write { "OPERATION_TOUCH" } else { "OPERATION_DELETE" }, "relationship": relationship}))
             })
             .collect::<Result<Vec<Value>, String>>()
             .map_err(|message| CallError { permanent: true, message })?;
@@ -246,7 +248,13 @@ impl SpiceDb {
     /// Replace the schema (the text kept in Postgres).
     pub async fn write_schema(&self, schema: &str) -> Result<(), CallError> {
         let request = self.client.post(format!("{}/v1/schema/write", self.base)).json(&json!({"schema": schema}));
-        send_classified(request, "spicedb write schema").await.map(|_| ())
+        let text = send_classified(request, "spicedb write schema").await?;
+        // reads from now on at least as fresh as the schema: an older revision has not its definitions
+        let written = serde_json::from_str::<Value>(&text).ok().and_then(|v| field(&v, "written_at").cloned());
+        if let (Some(token), Ok(mut w)) = (written, self.written_at.lock()) {
+            *w = Some(token);
+        }
+        Ok(())
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, String> {

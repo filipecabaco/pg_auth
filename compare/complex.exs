@@ -6,7 +6,8 @@
 #
 #   github  teams inside teams, repo access to a user or a team, the org owner sees every repo, a
 #           ban (but not), push needed to update                          OpenFGA, SpiceDB
-#   drive   nested groups, viewers inherited down a folder tree, a public link (user:*)
+#   drive   nested groups, viewers inherited down a folder tree, a public link (user:*), set up by one
+#           authz.setup document
 #                                                                         OpenFGA, SpiceDB
 #   expense derived roles (owner, finance), an amount limit on approval, a tenant's scoped deny, camelCase attributes
 #                                                                         Cerbos
@@ -60,6 +61,29 @@ defmodule Complex do
       define viewer_grant: [user, user:*, group#member]
       define viewer: viewer_grant or viewer from folder
   """
+
+  # Drive's setup as one document, applied with authz.setup
+  @drive_setup %{
+    relationships: [
+      %{table: "app.group_members", name: "user", object: %{type: "group", column: "group_id"}, relation: "member",
+        subject: %{type: "user", column: "user_id"}},
+      %{table: "app.group_members", name: "group", object: %{type: "group", column: "group_id"}, relation: "member",
+        subject: %{type: "group", column: "child_group", relation: "member"}},
+      %{table: "app.folders", object: %{type: "folder", column: "id"}, relation: "parent", subject: %{type: "folder", column: "parent_id"}},
+      %{table: "app.docs", object: %{type: "doc", column: "id"}, relation: "folder", subject: %{type: "folder", column: "folder_id"}},
+      %{table: "app.folder_shares", name: "user", object: %{type: "folder", column: "folder_id"}, relation: "viewer_grant",
+        subject: %{type: "user", column: "user_id"}},
+      %{table: "app.folder_shares", name: "group", object: %{type: "folder", column: "folder_id"}, relation: "viewer_grant",
+        subject: %{type: "group", column: "group_id", relation: "member"}},
+      # one table, a declaration per kind of grantee; the public link is everyone (user:*)
+      %{table: "app.doc_shares", by: "grantee_kind", object: %{type: "doc", column: "doc_id"}, relation: "viewer_grant",
+        subject: %{user: %{type: "user", column: "grantee_id"}, public: %{type: "user", id: "*"}}}
+    ],
+    protect: [
+      %{table: "app.docs", type: "doc", column: "id", select: "viewer"},
+      %{table: "app.folders", type: "folder", column: "id", select: "viewer"}
+    ]
+  }
 
   # how long a change may take to become visible before the check fails
   @deadline_ms 15_000
@@ -192,16 +216,8 @@ defmodule Complex do
       "insert into app.docs values (1, 1, 'handbook'), (2, 2, 'design'), (3, 3, 'secrets'), (4, 1, 'press kit')",
       "insert into app.folder_shares values (2, null, 'engineers'), (3, 'frank', null)",
       "insert into app.doc_shares values (4, 'public', null)",
-      "select authz.relate('app.group_members', name => 'user', object_type => 'group', object_column => 'group_id', relation => 'member', subject_type => 'user', subject_column => 'user_id')",
-      "select authz.relate('app.group_members', name => 'group', object_type => 'group', object_column => 'group_id', relation => 'member', subject_type => 'group', subject_column => 'child_group', subject_relation => 'member')",
-      "select authz.relate('app.folders', object_type => 'folder', object_column => 'id', relation => 'parent', subject_type => 'folder', subject_column => 'parent_id')",
-      "select authz.relate('app.docs', object_type => 'doc', object_column => 'id', relation => 'folder', subject_type => 'folder', subject_column => 'folder_id')",
-      "select authz.relate('app.folder_shares', name => 'user', object_type => 'folder', object_column => 'folder_id', relation => 'viewer_grant', subject_type => 'user', subject_column => 'user_id')",
-      "select authz.relate('app.folder_shares', name => 'group', object_type => 'folder', object_column => 'folder_id', relation => 'viewer_grant', subject_type => 'group', subject_column => 'group_id', subject_relation => 'member')",
-      "select authz.relate('app.doc_shares', name => 'user', filter => 'grantee_kind = ''user''', object_type => 'doc', object_column => 'doc_id', relation => 'viewer_grant', subject_type => 'user', subject_column => 'grantee_id')",
-      "select authz.relate('app.doc_shares', name => 'public', filter => 'grantee_kind = ''public''', object_type => 'doc', object_column => 'doc_id', relation => 'viewer_grant', subject_type => 'user', subject_id => '*')",
-      "select authz.protect('app.docs', type => 'doc', id => 'id', read => 'viewer')",
-      "select authz.protect('app.folders', type => 'folder', id => 'id', read => 'viewer')"
+      # the whole setup as one document (authz.setup), where github above uses the calls
+      "select authz.setup('#{JSON.encode!(@drive_setup)}')"
     ])
     delivered!(conn)
     docs = &visible(conn, %{sub: &1}, "select id from app.docs order by id")

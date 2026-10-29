@@ -147,6 +147,44 @@ select authz.protect('app.memberships', type => 'org', id => 'org_id', read => '
   over the columns, so two rows are never one relationship. Rows already in the table are delivered
   when it is declared; `authz.unrelate(table)` stops delivering.
 
+### The whole setup as one document
+
+`authz.setup(jsonb)` takes who is asking, every relationship table and every protection as one
+document, applies it in one transaction, and keeps it with every earlier version
+(`authz.setups`); `select jsonb_pretty(authz.setup())` shows the one in force. It compiles into the
+calls above, so it can express what they can, and reads as a single thing to review:
+
+```sql
+select authz.setup($${
+  "subject": {"source": "jwt", "claim": "sub"},
+  "relationships": [
+    {"table": "app.memberships", "object": {"type": "org", "column": "org_id"},
+     "relation": {"column": "role", "allowed": ["admin", "member"]},
+     "subject": {"type": "user", "column": "user_id"}},
+    {"table": "app.shares", "by": "grantee_kind",
+     "object": {"type": "doc", "column": "doc_id"}, "relation": "viewer",
+     "subject": {"user":   {"type": "user", "column": "grantee_id"},
+                 "team":   {"type": "team", "column": "grantee_id", "relation": "member"},
+                 "public": {"type": "user", "id": "*"}}}],
+  "protect": [
+    {"table": "app.docs", "type": "doc", "column": "id",
+     "select": "viewer", "write": "editor", "delete": "owner"},
+    {"table": "app.memberships", "type": "org", "column": "org_id",
+     "select": "can_read", "write": "can_manage"}]
+}$$);
+```
+
+- `"column"` names a column of the row; `"id"` is a fixed value (`"*"`: everyone).
+- `"by"` declares a table once per value of a column: the subject is a map from those values.
+- `"relation"` is a name, or `{"column": ..., "allowed": [...]}`.
+- A protection takes `"select"`, `"write"`, `"update"`, `"delete"`, `"insert"` (a permission, or
+  `{"type", "column", "permission"}` on the parent), `"column"` or `"key"`, `"attributes"` (a list of
+  columns, or `{"name": "column"}`), `"hierarchy"` (`{"tree", "direct"}`), `"name"` and `"force"`.
+- `"subject"` takes `authz.configure`'s settings: `"source"`, `"claim"`, `"type"`, `"roles"`,
+  `"scope"`, `"policy_version"`, `"jwks"`, `"claims_setting"`, `"token_setting"`, `"token_header"`.
+- What the previous document declared and this one does not is removed. Unknown keys fail, naming
+  what the place takes. A relationship table declared exactly as before is not delivered again.
+
 ## 5. Inspect and debug
 
 ```sql

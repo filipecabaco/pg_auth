@@ -159,8 +159,10 @@ teams that want their rules versioned with their schema. In order:
    attribute otherwise than its column (`ownerId` from `owner`), which the expense scenario uses.
    Still to do: attributes from a joined table or a list, which would put a subquery inside the
    filter the planner hook builds after subqueries are planned, so they need their own design.
-3. **Add B**, `authz.setup(jsonb)`: apply a whole mapping in one transaction, validate it, keep it
-   formatted with history, and have `authz.setup()` return what is applied.
+3. **Add B**, `authz.setup(jsonb)`: done. It applies a whole mapping in one transaction, fails on
+   unknown keys, keeps every version in `authz.setups`, returns the one in force from
+   `authz.setup()`, and removes what a new version drops; the Drive scenario in
+   `compare/complex.exs` is set up by one document.
 4. **Add C**, `authz.set_rules(engine, text)`: store the engine's rules and push them. OpenFGA
    (WriteAuthorizationModel) and SpiceDB (WriteSchema) accept them over their APIs; Cerbos needs its
    Admin API enabled with a mutable policy store. Teams that manage rules in the engine already

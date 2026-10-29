@@ -36,6 +36,7 @@ extension_sql_file!(
         subject::subject_id
     ]
 );
+extension_sql_file!("../sql/setup.sql", name = "authz_setup", requires = ["authz_api"]);
 extension_sql_file!("../sql/lint.sql", name = "authz_lint", requires = ["authz_schema", lint::lint_policies]);
 extension_sql_file!("../sql/index.sql", name = "authz_index", requires = ["authz_schema", subject::subject_id, subject::subject_type]);
 extension_sql_file!("../sql/relationships.sql", name = "authz_relationships", requires = ["authz_schema"]);
@@ -2182,6 +2183,55 @@ mod tests {
         )
         .unwrap();
         reset_role();
+    }
+
+    #[pg_test]
+    fn one_document_sets_up_everything_and_the_next_one_replaces_it() {
+        fake_sidecar();
+        Spi::run(
+            "create table public.shares (doc_id int, grantee_kind text, grantee_id text, role text);
+             create table public.notes (id int primary key, doc_id int, body text);
+             insert into public.shares values (1, 'user', 'anne', 'viewer'), (2, 'public', null, 'viewer')",
+        )
+        .unwrap();
+        let document = r#"{
+            "subject": {"source": "jwt", "claim": "sub"},
+            "relationships": [
+              {"table": "public.shares", "by": "grantee_kind",
+               "object": {"type": "doc", "column": "doc_id"},
+               "relation": {"column": "role", "allowed": ["viewer", "editor"]},
+               "subject": {"user": {"type": "user", "column": "grantee_id"},
+                           "public": {"type": "user", "id": "*"}}}],
+            "protect": [
+              {"table": "public.notes", "type": "doc", "column": "doc_id", "select": "viewer", "write": "editor", "delete": "owner"}]
+        }"#;
+        let version = Spi::get_one_with_args::<i64>("select authz.setup($1::jsonb)", &[document.into()]).unwrap();
+        assert_eq!(version, Some(1));
+        let mut sent = outbox();
+        sent.sort();
+        assert_eq!(sent, ["write doc:1 viewer user:anne", "write doc:2 viewer user:*"]);
+        let status =
+            Spi::get_one::<String>("select value from authz.status() where item like 'protected %notes'").unwrap().unwrap_or_default();
+        assert!(status.contains("/ write editor / delete owner"), "{status}");
+        assert_eq!(Spi::get_one::<String>("select authz.setup() -> 'subject' ->> 'source'").unwrap().as_deref(), Some("jwt"));
+
+        // the same document again: nothing to deliver twice
+        Spi::run("delete from authz.outbox").unwrap();
+        Spi::get_one_with_args::<i64>("select authz.setup($1::jsonb)", &[document.into()]).unwrap();
+        assert!(outbox().is_empty());
+
+        // a document without the shares: they are no longer delivered, the notes no longer protected
+        Spi::run(r#"select authz.setup('{"subject": {"source": "jwt"}}')"#).unwrap();
+        Spi::run("insert into public.shares values (3, 'user', 'bob', 'viewer')").unwrap();
+        assert!(outbox().is_empty());
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz.bindings").unwrap(), Some(0));
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz.setups").unwrap(), Some(3));
+
+        // a typo fails, naming what it found and what the place takes
+        let typo = error_of(
+            r#"select authz.setup('{"protect": [{"table": "public.notes", "type": "doc", "colum": "doc_id", "select": "viewer"}]}')"#,
+        );
+        assert!(typo.unwrap_or_default().contains(r#"no key "colum""#));
     }
 
     #[pg_test]

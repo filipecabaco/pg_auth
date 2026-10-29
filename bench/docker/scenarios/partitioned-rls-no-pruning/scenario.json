@@ -1,0 +1,13 @@
+{
+  "id": "partitioned-rls-no-pruning",
+  "title": "Policy array does not prune partitions (16 vs 128 hash partitions)",
+  "issue": "org_id = ANY(InitPlan array) is not a plan-time constant and the sublink is never pulled up into a join, so every partition is opened; cost grows with partition count (planning + per-partition scan startup).",
+  "symptom": "naive/best_practice RLS: Append over all partitions (16 or 128), planning time and exec time grow with partition count for a small tenant, while a literal IN on the parent prunes. The baseline semi-join can prune at run time.",
+  "scale": { "default": 1000000, "meaning": "number of rows in app.documents_p16 and app.documents_p128 (100 docs per org, scale/20 users)." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "member of ~2 orgs" },
+    { "name": "broad", "id": "0", "note": "member of 50% of all orgs" }
+  ],
+  "statement_timeout": "60s"
+}

@@ -1,0 +1,14 @@
+{
+  "id": "larger-than-memory",
+  "title": "A table several times larger than shared_buffers: cold-cache, IO-bound reads under RLS",
+  "issue": "When the table does not fit in shared_buffers every extra heap page an RLS plan touches is an IO. A tenant filter that cannot be pushed into an index, or that forces a plan to read rows of other tenants, multiplies reads (see the hit/read columns).",
+  "symptom": "Selective subjects behave well when an index on tenant_id is used and badly when the plan walks the primary key and discards rows; broad subjects read most of the table either way. full_count is answered by an index-only scan (the index fits in shared_buffers after warmup); heap_sum must read the 2.2 GB heap through the 1 GB pool, so its hit/read columns show real reads.",
+  "scale": { "default": 20000000, "meaning": "rows in app.big, ~110 bytes each: 2.2 GB heap + 1.0 GB indexes (3.3 GB, 3.3x shared_buffers=1GB). Tenants = scale/5000 (4000 at default), rows of a tenant scattered over the whole heap." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "one tenant, ~5000 rows scattered over the whole heap" },
+    { "name": "medium", "id": "2", "note": "10 tenants (~50k rows)" },
+    { "name": "broad", "id": "0", "note": "half of all tenants (2000 at default scale): ~10M rows" }
+  ],
+  "statement_timeout": "60s"
+}

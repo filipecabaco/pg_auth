@@ -1,0 +1,10 @@
+{
+  "id": "rls-bypass-paths",
+  "title": "Paths that skip RLS: table owner, BYPASSRLS, materialized views, late partitions, FK probes (correctness)",
+  "issue": "Superusers and BYPASSRLS roles always skip RLS; owners skip it unless FORCE; materialized views cannot carry policies; a partition created after the policies were installed has none; FK checks run as owner.",
+  "symptom": "Every query returns the number of rows the caller (acting as user1) can see through one path. Correct: only user1's rows. Counts above that are leaks. fk_existence_oracle counts hidden rows whose existence the caller could confirm (correct 0).",
+  "scale": { "default": 2000, "meaning": "number of rows in app.docs (10 orgs; user N is a member of org N only); app.docs_p holds the same rows for orgs 1..5 (6..10 go into a late partition)" },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [ { "name": "user1", "id": "1", "note": "member of org 1" } ],
+  "statement_timeout": "60s"
+}

@@ -1,0 +1,14 @@
+{
+  "id": "large-membership-array-overhead",
+  "title": "= ANY(ARRAY(...)) over a huge per-user allowed set",
+  "issue": "id = ANY (ARRAY(SELECT my_doc_ids())) builds (and sorts) an N-element array before the first row, so even a PK lookup pays O(N) for users with many grants.",
+  "symptom": "naive_rls PK lookup latency grows with the subject's grant count (user 1: ~0.1 ms, user 9999: tens of ms).",
+  "scale": { "default": 200000, "meaning": "number of rows in app.documents; grants: user 1 = 10, user 5000 = scale/20, user 9999 = scale/2" },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "few_grants", "id": "1", "note": "10 grants" },
+    { "name": "medium_grants", "id": "5000", "note": "scale/20 grants" },
+    { "name": "many_grants", "id": "9999", "note": "scale/2 grants" }
+  ],
+  "statement_timeout": "60s"
+}

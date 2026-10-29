@@ -1,0 +1,17 @@
+# The Supabase policy as a Cerbos rule: the owner, or an app_metadata role of admin or support.
+# Cerbos resolves the principal's side when it plans: an admin's plan is "always", anyone
+# else's `owner_id = <their id>`, which the owner_id index serves.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: todo
+  rules:
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["authenticated"]
+      condition:
+        match:
+          any:
+            of:
+              - expr: request.resource.attr.owner_id == request.principal.id
+              - expr: has(request.principal.attr.app_metadata.role) && request.principal.attr.app_metadata.role in ["admin", "support"]

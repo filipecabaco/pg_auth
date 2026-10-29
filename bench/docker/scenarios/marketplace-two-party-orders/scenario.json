@@ -1,0 +1,15 @@
+{
+  "id": "marketplace-two-party-orders",
+  "title": "Marketplace orders visible to the buyer and to the sellers of any item",
+  "issue": "An order is visible to its buyer OR to any staff member of a seller whose product is in the order (order_items -> products -> sellers). The policy needs an OR across two derivations, one of them a three-table join; policies cannot read the RLS-protected order_items from the orders policy (42P17), so it is wrapped in security definer helpers that run per row or build a big id array. order_items and shipments inherit the order's visibility.",
+  "symptom": "naive_rls (per-row security definer helper doing a 3-table join) is orders of magnitude slower for sellers; best_practice_rls (InitPlan array of the seller's order ids) pays to build the array per query and cannot use it for joins/aggregates cheaply. pg_auth models the order once (buyer, seller-from-items) and pays in tuples: one buyer tuple per order and one item_seller tuple per (order, seller).",
+  "scale": { "default": 30000, "meaning": "number of orders (3 items each, shipments for ~60%). buyers = scale/5, sellers = scale/300 (seller 1 owns ~10% of all products and is in ~27% of all orders), products = scale/10. At 10x (300k orders): 900k items, 3k sellers, 30k products, ~180k shipments; OpenFGA tuples are ~ 300k buyer + ~800k item_seller + ~3k staff = ~1.1M, i.e. they grow with orders (the order object is modelled per order), unlike the membership-level scenarios. Generated with generate_series inserts only." },
+  "subject_gucs": ["pg_auth.subject_id"],
+  "subjects": [
+    { "name": "buyer", "id": "00000000-0000-0000-0000-000000000001", "claims": {"role": "authenticated"}, "note": "buyer of 0.1% of orders, no seller role" },
+    { "name": "small_seller", "id": "00000000-0000-0000-0000-000000000002", "claims": {"role": "authenticated"}, "note": "staff of seller 2: ~1% of products, in ~3% of orders" },
+    { "name": "big_seller", "id": "00000000-0000-0000-0000-000000000003", "claims": {"role": "authenticated"}, "note": "staff of seller 1: 10% of products, in ~27% of all orders" },
+    { "name": "buyer_and_seller", "id": "00000000-0000-0000-0000-000000000004", "claims": {"role": "authenticated"}, "note": "buyer of 0.2% of orders AND staff of seller 3: exercises the OR" }
+  ],
+  "statement_timeout": "30s"
+}

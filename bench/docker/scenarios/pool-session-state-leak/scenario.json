@@ -1,0 +1,10 @@
+{
+  "id": "pool-session-state-leak",
+  "title": "Identity in a GUC: session-state leakage across pooled requests, fail-open/closed, and subject spoofing",
+  "issue": "RLS policies read the subject from a GUC (request.uid / request.jwt.claims). A session-level SET survives on a pooled server connection and is inherited by the next request; SET LOCAL is erased at COMMIT and leaves '' behind; and any role can overwrite the GUC to impersonate someone else.",
+  "symptom": "Each query returns the rows visible to the request under test. Correct: 0 for an anonymous request (session_set_then_anon, set_local_then_anon, local_outside_tx, fresh_anon, spoof_org2), the user's own rows for set_local_ok. A non-zero value for an anonymous/spoofing request is a leak; an error is a fail-open-by-crash availability bug.",
+  "scale": { "default": 1000, "meaning": "number of rows in app.docs (10 orgs; user N is a member of org N only)" },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [ { "name": "user1", "id": "1", "note": "the identity set by the trusted layer; anonymous requests carry none" } ],
+  "statement_timeout": "60s"
+}

@@ -1,0 +1,40 @@
+[package]
+name = "pg-auth-sidecar"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Answers pg_auth's authorization questions from an external engine (OpenFGA, SpiceDB, Cerbos) over a local Unix socket"
+
+[dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "query"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+tokio-postgres = "0.7.18"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+# release code with symbols, for profilers (docs/development.md)
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# prose names settings, engines and protocol fields freely
+doc_markdown = "allow"
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[dev-dependencies]
+wiremock = "0.6.5"

@@ -1,0 +1,15 @@
+{
+  "id": "large-fulltext-search",
+  "title": "Full-text and trigram search over millions of documents under tenant RLS",
+  "issue": "tsvector @@ and ILIKE/pg_trgm are not leakproof (checked on PG18 in the README), so with RLS the planner may not use them as index conditions before the policy qual runs; the policy's tenant filter drives the plan and the search operator filters rows one by one.",
+  "symptom": "Searches that are a fast GIN bitmap scan without RLS become a scan of every row of the subject's tenants for broad subjects; selective subjects stay fast because their tenant set is small.",
+  "scale": { "default": 2000000, "meaning": "rows in app.documents (1.1 GB heap, 371 MB of indexes at 2M). Tenants = scale/2000, uniform. Words follow a skewed distribution over 100000 terms: term0 is in ~35% of documents, term99998 in a handful." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "member of one tenant (~2000 docs at 2M)" },
+    { "name": "mid", "id": "2", "note": "member of 10 tenants (~20k docs)" },
+    { "name": "many", "id": "0", "note": "member of 2/3 of all tenants (667 of 1000 at default scale, so listed-ids plan)" },
+    { "name": "very_many", "id": "4", "note": "member of 5/6 of all tenants" }
+  ],
+  "statement_timeout": "30s"
+}

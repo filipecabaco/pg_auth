@@ -1,0 +1,14 @@
+{
+  "id": "supabase-owner-or-role",
+  "title": "Supabase owner-or-role policy: owner_id = auth.uid() OR app_metadata role in (admin, support)",
+  "issue": "The canonical Supabase todos policy ORs an ownership test with a JWT role test. Unwrapped auth.uid()/auth.jwt() are re-evaluated per row, and even wrapped in (select ...) the OR with a row-independent InitPlan cannot use the owner_id index, so a user with 20 rows scans the whole table. Child tables repeat the policy through nested RLS.",
+  "symptom": "naive_rls and best_practice_rls scan every todo for every subject (including the user with a handful of rows); naive is slower again from per-row JSON parsing. Admins read everything and pay the same scan; the explicit baseline picks the cheap plan only because the filter is written out. pg_auth answers 'viewer of todo:N' = owner or admin of the app, so the few-rows user gets an index plan.",
+  "scale": { "default": 50000, "meaning": "number of rows in app.todos (and app.todo_items). scale/100 users (min 20); OpenFGA tuples = 2 per distinct owner + role holders, so they grow with users, not todos. User ...01 owns 20 todos per 50k, user ...02 owns 10%, user ...03 is an admin. At 10x (500000) the todos and items are 500k each, users 5000, tuples ~10k; few_rows owns 200 todos, many_rows 50k." },
+  "subject_gucs": [],
+  "subjects": [
+    { "name": "few_rows", "id": "00000000-0000-0000-0000-000000000001", "claims": { "role": "authenticated", "app_metadata": {} }, "note": "regular user owning ~0.04% of the todos" },
+    { "name": "many_rows", "id": "00000000-0000-0000-0000-000000000002", "claims": { "role": "authenticated", "app_metadata": {} }, "note": "regular user owning 10% of the todos" },
+    { "name": "admin", "id": "00000000-0000-0000-0000-000000000003", "claims": { "role": "authenticated", "app_metadata": { "role": "admin" } }, "note": "claims carry app_metadata.role = admin: sees every todo" }
+  ],
+  "statement_timeout": "30s"
+}

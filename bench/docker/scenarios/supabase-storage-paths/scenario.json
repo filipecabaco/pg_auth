@@ -1,0 +1,14 @@
+{
+  "id": "supabase-storage-paths",
+  "title": "Supabase Storage: storage.objects policies on bucket_id and storage.foldername(name)",
+  "issue": "Storage policies are written over the object's path: (storage.foldername(name))[1] = auth.uid()::text, bucket_id = '...', team folders resolved through a membership table. storage.foldername is a VOLATILE plpgsql function in Supabase, so the policy runs once per row and no index can serve it.",
+  "symptom": "naive_rls and best_practice_rls evaluate the path function for every candidate row (prefix listings and counts scan whole buckets); an immutable split_part rewrite with expression indexes (best_practice_indexed_rls) fixes it. pg_auth cannot read the path: it needs a stored acl_key column derived from the path (bucket + first folder), which duplicates the policy's path rule outside the policy.",
+  "scale": { "default": 100000, "meaning": "number of rows in storage.objects (60% user-files, 20% team-files, 20% public-assets). users = scale/50, teams = scale/500. At 10x (1M objects): 20k users, 2k teams, ~40k team-membership rows; OpenFGA tuples = one per user folder owner + one per team membership (~60k), not per object. Generated with generate_series inserts only." },
+  "subject_gucs": ["pg_auth.subject_id"],
+  "subjects": [
+    { "name": "light", "id": "00000000-0000-0000-0000-000000000001", "claims": {"role": "authenticated"}, "note": "owns a small folder, member of team 1" },
+    { "name": "team_broad", "id": "00000000-0000-0000-0000-000000000002", "claims": {"role": "authenticated"}, "note": "member of 40% of all teams (team 1 included)" },
+    { "name": "heavy_owner", "id": "00000000-0000-0000-0000-000000000003", "claims": {"role": "authenticated"}, "note": "owns 4% of all objects in her own folder, member of team 1" }
+  ],
+  "statement_timeout": "30s"
+}

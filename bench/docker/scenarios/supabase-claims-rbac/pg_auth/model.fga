@@ -1,0 +1,14 @@
+model
+  schema 1.1
+
+type user
+
+# roles are relations; role_permissions becomes the derived permissions
+type org
+  relations
+    define guest: [user]
+    define member: [user]
+    define moderator: [user]
+    define admin: [user]
+    define can_read_channels: guest or member or moderator or admin
+    define can_read_messages: member or moderator or admin

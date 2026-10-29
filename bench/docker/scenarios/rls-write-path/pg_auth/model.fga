@@ -1,0 +1,15 @@
+model
+  schema 1.1
+
+type user
+
+type tenant
+  relations
+    define editor: [user]
+    define viewer: [user] or editor
+
+type draft
+  relations
+    define tenant: [tenant]
+    define viewer: viewer from tenant
+    define editor: editor from tenant

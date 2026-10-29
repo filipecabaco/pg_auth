@@ -1,0 +1,13 @@
+model
+  schema 1.1
+
+type user
+  relations
+    define owner: [user]
+
+type room
+  relations
+    define member: [user]
+    define moderator: [user]
+    define public: [user:*]
+    define viewer: member or moderator or public

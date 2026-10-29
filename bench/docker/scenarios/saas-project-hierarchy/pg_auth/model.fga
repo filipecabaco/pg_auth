@@ -1,0 +1,21 @@
+model
+  schema 1.1
+
+type user
+
+type org
+  relations
+    define admin: [user]
+
+type team
+  relations
+    define org: [org]
+    define member: [user]
+    define can_access: member or admin from org
+
+type project
+  relations
+    define owner_team: [team]
+    define shared_team: [team]
+    define guest: [user]
+    define viewer: guest or can_access from owner_team or can_access from shared_team

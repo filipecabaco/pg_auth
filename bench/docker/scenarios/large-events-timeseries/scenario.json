@@ -1,0 +1,15 @@
+{
+  "id": "large-events-timeseries",
+  "title": "Multi-tenant events table (millions of rows): BRIN, composite, partial and covering indexes under RLS",
+  "issue": "An RLS tenant filter turns time-range scans, 'latest N' and hot-kind lookups into questions of which index the planner may still use: a tiny tenant cannot profit from created_at order, a subject with many tenants cannot profit from the (tenant_id, created_at) btree, and jsonb @> is not leakproof.",
+  "symptom": "latest_n and hot_kind walk a time-ordered index and discard other tenants' rows for tiny subjects; broad subjects lose BRIN/covering index-only scans to the policy filter.",
+  "scale": { "default": 5000000, "meaning": "rows in app.events spread over 10 days. Tenants = scale/2500 with skewed sizes (tenant 1 ~8% of rows)." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "member of the smallest tenant only (~800 rows at 5M)" },
+    { "name": "mid", "id": "2", "note": "member of 10 mid-size tenants (~20k rows at 5M)" },
+    { "name": "big_tenant", "id": "3", "note": "member of tenant 1 only (~8% of rows)" },
+    { "name": "many", "id": "0", "note": "member of 2/3 of all tenants (1333 at default scale)" }
+  ],
+  "statement_timeout": "30s"
+}

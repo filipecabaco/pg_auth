@@ -1,0 +1,30 @@
+# cargo deny check: advisories, licenses, duplicate and unknown sources, for both crates
+# (the sidecar has its own copy: sidecar/query/deny.toml)
+
+[graph]
+all-features = true
+
+[advisories]
+ignore = [
+    # serde_cbor is unmaintained, not vulnerable; pgrx depends on it directly
+    { id = "RUSTSEC-2021-0127", reason = "pulled in by pgrx; no alternative until pgrx moves" },
+]
+
+[licenses]
+allow = [
+    "MIT", "MIT-0", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "BSL-1.0",
+    "ISC", "Zlib", "Unicode-3.0", "Unlicense", "CC0-1.0", "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+# one allow list for both crates
+unused-allowed-license = "allow"
+# our own crates carry no license (publish = false)
+private = { ignore = true }
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

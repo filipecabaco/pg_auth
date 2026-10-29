@@ -1,0 +1,13 @@
+{
+  "id": "prepared-plan-role-revalidation",
+  "title": "Plan cache and RLS: cached plans are re-validated when the executing role changes",
+  "issue": "RLS plans depend on the current role (rewriteRoleId); a cached plan is re-planned when the role differs from the one it was built for. Alternating roles (anon/authenticated) on prepared statements therefore re-plans more than expected; a generic plan with a subject-dependent policy can also be wrong for the next subject.",
+  "symptom": "alt_* queries (role alternates every iteration) are slower than same_* (one role) by the planning cost of the statement, growing with partition count (flat table vs 64 partitions) and with policy complexity. force_custom_plan variants show the cost of planning every time.",
+  "scale": { "default": 50000, "meaning": "rows in app.documents and app.documents_p (64 hash partitions); each query runs a 500-iteration PL/pgSQL loop of PK lookups (see schema.sql)." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "member of ~2 orgs" },
+    { "name": "broad", "id": "0", "note": "member of 50% of all orgs" }
+  ],
+  "statement_timeout": "120s"
+}

@@ -1,0 +1,6 @@
+-- @set: pg_auth.sidecar_socket=/run/pg_auth/default.sock
+-- pg_auth with the sidecar's default LIST_LIMIT (1000): subjects with fewer objects get the
+-- listed-ids plan, the others the per-row check.
+select authz.protect('app.documents', 'org', 'org_id', 'member');
+select authz.protect('app.documents_p', 'org', 'org_id', 'member');
+select authz.protect('app.comments', 'document', 'document_id', 'viewer');

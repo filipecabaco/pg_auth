@@ -1,0 +1,14 @@
+{
+  "id": "order-by-limit-selective-policy",
+  "title": "ORDER BY created_at DESC LIMIT 20 under a selective policy",
+  "issue": "The policy filter has an unknown (default 50%) selectivity, so with LIMIT 20 the planner walks the created_at index expecting to stop after ~40 rows. A subject whose visible rows are old forces the walk through almost the whole index.",
+  "symptom": "selective subject (visible rows are the OLDEST org) is slow for naive_rls / best_practice_rls (Rows Removed by Filter close to table size, estimate 50% vs ~0.1% actual); the mid and broad subjects are fast. 'oldest' (ASC) reverses the pattern for the broad subject.",
+  "scale": { "default": 200000, "meaning": "rows in app.documents; scale/200 orgs, each org owns a contiguous time block (org 1 newest, last org oldest); 200 docs per org." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "member of only the OLDEST org (~200 docs, all at the far end of the created_at index)" },
+    { "name": "mid", "id": "2", "note": "member of every 20th org (~5% of orgs, spread over time)" },
+    { "name": "broad", "id": "0", "note": "member of the NEWEST 50% of orgs" }
+  ],
+  "statement_timeout": "60s"
+}

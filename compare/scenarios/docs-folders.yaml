@@ -1,0 +1,44 @@
+name: docs-folders
+stages:
+  - model: |
+      model
+        schema 1.1
+
+      type user
+
+      type group
+        relations
+          define member: [user, group#member]
+
+      type folder
+        relations
+          define parent: [folder]
+          define viewer: [user, group#member] or viewer from parent
+
+      type document
+        relations
+          define parent: [folder]
+          define owner: [user]
+          define blocked: [user]
+          define viewer: [user, user:*, group#member] or owner or viewer from parent
+          define can_view: viewer but not blocked
+    tuples:
+      - {object: "group:eng", relation: member, user: "user:anne"}
+      - {object: "group:all", relation: member, user: "group:eng#member"}
+      - {object: "folder:root", relation: viewer, user: "group:all#member"}
+      - {object: "folder:sub", relation: parent, user: "folder:root"}
+      - {object: "document:1", relation: parent, user: "folder:sub"}
+      - {object: "document:1", relation: owner, user: "user:bob"}
+      - {object: "document:2", relation: viewer, user: "user:*"}
+      - {object: "document:2", relation: blocked, user: "user:carl"}
+    operations:
+      - {op: check, subject: "user:anne", relation: viewer, object: "document:1", expect: true}
+      - {op: check, subject: "user:bob", relation: can_view, object: "document:1", expect: true}
+      - {op: check, subject: "user:carl", relation: viewer, object: "document:1", expect: false}
+      - {op: check, subject: "user:carl", relation: viewer, object: "document:2", expect: true}
+      - {op: check, subject: "user:carl", relation: can_view, object: "document:2", expect: false}
+      - {op: check, subject: "user:anne", relation: can_view, object: "document:2", expect: true}
+      - {op: list_objects, subject: "user:anne", relation: viewer, type: document, expect: ["document:1", "document:2"]}
+      - {op: list_objects, subject: "user:carl", relation: can_view, type: document}
+      - {op: list_users, object: "document:1", relation: viewer, filters: [user], expect: ["user:bob", "user:anne"]}
+      - {op: list_users, object: "folder:sub", relation: viewer, filters: ["group#member"]}

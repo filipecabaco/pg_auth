@@ -1,0 +1,10 @@
+{
+  "id": "policy-recursion-42p17",
+  "title": "Policy that reads its own table: infinite recursion (SQLSTATE 42P17)",
+  "issue": "A policy on memberships that subselects memberships (the natural way to say 'members can see their org's members') re-expands the same policy and Postgres raises 'infinite recursion detected in policy'. Cross-table cycles do the same.",
+  "symptom": "naive_rls returns an error for every query touching memberships (and docs, whose policy reads memberships). The other variants must return the baseline's rows.",
+  "scale": { "default": 2000, "meaning": "number of rows in app.docs (10 orgs, 100 users; each user belongs to 2 orgs)" },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [ { "name": "user1", "id": "1", "note": "member of 2 orgs; may see all members of those orgs and their docs" } ],
+  "statement_timeout": "60s"
+}

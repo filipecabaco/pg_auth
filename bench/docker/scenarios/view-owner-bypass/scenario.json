@@ -1,0 +1,10 @@
+{
+  "id": "view-owner-bypass",
+  "title": "Views over RLS tables run with the view owner's RLS status (correctness)",
+  "issue": "A view's base tables are read with the view owner's privileges. Owner = superuser / BYPASSRLS / table owner without FORCE means policies are skipped; security_invoker = true (PG15+) fixes it.",
+  "symptom": "Row counts through owner-owned views equal the whole table instead of the subject's rows. Variants whose counts differ from no_rls_baseline leak other tenants' rows through the view.",
+  "scale": { "default": 2000, "meaning": "number of rows in app.docs (10 orgs; user N is a member of org N only)" },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [ { "name": "user1", "id": "1", "note": "member of org 1 (10% of docs)" } ],
+  "statement_timeout": "60s"
+}

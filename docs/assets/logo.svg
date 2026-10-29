@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-34 191 156 158">
+  <!-- pg_auth mark: three row-slabs, the one the subject may not see pulled out and greyed -->
+    <path d="M0 291 L60 321 L60 347 L0 317 Z" fill="#249361"/>
+    <path d="M60 321 L120 291 L120 317 L60 347 Z" fill="#15553A"/>
+    <path d="M0 291 L60 261 L120 291 L60 321 Z" fill="#3ECF8E"/>
+    <path d="M0 223 L60 253 L60 279 L0 249 Z" fill="#2FA873"/>
+    <path d="M60 253 L120 223 L120 249 L60 279 Z" fill="#1F7A52"/>
+    <path d="M0 223 L60 193 L120 223 L60 253 Z" fill="#4AE29E"/>
+    <path d="M0 223 L60 193 L120 223" fill="none" stroke="#7DF0BC" stroke-width="1.6" stroke-linejoin="round"/>
+    <path d="M0 257 L60 287 L120 257 M0 257 L0 283 L60 313 L120 283 L120 257" fill="none" stroke="#3ECF8E" stroke-opacity="0.7" stroke-width="1.6" stroke-dasharray="4 4" stroke-linejoin="round"/>
+    <path d="M-32 273 L28 303 L28 329 L-32 299 Z" fill="#3E3E3E"/>
+    <path d="M28 303 L88 273 L88 299 L28 329 Z" fill="#2B2B2B"/>
+    <path d="M-32 273 L28 243 L88 273 L28 303 Z" fill="#5C5C5C"/>
+    <path d="M-32 273 L28 243 L88 273" fill="none" stroke="#8A8A8A" stroke-width="1.2" stroke-linejoin="round"/>
+</svg>

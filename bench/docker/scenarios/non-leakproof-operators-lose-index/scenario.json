@@ -1,0 +1,13 @@
+{
+  "id": "non-leakproof-operators-lose-index",
+  "title": "Non-leakproof user predicates (LIKE, jsonb @>, lower(), numeric =) under RLS",
+  "issue": "Security-barrier ordering: a user qual that is not leakproof is evaluated only after the policy quals and cannot become an index condition, so trigram / GIN / expression / numeric indexes are not used.",
+  "symptom": "For the broad subject (policy lets many rows through) the non-leakproof queries (like_*, jsonb, lower_eq, numeric_eq) are orders of magnitude slower than the baseline, while the leakproof controls (text_eq, id_range) stay fast. Selective subject hides most of the problem.",
+  "scale": { "default": 100000, "meaning": "rows in app.documents (20 docs per org, so scale/20 orgs and users: the broad subject has scale/40 orgs)." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "member of ~2 orgs (~40 docs)" },
+    { "name": "broad", "id": "0", "note": "member of 50% of all orgs" }
+  ],
+  "statement_timeout": "60s"
+}

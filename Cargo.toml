@@ -1,0 +1,62 @@
+[package]
+name = "pg_auth"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["pg18"]
+pg13 = ["pgrx/pg13", "pgrx-tests/pg13" ]
+pg14 = ["pgrx/pg14", "pgrx-tests/pg14" ]
+pg15 = ["pgrx/pg15", "pgrx-tests/pg15" ]
+pg16 = ["pgrx/pg16", "pgrx-tests/pg16" ]
+pg17 = ["pgrx/pg17", "pgrx-tests/pg17" ]
+pg18 = ["pgrx/pg18", "pgrx-tests/pg18" ]
+pg19 = ["pgrx/pg19", "pgrx-tests/pg19" ]
+pg_test = []
+
+[dependencies]
+pgrx = "=0.19.3"
+base64 = "0.23"
+hmac = "0.13"
+sha2 = "0.11"
+p256 = { version = "0.14", features = ["ecdsa"] }
+serde_json = "1"
+
+[dev-dependencies]
+[dev-dependencies.pgrx-tests]
+version = "=0.19.3"
+
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+# release code with symbols, for profilers (docs/development.md)
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# prose names SQL, settings and engines freely; backticks everywhere would not read better
+doc_markdown = "allow"
+# Postgres nodes are cast by their tag, as Postgres itself does
+cast_ptr_alignment = "allow"
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"

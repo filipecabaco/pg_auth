@@ -1,0 +1,38 @@
+{
+  "id": "saas-project-hierarchy",
+  "title": "SaaS project hierarchy (Linear/Jira-style): org -> team -> project -> issue -> comment, guests and shared projects",
+  "issue": "Every table's policy re-derives access through EXISTS chains (comments -> issues -> projects -> team_members/org_admins/shares/guests). Policy subqueries are never planned as joins, so a query joining comments, issues and projects runs the membership lookups per table and per row; the standard fixes (security definer array helper, denormalised project_id) move cost to writes.",
+  "symptom": "Measured at 50k issues: nested-EXISTS naive_rls is 1-5x the baseline (worst on joins for the broad subject); best_practice_rls is on par for narrow subjects but ~80x slower than the baseline on the org_admin 'my_open' page (ORDER BY updated_at LIMIT) and probes issues per comment (comment_search 41 ms vs 0.4 ms once project_id is denormalised onto comments).",
+  "scale": {
+    "default": 50000,
+    "meaning": "number of issues; 110 projects (22 teams x 5 projects, 2 orgs), 2 comments per issue, ~1.3 issue_labels per issue, scale/200 users (min 50) with 2 team memberships each. 10x = 500k issues, 1M comments, ~670k issue_labels, 2.5k users; OpenFGA tuples stay at memberships and shares (~1k at default, ~10k at 10x), never per issue."
+  },
+  "subject_gucs": [],
+  "subjects": [
+    {
+      "name": "guest",
+      "id": "00000000-0000-4000-8000-000000000002",
+      "claims": {
+        "role": "authenticated"
+      },
+      "note": "guest on project 7 only (1/110 of the issues)"
+    },
+    {
+      "name": "member",
+      "id": "00000000-0000-4000-8000-000000000001",
+      "claims": {
+        "role": "authenticated"
+      },
+      "note": "member of team 1 (projects 1-5) plus project 12 shared with team 1 and a few more shares (~6% of the issues)"
+    },
+    {
+      "name": "org_admin",
+      "id": "00000000-0000-4000-8000-000000000003",
+      "claims": {
+        "role": "authenticated"
+      },
+      "note": "admin of org 1: every project of its 20 teams (100 of 110 projects, ~91%)"
+    }
+  ],
+  "statement_timeout": "30s"
+}

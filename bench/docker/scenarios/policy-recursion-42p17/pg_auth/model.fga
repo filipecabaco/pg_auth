@@ -1,0 +1,15 @@
+model
+  schema 1.1
+
+type user
+
+type org
+  relations
+    define member: [user]
+
+# a doc is visible to its org's members and to users invited to it; an invite is visible with its doc
+type doc
+  relations
+    define org: [org]
+    define invitee: [user]
+    define viewer: member from org or invitee

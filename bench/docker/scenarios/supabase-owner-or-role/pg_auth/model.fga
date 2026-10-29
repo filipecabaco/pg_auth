@@ -1,0 +1,16 @@
+model
+  schema 1.1
+
+type user
+
+type app
+  relations
+    define admin: [user]
+    define support: [user]
+
+# one object per todo owner; todos and todo_items are protected by owner_id
+type account
+  relations
+    define holder: [user]
+    define app: [app]
+    define viewer: holder or admin from app or support from app

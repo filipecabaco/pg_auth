@@ -1,0 +1,10 @@
+{
+  "id": "secdef-helper-oracle",
+  "title": "SECURITY DEFINER helper that takes a user id is a membership oracle (correctness)",
+  "issue": "A SECURITY DEFINER helper skips RLS and trusts its p_user argument; EXECUTE is granted to PUBLIC by default, so any API user can ask about any other user.",
+  "symptom": "oracle_app_helper returns the number of OTHER users' memberships the caller can discover (correct: 0).",
+  "scale": { "default": 1000, "meaning": "number of rows in app.docs (10 orgs; user N is a member of org N only)" },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [ { "name": "user1", "id": "1", "note": "member of org 1; users 2..10 are other tenants" } ],
+  "statement_timeout": "60s"
+}

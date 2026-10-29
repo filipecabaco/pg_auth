@@ -1,0 +1,14 @@
+{
+  "id": "update-delete-bulk-rls-cost",
+  "title": "Bulk UPDATE / DELETE under RLS: USING and WITH CHECK per written row",
+  "issue": "UPDATE evaluates the policy USING on every candidate old row and WITH CHECK on every new row (plus the SELECT policy when the statement reads the row); DELETE evaluates USING. With function-based policies the per-row cost is added on top of heap + index maintenance.",
+  "symptom": "naive_rls (plpgsql policy) is slower than the array policy, which is slower than the owner's unprotected statement; the gap is smaller than on reads because heap/index maintenance dominates once the policy is cheap. Every query runs inside the harness's rolled-back transaction (EXPLAIN ANALYZE executes the DML).",
+  "scale": { "default": 500000, "meaning": "number of rows in app.documents (100 per org). Statements touch id % 2 = 0 rows (50% of the table is scanned/candidate; only the subject's visible subset is written)." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "member of ~2 orgs: few rows written but all candidate rows hit the policy qual" },
+    { "name": "broad", "id": "0", "note": "member of 50% of all orgs: ~25% of the table is written" }
+  ],
+  "statement_timeout": "60s",
+  "vacuum_each_run": true
+}

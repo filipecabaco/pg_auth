@@ -1,0 +1,36 @@
+name: model-change
+description: tuples persist when the model is replaced; the second model narrows what a relation accepts
+stages:
+  - model: |
+      model
+        schema 1.1
+      type user
+      type team
+        relations
+          define member: [user]
+      type repo
+        relations
+          define reader: [user, team#member]
+    tuples:
+      - {object: "team:core", relation: member, user: "user:ana"}
+      - {object: "repo:a", relation: reader, user: "team:core#member"}
+      - {object: "repo:b", relation: reader, user: "user:ben"}
+    operations:
+      - {op: check, subject: "user:ana", relation: reader, object: "repo:a", expect: true}
+      - {op: check, subject: "user:ben", relation: reader, object: "repo:b", expect: true}
+      - {op: check, subject: "user:ana", relation: reader, object: "repo:b", expect: false}
+  - model: |
+      model
+        schema 1.1
+      type user
+      type team
+        relations
+          define member: [user]
+      type repo
+        relations
+          define reader: [user]
+    tuples: []
+    operations:
+      - {op: check, subject: "user:ben", relation: reader, object: "repo:b", expect: true}
+      - {op: check, subject: "user:ana", relation: reader, object: "repo:a", expect: false}
+      - {op: check, subject: "user:ana", relation: nonexistent, object: "repo:a", expect_error: true}

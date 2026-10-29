@@ -1,0 +1,111 @@
+name: Rust
+
+# Formatting, lints (warnings fail), tests and the dependency policy for the extension and the
+# sidecar, with the toolchain mise.toml pins.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sidecar:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sidecar/query
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: sidecar/query
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  extension:
+    # every Postgres Supabase runs, and newer
+    name: extension (Postgres ${{ matrix.pg }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [15, 16, 17, 18]
+    env:
+      PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+      FEATURES: pg${{ matrix.pg }} pg_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Postgres ${{ matrix.pg }} (PGDG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libclang-dev
+          # cargo pgrx test installs the extension into this Postgres
+          sudo chmod a+rwx "$($PG_CONFIG --pkglibdir)" "$($PG_CONFIG --sharedir)/extension"
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: rust cargo:cargo-pgrx
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: pg${{ matrix.pg }}
+      - run: cargo pgrx init --pg${{ matrix.pg }} "$PG_CONFIG"
+      - run: cargo fmt --check
+        if: matrix.pg == 18
+      - run: cargo clippy --all-targets --no-default-features --features "$FEATURES" --locked -- -D warnings
+      - run: cargo pgrx test pg${{ matrix.pg }} --no-default-features
+
+  coverage:
+    runs-on: ubuntu-24.04
+    env:
+      PG_CONFIG: /usr/lib/postgresql/18/bin/pg_config
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Postgres 18 (PGDG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-18 postgresql-server-dev-18 libclang-dev
+          sudo chmod a+rwx "$($PG_CONFIG --pkglibdir)" "$($PG_CONFIG --sharedir)/extension"
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: rust cargo:cargo-pgrx cargo:cargo-llvm-cov
+      - run: cargo pgrx init --pg18 "$PG_CONFIG"
+      - name: Extension (its tests run in Postgres backends)
+        run: |
+          eval "$(cargo llvm-cov show-env --sh)"
+          cargo llvm-cov clean --workspace
+          cargo pgrx test pg18
+          cargo llvm-cov report --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Sidecar
+        working-directory: sidecar/query
+        run: cargo llvm-cov --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
+
+  supply-chain:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: rust cargo-deny cargo:cargo-machete
+      - name: Advisories, licenses, sources
+        run: |
+          cargo deny check
+          (cd sidecar/query && cargo deny check)
+      - name: Unused dependencies
+        run: cargo machete

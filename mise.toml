@@ -1,0 +1,12 @@
+# Toolchain for this repository: `mise install` sets it up, CI uses the same file.
+[tools]
+rust = { version = "1.99.1", components = "rustfmt,clippy,llvm-tools", profile = "minimal" }
+# must match the pgrx crate version in Cargo.toml
+"cargo:cargo-pgrx" = "0.19.3"
+cargo-deny = "0.20.2"
+"cargo:cargo-machete" = "0.9.2"
+# test coverage (docs/development.md)
+"cargo:cargo-llvm-cov" = "0.9.1"
+# profiling (docs/development.md)
+"cargo:samply" = "0.13.1"
+hyperfine = "2.0.0"

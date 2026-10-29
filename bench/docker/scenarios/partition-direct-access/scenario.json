@@ -1,0 +1,13 @@
+{
+  "id": "partition-direct-access",
+  "title": "Leaf partitions skip the parent's policy",
+  "issue": "RLS policies belong to the table named in the query. Querying a leaf partition directly (granted by a blanket GRANT on all tables) does not apply the parent's policy.",
+  "symptom": "naive_rls: count(*) on app.documents_p_N returns every row of the leaf while the parent returns only the subject's rows (result mismatch vs baseline = the bug). best_practice_rls installs the policy on every leaf and return the same rows as the baseline.",
+  "scale": { "default": 200000, "meaning": "number of rows in app.documents_p (16 hash partitions on org_id); 100 docs per org, scale/20 users." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "member of ~2 orgs" },
+    { "name": "broad", "id": "0", "note": "member of 50% of all orgs" }
+  ],
+  "statement_timeout": "60s"
+}

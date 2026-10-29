@@ -1,0 +1,10 @@
+{
+  "id": "jwt-claims-parsed-per-row",
+  "title": "JWT claims JSON parsed per row in a policy",
+  "issue": "USING (owner_id = (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::int) casts the ~2 KB claims string to jsonb for every row when no index lets the planner evaluate it once.",
+  "symptom": "naive_rls: Seq Scan with the jsonb expression in Filter; time proportional to rows x claim size. Wrapping in (select ...) makes an InitPlan and is orders of magnitude faster; an index on owner_id also hides the problem (naive_indexed_rls control).",
+  "scale": { "default": 300000, "meaning": "number of rows in app.documents (~1000 per owner)" },
+  "subject_gucs": ["request.uid"],
+  "subjects": [ { "name": "user1", "id": "1", "note": "owns ~1000 docs; request.jwt.claims has sub=1 (fixed via @set in the variants, so only one subject)" } ],
+  "statement_timeout": "120s"
+}

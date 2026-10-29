@@ -1,0 +1,12 @@
+# The RLS best case as a Cerbos rule: a row of the principal's tenant (the claim tenant_id).
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: tenant_row
+  rules:
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["authenticated"]
+      condition:
+        match:
+          expr: request.resource.attr.tenant_id == request.principal.attr.tenant_id

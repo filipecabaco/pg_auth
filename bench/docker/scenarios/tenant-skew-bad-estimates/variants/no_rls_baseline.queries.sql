@@ -1,0 +1,14 @@
+-- name: count_all
+select count(*) from app.events where tenant_id = {{subject}}
+
+-- name: kind_recent
+select * from app.events where tenant_id = {{subject}} and kind = 7 order by ts desc limit 50
+
+-- name: kind_count
+select count(*) from app.events where tenant_id = {{subject}} and kind = 7
+
+-- name: join_devices
+select d.model, count(*) from app.events e join app.devices d on d.id = e.device_id where e.tenant_id = {{subject}} and e.kind = 7 group by d.model order by 2 desc, 1 limit 5
+
+-- name: latest
+select * from app.events where tenant_id = {{subject}} order by ts desc limit 50

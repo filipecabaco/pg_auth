@@ -1,0 +1,38 @@
+{
+  "id": "drive-nested-group-sharing",
+  "title": "Drive-style sharing: folders shared with users and nested groups, inherited down the folder tree",
+  "issue": "Access = a share on the document's folder or any ancestor folder, granted to the user or to any group the user belongs to directly or through nested groups. A policy has to walk two graphs (folder ancestors and group parents) with recursive CTEs, per row, or call a security definer function that expands them, once per statement, or maintain closure tables on every write.",
+  "symptom": "Measured at 50k documents: naive_rls (recursive ancestor walk per document) takes ~280 ms for a full count against 0.1-2 ms for every other variant, and is 2-30x slower on recent/search; recursive_fn_rls and closure-table best_practice_rls are within ~2x of the baseline because the folder set is only 1000 folders.",
+  "scale": {
+    "default": 50000,
+    "meaning": "number of documents; folders = scale/50 (min 1000, 4-ary tree, 50 documents per folder), 364 groups (3-ary tree, 6 levels, fixed), scale/100 users (min 100) in 2 groups each, ~700 shares. 10x = 500k documents, 10k folders (folder_closure ~70k rows), 5k users; OpenFGA tuples = folders + groups + memberships + shares (~2k at default, ~25k at 10x), never per document."
+  },
+  "subject_gucs": [],
+  "subjects": [
+    {
+      "name": "direct",
+      "id": "00000000-0000-4000-8000-000000000001",
+      "claims": {
+        "role": "authenticated"
+      },
+      "note": "one direct share on folder 100 (a level-4 folder, ~2% of the tree), in no group"
+    },
+    {
+      "name": "deep_group",
+      "id": "00000000-0000-4000-8000-000000000002",
+      "claims": {
+        "role": "authenticated"
+      },
+      "note": "member of one leaf group, 6 levels below the root group; shares on that group and on 4 of its ancestor groups (~10% of the tree)"
+    },
+    {
+      "name": "big_group",
+      "id": "00000000-0000-4000-8000-000000000003",
+      "claims": {
+        "role": "authenticated"
+      },
+      "note": "member of group 3 which owns folder 2: a quarter of the folder tree and of the documents"
+    }
+  ],
+  "statement_timeout": "30s"
+}

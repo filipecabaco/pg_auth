@@ -1,0 +1,10 @@
+{
+  "id": "leaky-function-and-leakproof-marking",
+  "title": "Leaky user functions and LEAKPROOF marking (correctness, not speed)",
+  "issue": "A user-supplied non-leakproof function must never be evaluated on rows the policy hides. Marking such a function LEAKPROOF (perf hack) lets it run before the policy;",
+  "symptom": "Each query returns (visible rows, leaked) where leaked = number of times the spy function saw a hidden row. The correct answer is leaked = 0. Variants where the hash differs from no_rls_baseline leak (or raise an error that carries a hidden value).",
+  "scale": { "default": 2000, "meaning": "number of rows in app.docs (10 orgs; user N is a member of org N only)" },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [ { "name": "user1", "id": "1", "note": "sees org 1 only (10% of docs); other orgs' docs are hidden" } ],
+  "statement_timeout": "60s"
+}

@@ -1,0 +1,40 @@
+{
+  "id": "supabase-chat-rooms",
+  "title": "Supabase chat app: rooms, members with roles, messages, reactions, read state",
+  "issue": "The Slack-clone shape: every table is gated by 'is the user a member of the room (or is the room public)'. Policies cannot reference their own table (42P17), so docs and apps use per-row security definer helpers; the hot queries join and aggregate across protected tables (unread counts, LATERAL last message).",
+  "symptom": "naive_rls (per-row volatile-style helper, nested RLS through messages for reactions) is far slower than best_practice_rls (InitPlan array of visible rooms); the array grows with the user's room count and public rooms. pg_auth replaces the helper with one room object (member or moderator or public).",
+  "scale": {
+    "default": 100000,
+    "meaning": "number of messages. rooms = scale/50, users = scale/20, reactions = scale, one room_reads row per membership. Room 3 is a public room holding 5% of all messages. At 10x (1M messages): 20k rooms, 50k users, 1M reactions, ~100k membership rows (OpenFGA tuples = memberships + public rooms + one per user with reads, so ~150k); room 3 holds 50k messages. All data comes from generate_series inserts."
+  },
+  "subject_gucs": [
+    "pg_auth.subject_id"
+  ],
+  "subjects": [
+    {
+      "name": "two_rooms",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "claims": {
+        "role": "authenticated"
+      },
+      "note": "member of rooms 1 and 2, plus the few public rooms"
+    },
+    {
+      "name": "many_rooms",
+      "id": "00000000-0000-0000-0000-000000000002",
+      "claims": {
+        "role": "authenticated"
+      },
+      "note": "member of 40% of all rooms"
+    },
+    {
+      "name": "moderator",
+      "id": "00000000-0000-0000-0000-000000000003",
+      "claims": {
+        "role": "authenticated"
+      },
+      "note": "moderator of the big public room 3 (5% of all messages), member of room 1"
+    }
+  ],
+  "statement_timeout": "30s"
+}

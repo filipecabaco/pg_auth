@@ -1,0 +1,102 @@
+{
+  "id": "supabase-claims-rbac",
+  "title": "Supabase claims-based RBAC: authorize('messages.read') on org roles carried in the JWT",
+  "issue": "Supabase's RBAC guide keeps roles in JWT claims (custom access token hook) and gates every policy through a plpgsql authorize() function. Called per row it parses the claims and probes role_permissions for every message; claims also go stale until the token is refreshed.",
+  "symptom": "naive_rls (authorize(permission, org_id) per row) pays a jsonb parse plus an index probe per message, orders of magnitude over the explicit semi-join; best_practice_rls (claims turned into an org array once) is close to the target but depends on claims that lag the database. pg_auth reads live OpenFGA relations: one object per org, permission derived from the role relations.",
+  "scale": {
+    "default": 50000,
+    "meaning": "number of rows in app.messages. orgs = max(scale/200,100), 4 channels per org, scale/100 noise users (min 100) in 2 orgs each; OpenFGA tuples = one per membership (about 2 x scale/100 + 64), so they grow with users, not messages. At 10x (500000): 2500 orgs, 10000 channels, 500k messages, 5000 users, ~10k tuples; the subjects keep their fixed orgs (few_orgs 61-64, many_orgs 1-60) and so keep ~24 and ~450 readable channels' worth of orgs, with 10x the messages per org."
+  },
+  "subject_gucs": [],
+  "subjects": [
+    {
+      "name": "few_orgs",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "claims": {
+        "role": "authenticated",
+        "app_metadata": {
+          "orgs": {
+            "61": "member",
+            "62": "moderator",
+            "63": "admin",
+            "64": "guest"
+          }
+        }
+      },
+      "note": "member of orgs 61-64 with roles member, moderator, admin, guest: reads messages in 3 orgs, channels in 4"
+    },
+    {
+      "name": "many_orgs",
+      "id": "00000000-0000-0000-0000-000000000002",
+      "claims": {
+        "role": "authenticated",
+        "app_metadata": {
+          "orgs": {
+            "1": "member",
+            "2": "moderator",
+            "3": "admin",
+            "4": "guest",
+            "5": "member",
+            "6": "moderator",
+            "7": "admin",
+            "8": "guest",
+            "9": "member",
+            "10": "moderator",
+            "11": "admin",
+            "12": "guest",
+            "13": "member",
+            "14": "moderator",
+            "15": "admin",
+            "16": "guest",
+            "17": "member",
+            "18": "moderator",
+            "19": "admin",
+            "20": "guest",
+            "21": "member",
+            "22": "moderator",
+            "23": "admin",
+            "24": "guest",
+            "25": "member",
+            "26": "moderator",
+            "27": "admin",
+            "28": "guest",
+            "29": "member",
+            "30": "moderator",
+            "31": "admin",
+            "32": "guest",
+            "33": "member",
+            "34": "moderator",
+            "35": "admin",
+            "36": "guest",
+            "37": "member",
+            "38": "moderator",
+            "39": "admin",
+            "40": "guest",
+            "41": "member",
+            "42": "moderator",
+            "43": "admin",
+            "44": "guest",
+            "45": "member",
+            "46": "moderator",
+            "47": "admin",
+            "48": "guest",
+            "49": "member",
+            "50": "moderator",
+            "51": "admin",
+            "52": "guest",
+            "53": "member",
+            "54": "moderator",
+            "55": "admin",
+            "56": "guest",
+            "57": "member",
+            "58": "moderator",
+            "59": "admin",
+            "60": "guest"
+          }
+        }
+      },
+      "note": "member of orgs 1-60 (60 entries in app_metadata.orgs): reads messages in 45 orgs, channels in 60"
+    }
+  ],
+  "statement_timeout": "30s"
+}

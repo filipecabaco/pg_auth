@@ -1,0 +1,11 @@
+model
+  schema 1.1
+
+type user
+
+type folder
+  relations
+    define owner: [user]
+    define team_member: [user]
+    define public: [user:*]
+    define viewer: owner or team_member or public

@@ -1,0 +1,7 @@
+comment = 'Relationship-based authorization enforced inside Postgres'
+default_version = '@CARGO_VERSION@'
+module_pathname = 'pg_auth'
+schema = authz
+relocatable = false
+superuser = true
+trusted = false

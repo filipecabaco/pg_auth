@@ -1,0 +1,20 @@
+.DS_Store
+.idea/
+/target
+*.iml
+**/*.rs.bk
+tests/pg_regress/results
+tests/pg_regress/regression.diffs
+tests/pg_regress/regression.out
+
+# generated benchmark output
+bench/docker/results/
+bench/rls_bench_results.json
+
+# conformance harness cache
+conformance/.cache/
+conformance/results.json
+site/
+
+# brand font, downloaded to outline text (scripts/brand/logo.exs)
+scripts/brand/inter.ttf

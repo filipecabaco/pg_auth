@@ -1,0 +1,13 @@
+{
+  "id": "rls-best-case-tenant-column",
+  "title": "Plain RLS at its best: tenant_id from the JWT claims and owner_id = auth.uid(), with composite btree indexes",
+  "issue": "The control scenario. A tenant column compared with an InitPlan-wrapped JWT claim, and an owner column compared with (select auth.uid()), are the shapes Supabase recommends: the planner sees a plain equality on the leading column of a btree index and the policy costs nothing per row.",
+  "symptom": "best_practice_rls should be within noise of no_rls_baseline on every query; naive_rls (unwrapped auth.jwt()) should be close for index scans but can lose estimates; best_practice_rls_membership (tenant looked up in a members table) adds a small InitPlan. pg_auth is expected to be close; the gap per query, including planning time, is the measurement.",
+  "scale": { "default": 200000, "meaning": "number of rows in app.events (and app.events_p). 30% belong to one large tenant; the rest are spread over scale/500 tenants (~350 rows each), 5 projects per tenant, 3 users per tenant, scale/2 notes. 10x = 2,000,000 events, 4,000 tenants, 1,000,000 notes; OpenFGA tuples grow only with tenants and users (3 members + 3 accounts per tenant: 24,000 at 10x)." },
+  "subject_gucs": ["pg_auth.subject_id"],
+  "subjects": [
+    { "name": "small_tenant", "id": "23c820ce-a582-728e-0298-f368a5114e3b", "claims": { "role": "authenticated", "tenant_id": "e000342e-22c2-b525-5299-b35c4d538065" }, "note": "user-1-0, member of tenant 1 (~350 events)" },
+    { "name": "large_tenant", "id": "f16fa5ca-69a5-0158-c910-e0f711c93968", "claims": { "role": "authenticated", "tenant_id": "18710be0-abcd-cc0d-be54-237533d52e05" }, "note": "user-0-0, member of tenant 0 (30% of all events)" }
+  ],
+  "statement_timeout": "30s"
+}

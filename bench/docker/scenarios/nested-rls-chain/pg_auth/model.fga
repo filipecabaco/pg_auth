@@ -1,0 +1,18 @@
+model
+  schema 1.1
+
+type user
+
+type org
+  relations
+    define member: [user]
+
+type document
+  relations
+    define org: [org]
+    define viewer: member from org
+
+type comment
+  relations
+    define document: [document]
+    define viewer: viewer from document

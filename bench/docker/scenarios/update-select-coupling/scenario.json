@@ -1,0 +1,14 @@
+{
+  "id": "update-select-coupling",
+  "title": "UPDATE needs a SELECT policy and the new row must pass it (correctness matrix)",
+  "issue": "UPDATE/INSERT ... RETURNING/ON CONFLICT read the row, so SELECT policies apply to the existing row and, as an extra WITH CHECK, to the new row. No SELECT policy = UPDATE silently affects 0 rows; a SELECT policy of `NOT deleted AND ...` makes a soft-delete UPDATE fail with 'new row violates row-level security policy'.",
+  "symptom": "A correctness scenario: latencies are irrelevant. Look at the result-consistency section and per-query errors. naive_rls_no_select_policy: UPDATE/DELETE/upsert affect 0 rows and INSERT ... RETURNING errors. naive_rls (SELECT policy has NOT deleted): soft_delete errors. best_practice_rls matches the baseline for all statements.",
+  "scale": { "default": 20000, "meaning": "rows in app.documents (100 per org). Each statement touches only the ~100 rows of one org of the subject." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "member of ~2 orgs" },
+    { "name": "broad", "id": "0", "note": "member of 50% of all orgs (odd org ids)" }
+  ],
+  "statement_timeout": "60s",
+  "vacuum_each_run": true
+}

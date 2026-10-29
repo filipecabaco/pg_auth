@@ -1,0 +1,76 @@
+site_name: pg_auth
+site_description: An external authorization engine's decisions enforced inside PostgreSQL as row level security, for every client, planned so checking stays cheap. The engine sits behind a sidecar; OpenFGA's is the first.
+site_url: https://filipecabaco.github.io/pg_auth/
+repo_url: https://github.com/filipecabaco/pg_auth
+repo_name: filipecabaco/pg_auth
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Filipe Cabaço
+
+theme:
+  name: material
+  custom_dir: overrides
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.action.edit
+
+extra_css:
+  - stylesheets/supabase.css
+  - stylesheets/home.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/filipecabaco/pg_auth
+    - icon: simple/supabase
+      link: https://supabase.com
+
+markdown_extensions:
+  - tables
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Getting started: usage.md
+  - Implementation: design.md
+  - Performance: performance.md
+  - Benchmarks: benchmarks.md
+  - Testing: testing.md
+  - Development: development.md
+  - Research:
+      - Why RLS is slow: research/why-rls-is-slow.md
+      - RLS issues catalogue: research/rls-issues.md
+      - Broad subjects at scale: research/broad-subjects-at-scale.md
+      - Scaling authorization services: research/scaling-authz-services.md
+      - Scaling database-native authorization: research/scaling-db-native.md
+      - OpenFGA and SpiceDB: research/openfga-spicedb.md
+      - Keto, Permify, Topaz, Warrant: research/keto-permify-topaz-warrant.md
+      - Policy engines: research/policy-engines.md
+  - Proposals:
+      - Permission index: proposals/permission-index.md
+      - Attribute rules from Cerbos: proposals/cerbos.md

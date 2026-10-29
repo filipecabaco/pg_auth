@@ -1,0 +1,15 @@
+{
+  "id": "rls-write-path",
+  "title": "Write path: INSERT with WITH CHECK, UPDATE and DELETE of the subject's own rows, RETURNING and UPDATE ... FROM",
+  "issue": "RLS checks every written row: USING on the old row, WITH CHECK on the new row, plus the SELECT policy for UPDATE/RETURNING. With per-command policies on an indexed tenant column that is one InitPlan comparison per row; pg_auth does the same through authz.permits (WITH CHECK equivalent) and a role-aware write permission. Also probes where the two diverge (a row-id object cannot authorise an INSERT because its OpenFGA tuple does not exist yet).",
+  "symptom": "best_practice_rls and pg_auth should cost about the same per written row; naive_rls (unwrapped auth.jwt() in WITH CHECK) pays JSON parsing per inserted row. The pg_auth_row_object variant answers 'denied' for inserts that RLS allows.",
+  "scale": { "default": 20000, "meaning": "number of rows in app.tasks. 30% belong to one large tenant; the rest spread over scale/500 tenants (min 20), 5 projects per tenant (one in five archived), 3 users per tenant (the third is a read-only viewer), app.drafts has least(scale/20, 5000) rows. 10x = 200,000 tasks, 400 tenants; OpenFGA tuples grow with members (3 per tenant) and drafts (capped at 5000), not with tasks." },
+  "subject_gucs": ["pg_auth.subject_id"],
+  "subjects": [
+    { "name": "small_editor", "id": "23c820ce-a582-728e-0298-f368a5114e3b", "claims": { "role": "authenticated", "tenant_id": "e000342e-22c2-b525-5299-b35c4d538065", "tenant_role": "editor" }, "note": "user-1-0: editor in tenant 1 (~350 tasks)" },
+    { "name": "large_editor", "id": "f16fa5ca-69a5-0158-c910-e0f711c93968", "claims": { "role": "authenticated", "tenant_id": "18710be0-abcd-cc0d-be54-237533d52e05", "tenant_role": "editor" }, "note": "user-0-0: editor in tenant 0 (30% of all tasks)" },
+    { "name": "large_viewer", "id": "3e949d58-89d5-d3dd-797f-afc6ad6dc8fb", "claims": { "role": "authenticated", "tenant_id": "18710be0-abcd-cc0d-be54-237533d52e05", "tenant_role": "viewer" }, "note": "user-0-2: read-only member of tenant 0; every write must be denied" }
+  ],
+  "statement_timeout": "30s",
+  "vacuum_each_run": true
+}

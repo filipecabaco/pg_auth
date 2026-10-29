@@ -1,0 +1,67 @@
+/* Dark scheme only. On :root as well, these loaded after Material's own light
+   tokens and gave the light scheme dark-mode greys: #b0b0b0 text on white. */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #3ecf8e;
+  --md-primary-fg-color--light: #4ae29e;
+  --md-primary-fg-color--dark: #2fa873;
+  --md-primary-bg-color: #1f1f1f;
+  --md-primary-bg-color--light: #2a2a2a;
+  --md-accent-fg-color: #3ecf8e;
+  --md-accent-fg-color--transparent: #3ecf8e1a;
+  --md-default-bg-color: #1f1f1f;
+  --md-default-bg-color--light: #272727;
+  --md-default-bg-color--lighter: #2e2e2e;
+  --md-default-bg-color--lightest: #363636;
+  --md-default-fg-color: #ededed;
+  --md-default-fg-color--light: #b0b0b0;
+  --md-default-fg-color--lighter: #787878;
+  --md-default-fg-color--lightest: #505050;
+  --md-code-bg-color: #141414;
+  --md-code-fg-color: #ededed;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #3ecf8e;
+  --md-primary-fg-color--light: #4ae29e;
+  --md-primary-fg-color--dark: #2fa873;
+  --md-primary-bg-color: #ffffff;
+  --md-accent-fg-color: #3ecf8e;
+  --md-accent-fg-color--transparent: #3ecf8e1a;
+}
+
+/* The header stays dark in both schemes. Material colours its text and icons
+   with --md-primary-bg-color, which the slate scheme sets to this same dark
+   grey, so the menu, search and theme buttons need their own colour. */
+.md-header,
+.md-tabs {
+  background-color: #1f1f1f;
+  color: #ededed;
+}
+
+.md-header__button.md-logo {
+  padding: 0.3rem;
+}
+
+.md-nav__link--active,
+.md-nav__link:hover {
+  color: #3ecf8e;
+}
+
+a {
+  color: #3ecf8e;
+}
+
+a:hover {
+  color: #4ae29e;
+}
+
+.md-footer {
+  background-color: #141414;
+}
+
+/* Keep identifiers in table cells whole on narrow screens. Material scrolls
+   the table inside its own wrapper, so a long GUC name widens the table
+   instead of breaking mid-word. */
+.md-typeset table:not([class]) td code {
+  white-space: nowrap;
+}

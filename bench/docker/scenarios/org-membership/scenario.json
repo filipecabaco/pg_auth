@@ -1,0 +1,13 @@
+{
+  "id": "org-membership",
+  "title": "Org-membership RLS: documents, comments, hash partitions",
+  "issue": "Policy subqueries and functions are never planned as joins: per-row function calls, SubPlans, no join reordering, no partition pruning, nested-policy cost.",
+  "symptom": "naive_rls (per-row plpgsql function) is orders of magnitude slower than the explicit semi-join baseline for selective subjects; best_practice_rls (InitPlan array) is still much slower for ORDER BY LIMIT / nested policies / partitions.",
+  "scale": { "default": 50000, "meaning": "number of rows in app.documents (and app.comments, app.documents_p). 100 docs per org, scale/20 users." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "member of ~2 orgs (~200 docs at 1M scale)" },
+    { "name": "broad", "id": "0", "note": "member of 50% of all orgs" }
+  ],
+  "statement_timeout": "60s"
+}

@@ -1,0 +1,14 @@
+{
+  "id": "tenant-skew-bad-estimates",
+  "title": "Heavily skewed tenant: tenant_id = (select setting) hides the value from statistics",
+  "issue": "The InitPlan parameter's value is unknown at plan time, so tenant_id = $param is estimated as 1/ndistinct and the MCV list (tenant 1 = 50% of rows) is ignored. The (select ...) wrap that fixes per-row evaluation causes this.",
+  "symptom": "naive_rls: row estimate for the big tenant is ~scale/2000 against ~scale/2 actual (see est/actual q-error in the plan table); the planner picks nested loops / BitmapAnd / index walks sized for a tiny set, and the error compounds through the join (join_devices). Small tenants are fine. best_practice_rls (stable expression, stats-visible) estimates correctly but evaluates the function per row.",
+  "scale": { "default": 400000, "meaning": "rows in app.events (tenant 1 = 50%, tenant 2 = 10%, tenant 3 = 5%, the other 35% spread over ~2000 tenants); 20000 devices." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "big", "id": "1", "note": "tenant 1: 50% of all rows" },
+    { "name": "medium", "id": "2", "note": "tenant 2: 10% of all rows" },
+    { "name": "small", "id": "77", "note": "one of ~2000 tiny tenants (~0.02% of rows)" }
+  ],
+  "statement_timeout": "60s"
+}

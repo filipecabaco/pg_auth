@@ -1,0 +1,61 @@
+# Attribute parity (compare/attributes.exs): one rule per role, each a different shape of plan,
+# over columns that may be null.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: item
+  rules:
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["admin"]
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["user"]
+      condition:
+        match:
+          any:
+            of:
+              - expr: request.resource.attr.owner == request.principal.id
+              - expr: request.resource.attr.status == "published"
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["reviewer"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.resource.attr.size > 10
+              - expr: request.resource.attr.status != "draft"
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["scorer"]
+      condition:
+        match:
+          expr: request.resource.attr.score >= request.principal.attr.level
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["tenant"]
+      condition:
+        match:
+          expr: request.resource.attr.tenant in request.principal.attr.tenants
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["flagger"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.resource.attr.flag == true
+              - expr: "!(request.resource.attr.owner == request.principal.id)"
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["outsider"]
+      condition:
+        match:
+          expr: "!(request.resource.attr.status in [\"draft\", \"archived\"])"
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["auditor"]
+      condition:
+        match:
+          expr: request.resource.attr.size + 1.0 > 20.0

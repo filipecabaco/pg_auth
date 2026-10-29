@@ -1,0 +1,193 @@
+//! The permission index (sql/index.sql; docs/proposals/permission-index.md, phase A): full
+//! permission sets of subjects with more objects than the engine lists, kept in Postgres so the
+//! extension answers their rows without asking the engine.
+//!
+//! The sidecar owns it: it fills a set when the extension asks (`fill`), by streaming the
+//! engine's complete list, and it follows the engine's change feed (Engine::follow), marking
+//! every set stale on any change (coarse: through inheritance a change can reach any set). The extension uses fresh
+//! sets only; a set invalidated while it fills never becomes fresh (authz.index_finish).
+//! Optional: enabled by PG_AUTH_DATABASE_URL.
+
+use crate::engine::{Engine, Key};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio_postgres::{Client, NoTls};
+
+/// Rows per insert while filling.
+const CHUNK: usize = 5000;
+
+pub struct Index {
+    queue: mpsc::UnboundedSender<Key>,
+    pending: Arc<Mutex<HashSet<Key>>>,
+    fresh: Fresh,
+}
+
+/// Sizes of the sets this sidecar knows to be fresh: loaded at start, added when a fill
+/// finishes, cleared by any change. Only a shortcut (see `Index::too_many`): the extension still
+/// checks the set itself.
+type Fresh = Arc<Mutex<HashMap<Key, usize>>>;
+
+impl Index {
+    pub fn start(url: String, engine: Arc<Engine>, retry: Duration) -> Index {
+        let (queue, requests) = mpsc::unbounded_channel();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let fresh: Fresh = Arc::new(Mutex::new(HashMap::new()));
+        tokio::spawn(fill_loop(url.clone(), engine.clone(), requests, pending.clone(), fresh.clone()));
+        tokio::spawn(feed_loop(url, engine, retry, fresh.clone()));
+        Index { queue, pending, fresh }
+    }
+
+    /// Whether a fresh set shows the subject has at least `limit` objects, so the engine need
+    /// not be asked to list (that alone costs a broad subject ~25 ms on OpenFGA).
+    pub fn too_many(&self, key: &Key, limit: usize) -> bool {
+        self.fresh.lock().ok().and_then(|f| f.get(key).copied()).is_some_and(|n| n >= limit)
+    }
+
+    /// Wait until no fill of `key` is queued or running, up to `limit`: whether its set is fresh.
+    pub async fn wait(&self, key: &Key, limit: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + limit;
+        while self.pending.lock().is_ok_and(|p| p.contains(key)) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        self.fresh.lock().is_ok_and(|f| f.contains_key(key))
+    }
+
+    /// Queue a fill; a request for a set already queued or filling is dropped.
+    pub fn request(&self, key: Key) -> bool {
+        let Ok(mut pending) = self.pending.lock() else { return false };
+        if !pending.insert(key.clone()) {
+            return true;
+        }
+        self.queue.send(key).is_ok()
+    }
+}
+
+/// A connection to Postgres, reconnecting when the previous one closed.
+struct Db {
+    url: String,
+    client: Option<Client>,
+}
+
+impl Db {
+    async fn client(&mut self) -> Result<&Client, String> {
+        match self.client.take() {
+            Some(client) if !client.is_closed() => Ok(self.client.insert(client)),
+            _ => {
+                let (client, connection) = tokio_postgres::connect(&self.url, NoTls).await.map_err(|e| format!("postgres: {e}"))?;
+                tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        eprintln!("pg-auth-sidecar: index connection: {e}");
+                    }
+                });
+                Ok(self.client.insert(client))
+            }
+        }
+    }
+}
+
+async fn fill_loop(
+    url: String,
+    engine: Arc<Engine>,
+    mut requests: mpsc::UnboundedReceiver<Key>,
+    pending: Arc<Mutex<HashSet<Key>>>,
+    fresh: Fresh,
+) {
+    let mut db = Db { url, client: None };
+    while let Some(key) = requests.recv().await {
+        match fill(&mut db, &engine, &key).await {
+            Ok((n, true)) => {
+                if let Ok(mut f) = fresh.lock() {
+                    f.insert(key.clone(), n);
+                }
+                eprintln!("pg-auth-sidecar: indexed {} {}#{}: {n} objects", key.0, key.1, key.2);
+            }
+            Ok((_, false)) => eprintln!("pg-auth-sidecar: {} {}#{} changed while filling; left stale", key.0, key.1, key.2),
+            Err(e) => eprintln!("pg-auth-sidecar: filling {} {}#{}: {e}", key.0, key.1, key.2),
+        }
+        if let Ok(mut p) = pending.lock() {
+            p.remove(&key);
+        }
+    }
+}
+
+/// Fill one set. The set is marked filling (unused) before the engine is asked, so a change the
+/// feed sees from then on keeps it from becoming fresh; a fill that fails is aborted, so the set
+/// is not left filling (the extension would wait for it). -> (objects, became fresh)
+async fn fill(db: &mut Db, engine: &Engine, key: &Key) -> Result<(usize, bool), String> {
+    let client = db.client().await?;
+    let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
+    let (subject, object_type, permission) = key;
+    let set: i64 =
+        client.query_one("select authz.index_begin($1, $2, $3, null)", &[subject, object_type, permission]).await.map_err(pg)?.get(0);
+    let filled = async {
+        let ids = engine.list_all(key).await?;
+        for chunk in ids.chunks(CHUNK) {
+            client.execute("select authz.index_add($1, $2)", &[&set, &chunk.to_vec()]).await.map_err(pg)?;
+        }
+        Ok::<_, String>(ids.len())
+    }
+    .await;
+    let n = match filled {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = client.execute("select authz.index_abort($1)", &[&set]).await;
+            return Err(e);
+        }
+    };
+    let fresh: Option<bool> = client.query_one("select authz.index_finish($1)", &[&set]).await.map_err(pg)?.get(0);
+    Ok((n, fresh.unwrap_or(false)))
+}
+
+/// Follow the engine's change feed from now on and invalidate the index on any change. A failed
+/// invalidation is retried, never dropped: until it succeeds the sets it covers may be stale.
+async fn feed_loop(url: String, engine: Arc<Engine>, retry: Duration, fresh: Fresh) {
+    let mut db = Db { url, client: None };
+    let start = loop {
+        match begin(&mut db, &fresh).await {
+            Ok(start) => break start,
+            Err(e) => eprintln!("pg-auth-sidecar: change feed: {e}"),
+        }
+        tokio::time::sleep(retry).await;
+    };
+    let (notify, mut changes) = mpsc::unbounded_channel();
+    tokio::spawn(async move { engine.follow(start, retry, notify).await });
+    while changes.recv().await.is_some() {
+        if let Ok(mut f) = fresh.lock() {
+            f.clear();
+        }
+        // one invalidation covers every change reported so far
+        while changes.try_recv().is_ok() {}
+        loop {
+            match invalidate(&mut db).await {
+                Ok(()) => break,
+                Err(e) => eprintln!("pg-auth-sidecar: change feed: {e}"),
+            }
+            tokio::time::sleep(retry).await;
+        }
+    }
+}
+
+/// Load the sets already fresh (filled before a restart) and the moment the feed starts: sets
+/// filled from then on are what it guards.
+async fn begin(db: &mut Db, fresh: &Fresh) -> Result<String, String> {
+    let client = db.client().await?;
+    let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
+    let rows = client
+        .query("select subject, object_type, permission, size from authz.permission_sets where status = 'fresh'", &[])
+        .await
+        .map_err(pg)?;
+    if let Ok(mut f) = fresh.lock() {
+        for r in rows {
+            f.insert((r.get(0), r.get(1), r.get(2)), usize::try_from(r.get::<_, Option<i64>>(3).unwrap_or(0)).unwrap_or(0));
+        }
+    }
+    Ok(client.query_one(r#"select to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')"#, &[]).await.map_err(pg)?.get(0))
+}
+
+async fn invalidate(db: &mut Db) -> Result<(), String> {
+    let client = db.client().await?;
+    client.execute("select authz.index_invalidate()", &[]).await.map_err(|e| format!("postgres: {e}"))?;
+    Ok(())
+}

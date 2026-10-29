@@ -1,0 +1,14 @@
+model
+  schema 1.1
+
+type user
+
+type seller
+  relations
+    define member: [user]
+
+type order
+  relations
+    define buyer: [user]
+    define item_seller: [seller]
+    define viewer: buyer or member from item_seller

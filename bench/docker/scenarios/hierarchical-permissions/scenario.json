@@ -1,0 +1,13 @@
+{
+  "id": "hierarchical-permissions",
+  "title": "Hierarchical (folder tree) permissions: files inherit grants from ancestor folders",
+  "issue": "A recursive CTE in the policy runs per row (no pull-up, no caching between rows) so listing files is O(files x depth). Fix = precomputed closure; cost moves to writes.",
+  "symptom": "naive_rls (recursive EXISTS per file) is orders of magnitude slower than the closure/array variants.",
+  "scale": { "default": 50000, "meaning": "number of folders in a 3-ary tree (depth 10 at 50k); files = 2 x scale; scale/50 noise users each with 1-2 grants." },
+  "subject_gucs": ["request.uid", "pg_auth.subject_id"],
+  "subjects": [
+    { "name": "selective", "id": "1", "note": "granted on folders 122 (level 5) and 365 (level 6): a few hundred files" },
+    { "name": "broad", "id": "0", "note": "granted on folders 2 and 3 (two of the root's three children: ~2/3 of the tree)" }
+  ],
+  "statement_timeout": "60s"
+}

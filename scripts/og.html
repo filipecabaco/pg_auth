@@ -1,0 +1,104 @@
+<!doctype html>
+<!-- Source for docs/assets/og.png, the 1200x630 social card, in pg_redis's layout. Re-render with
+     `mise run og` after editing; the PNG is what link unfurlers fetch. -->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800&family=JetBrains+Mono:wght@400;600&display=block" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 630px; }
+  body {
+    font-family: Inter, "Helvetica Neue", Arial, sans-serif;
+    color: #ededed;
+    background:
+      radial-gradient(700px 420px at 160px 120px, #3ecf8e2e, transparent 70%),
+      radial-gradient(600px 400px at 1150px 640px, #3ecf8e14, transparent 70%),
+      #171717;
+    position: relative;
+    overflow: hidden;
+  }
+  /* faint isometric grid, as on pg_redis's card */
+  body::before {
+    content: "";
+    position: absolute; inset: 0;
+    background-image:
+      repeating-linear-gradient(30deg, #ffffff07 0 1px, transparent 1px 48px),
+      repeating-linear-gradient(-30deg, #ffffff07 0 1px, transparent 1px 48px);
+    mask-image: linear-gradient(90deg, transparent 35%, #000 100%);
+  }
+  .card { position: absolute; inset: 72px 80px 64px; display: flex; flex-direction: column; }
+  .brand { display: flex; align-items: center; gap: 18px; }
+  .brand svg { width: 60px; height: 61px; }
+  .word { font-weight: 800; font-size: 40px; letter-spacing: -1.5px; color: #fff; }
+  .word i { display: inline-block; width: 18px; height: 5px; background: #3ecf8e; border-radius: 1px; margin: 0 3px -1px; font-style: normal; }
+  h1 {
+    margin-top: 48px;
+    font-size: 62px; line-height: 1; font-weight: 800; letter-spacing: -2.4px; color: #fff; max-width: 680px;
+  }
+  h1 span { color: #3ecf8e; }
+  p.lede { margin-top: 24px; font-size: 25px; line-height: 1.4; color: #a8a8a8; max-width: 660px; font-weight: 500; }
+  .foot { margin-top: auto; display: flex; align-items: center; gap: 12px; }
+  .chip {
+    font: 600 19px "JetBrains Mono", ui-monospace, monospace;
+    color: #d0d0d0; padding: 9px 14px; border: 1px solid #333; border-radius: 8px; background: #1d1d1d;
+  }
+  .chip b { color: #3ecf8e; font-weight: 600; }
+  .url { margin-left: auto; font: 400 19px "JetBrains Mono", ui-monospace, monospace; color: #9a9a9a; }
+
+  .term {
+    position: absolute; right: 80px; top: 72px; width: 316px;
+    font: 400 17px/1.65 "JetBrains Mono", ui-monospace, monospace;
+    font-variant-ligatures: none;
+    background: #0f0f0f; border: 1px solid #2c2c2c; border-radius: 12px; padding: 16px 20px;
+    box-shadow: 0 30px 60px -20px #000;
+  }
+  .term .sep { border-top: 1px dashed #2c2c2c; margin: 8px 0; }
+  .term .p { color: #3ecf8e; } .term .o { color: #a0a0a0; }
+</style>
+</head>
+<body>
+  <div class="term">
+    <div><span class="p">bob=&gt;</span> select count(*)</div>
+    <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;from documents;</div>
+    <div class="o">&nbsp;0</div>
+    <div class="sep"></div>
+    <div><span class="p">anne=&gt;</span> insert into</div>
+    <div>&nbsp;&nbsp;memberships values</div>
+    <div>&nbsp;&nbsp;(1, 'bob', 'member');</div>
+    <div class="o">INSERT 0 1</div>
+    <div class="sep"></div>
+    <div><span class="p">bob=&gt;</span> select count(*)</div>
+    <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;from documents;</div>
+    <div class="o">&nbsp;3</div>
+  </div>
+  <div class="card">
+    <div class="brand">
+      <svg viewBox="-34 191 156 158" aria-hidden="true">
+        <path d="M0 291 L60 321 L60 347 L0 317 Z" fill="#249361"/>
+        <path d="M60 321 L120 291 L120 317 L60 347 Z" fill="#15553A"/>
+        <path d="M0 291 L60 261 L120 291 L60 321 Z" fill="#3ECF8E"/>
+        <path d="M0 223 L60 253 L60 279 L0 249 Z" fill="#2FA873"/>
+        <path d="M60 253 L120 223 L120 249 L60 279 Z" fill="#1F7A52"/>
+        <path d="M0 223 L60 193 L120 223 L60 253 Z" fill="#4AE29E"/>
+        <path d="M0 223 L60 193 L120 223" fill="none" stroke="#7DF0BC" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M0 257 L60 287 L120 257 M0 257 L0 283 L60 313 L120 283 L120 257" fill="none" stroke="#3ECF8E" stroke-opacity="0.7" stroke-width="1.6" stroke-dasharray="4 4" stroke-linejoin="round"/>
+        <path d="M-32 273 L28 303 L28 329 L-32 299 Z" fill="#3E3E3E"/>
+        <path d="M28 303 L88 273 L88 299 L28 329 Z" fill="#2B2B2B"/>
+        <path d="M-32 273 L28 243 L88 273 L28 303 Z" fill="#5C5C5C"/>
+        <path d="M-32 273 L28 243 L88 273" fill="none" stroke="#8A8A8A" stroke-width="1.2" stroke-linejoin="round"/>
+      </svg>
+      <span class="word">pg<i></i>auth</span>
+    </div>
+    <h1>Your app's permissions,<br><span>enforced by Postgres.</span></h1>
+    <p class="lede">No backend. An authorization engine holds the rules, Postgres shows each user only their rows, and access is granted by writing a row.</p>
+    <div class="foot">
+      <span class="chip"><b>OpenFGA</b> · SpiceDB · Cerbos</span>
+      <span class="chip">PG 15–18</span>
+      <span class="chip">live demo</span>
+      <span class="url">filipecabaco.github.io/pg_auth</span>
+    </div>
+  </div>
+</body>
+</html>

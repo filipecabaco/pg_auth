@@ -25,3 +25,12 @@ snowglobe build docker/demo --out docs/demo
 [tasks.docs]
 description = "Serve the docs site locally with live reload"
 run = 'uvx --from "mkdocs>=1.6,<2" --with mkdocs-material mkdocs serve'
+
+[tasks.og]
+description = "Re-render docs/assets/og.png (the social card) from scripts/og.html"
+run = """
+CHROME="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
+"$CHROME" --headless=new --disable-gpu --hide-scrollbars \\
+  --force-device-scale-factor=1 --window-size=1200,630 --virtual-time-budget=5000 \\
+  --screenshot=docs/assets/og.png "file://$PWD/scripts/og.html"
+"""

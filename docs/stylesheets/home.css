@@ -1034,3 +1034,57 @@
     white-space: normal;
   }
 }
+
+/* The rules each engine reads, collapsed under the plain-words version; only the selected
+   engine's are shown */
+.pa-rules {
+  margin: 0 0 0.6rem;
+}
+
+.pa-rules summary {
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: #d0d0d0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.pa-rules summary::-webkit-details-marker {
+  display: none;
+}
+
+.pa-rules summary::before {
+  content: "";
+  display: inline-block;
+  margin: 0 0.5rem 0.1em 0.1rem;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-right: 1.5px solid var(--pa-green);
+  border-bottom: 1.5px solid var(--pa-green);
+  transform: rotate(-45deg);
+  transition: transform 200ms var(--pa-ease);
+}
+
+.pa-rules[open] summary::before {
+  transform: rotate(45deg);
+}
+
+.pa-rules summary:hover {
+  color: #fff;
+}
+
+.pa-rules p {
+  margin: 0.5rem 0 0.45rem;
+}
+
+.pa-rules pre {
+  max-height: 22rem;
+  overflow: auto;
+}
+
+[data-engine="openfga"] [data-engine-show]:not([data-engine-show="openfga"]),
+[data-engine="spicedb"] [data-engine-show]:not([data-engine-show="spicedb"]),
+[data-engine="cerbos"] [data-engine-show]:not([data-engine-show="cerbos"]) {
+  display: none;
+}

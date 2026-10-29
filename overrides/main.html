@@ -9,7 +9,8 @@
         else config.site_name ~ " — authorization, enforced by Postgres") -%}
   {%- set og_description = page.meta.description if page and page.meta and page.meta.description
         else config.site_description -%}
-  {%- set og_image = config.site_url ~ "assets/og.png" -%}
+  {#- bump ?v= when og.png changes: unfurlers (Slack, X) cache the image by URL -#}
+  {%- set og_image = config.site_url ~ "assets/og.png?v=2" -%}
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="{{ config.site_name }}">
   <meta property="og:title" content="{{ og_title }}">
@@ -19,7 +20,7 @@
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="pg_auth: an authorization engine's decisions enforced by PostgreSQL">
+  <meta property="og:image:alt" content="pg_auth: your app's permissions, enforced by Postgres">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="{{ og_title }}">
   <meta name="twitter:description" content="{{ og_description }}">

@@ -32,6 +32,64 @@
           them. Anne is the admin of org 1, which owns three documents. Bob is in no org yet.</p>
         <p data-for="attributes">The rule: everyone reads published documents and their own drafts, and only the owner
           edits. Anne owns three documents, one of them published.</p>
+        {#- The rules each engine reads, exactly as docker/demo loads them (models/model.fga,
+            models/schema.zed, cerbos/document.yaml): change them there and here together -#}
+        <details class="pa-rules">
+          <summary>The rules, as <span data-engine-name>OpenFGA</span> reads them</summary>
+          <p>Written in the engine's own language; pg_auth does not translate them. Rules you already
+            have work as they are, apart from OpenFGA conditions and SpiceDB caveats: those need context
+            pg_auth does not send yet, so they deny.</p>
+<pre data-engine-show="openfga"><code>model
+  schema 1.1
+type user
+type org
+  relations
+    define admin: [user]
+    define member: [user]
+    define can_manage: admin
+    define can_read: member or admin
+type document
+  relations
+    define org: [org]
+    define shared_with: [user]
+    define viewer: shared_with or can_read from org
+    define editor: can_manage from org</code></pre>
+<pre data-engine-show="spicedb"><code>definition user {}
+
+definition org {
+    relation admin: user
+    relation member: user
+    permission can_manage = admin
+    permission can_read = member + admin
+}
+
+definition document {
+    relation org: org
+    relation shared_with: user
+    permission viewer = shared_with + org-&gt;can_read
+    permission editor = org-&gt;can_manage
+}</code></pre>
+<pre data-engine-show="cerbos"><code>apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: document
+  rules:
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["authenticated"]
+      condition:
+        match:
+          any:
+            of:
+              - expr: request.resource.attr.owner == request.principal.id
+              - expr: request.resource.attr.status == "published"
+    - actions: ["update"]
+      effect: EFFECT_ALLOW
+      roles: ["authenticated"]
+      condition:
+        match:
+          expr: request.resource.attr.owner == request.principal.id</code></pre>
+        </details>
       </div>
       <div class="pa-actions">
         <button type="button" class="pa-btn pa-btn--primary" data-boot>

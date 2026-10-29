@@ -1,6 +1,6 @@
 ---
 template: home.html
-title: pg_auth — authorization, enforced by Postgres
+title: pg_auth — your app's permissions, enforced by Postgres
 hide:
   - navigation
   - toc

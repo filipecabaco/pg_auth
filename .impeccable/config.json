@@ -11,6 +11,11 @@
         "rule": "overused-font",
         "value": "inter",
         "createdAt": "2026-10-29T13:23:40.859Z"
+      },
+      {
+        "rule": "design-system-font",
+        "value": "mono\",ui-monospace,monospace",
+        "createdAt": "2026-10-29T16:50:27.959Z"
       }
     ]
   }

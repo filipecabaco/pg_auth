@@ -1,5 +1,5 @@
 site_name: pg_auth
-site_description: An external authorization engine's decisions enforced inside PostgreSQL as row level security, for every client, planned so checking stays cheap. The engine sits behind a sidecar; OpenFGA's is the first.
+site_description: Your app's permissions, enforced by Postgres, with no backend. An authorization engine (OpenFGA, SpiceDB or Cerbos) holds the rules; Postgres shows each user only their rows, and access is granted by writing a row. Live demo in the browser.
 site_url: https://filipecabaco.github.io/pg_auth/
 repo_url: https://github.com/filipecabaco/pg_auth
 repo_name: filipecabaco/pg_auth

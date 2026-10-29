@@ -304,7 +304,10 @@ resourcePolicy:
   </div>
   <p class="pa-proof">
     Sharing with a team or adding a role is a change to the model, or a row in a table. There is no
-    policy to edit. <a href="{{ 'usage/#3-protect-tables' | url }}">Protecting tables</a>
+    policy to edit. The model can live in Postgres with your migrations: <code>authz.set_rules</code>
+    pushes it to the engine, and a table naming a permission it lacks fails when you commit.
+    <a href="{{ 'usage/#3-protect-tables' | url }}">Protecting tables</a> ·
+    <a href="{{ 'usage/#the-engines-rules-kept-in-postgres' | url }}">Rules kept in Postgres</a>
   </p>
 </section>
 
@@ -425,8 +428,19 @@ resourcePolicy:
       <h3>A grant shows within tens of milliseconds</h3>
       <p>
         A membership or a share written as a row showed to its subject 4 to 34 ms after the commit,
-        measured against OpenFGA and SpiceDB: pg_auth tells every session to ask again. A change made
-        in the engine itself, outside Postgres, shows within the sidecar's one-second cache.
+        measured against OpenFGA and SpiceDB: pg_auth tells every session to ask again. A share
+        written with an end went 60 to 120 ms after it. A change made in the engine itself, outside
+        Postgres, shows within the sidecar's one-second cache.
+      </p>
+    </div>
+    <div class="pa-expect__item">
+      <h3>Rules on the row's own values cost what the engine allows</h3>
+      <p>
+        A condition on a value of the row being read (a report's level against a reader's
+        clearance): SpiceDB lists once and asks only about rows whose grant needs that value;
+        OpenFGA asks about every row read, which suits reads by key, not scans. Cerbos compiles its
+        rules into a filter on the row's columns.
+        <a href="{{ 'usage/#4-grant-access-by-writing-rows' | url }}">Conditions and caveats</a>
       </p>
     </div>
     <div class="pa-expect__item">
@@ -460,9 +474,9 @@ resourcePolicy:
   <table>
     <thead><tr><th>Engine</th><th>Decides on</th><th>Good for</th></tr></thead>
     <tbody>
-      <tr><th><a href="https://openfga.dev">OpenFGA</a></th><td>relationships</td><td>sharing, teams, orgs, folders: who is related to what</td></tr>
-      <tr><th><a href="https://authzed.com/spicedb">SpiceDB</a></th><td>relationships</td><td>the same model, with SpiceDB's schema and consistency</td></tr>
-      <tr><th><a href="https://cerbos.dev">Cerbos</a></th><td>the row's fields and the user's roles</td><td>owners, statuses, departments: rules over attributes</td></tr>
+      <tr><th><a href="https://openfga.dev">OpenFGA</a></th><td>relationships</td><td>sharing, teams, orgs, folders: who is related to what. Conditions on the request (a region, the time), and grants that end</td></tr>
+      <tr><th><a href="https://authzed.com/spicedb">SpiceDB</a></th><td>relationships</td><td>the same model, with SpiceDB's schema and consistency. Caveats, including on the row's own values, and grants SpiceDB itself ends</td></tr>
+      <tr><th><a href="https://cerbos.dev">Cerbos</a></th><td>the row's fields and the user's roles</td><td>owners, statuses, departments: rules over attributes. A tenant's own policies (scopes)</td></tr>
     </tbody>
   </table>
   <p class="pa-proof">

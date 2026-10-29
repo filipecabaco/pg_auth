@@ -693,6 +693,11 @@
   border-top: 1px solid var(--pa-line);
 }
 
+/* a last item alone in its row (the first spans both columns) takes the row */
+.pa-expect__item:last-child:nth-child(even) {
+  grid-column: 1 / -1;
+}
+
 .pa-expect__item:first-child {
   grid-column: 1 / -1;
   display: grid;
@@ -1333,5 +1338,41 @@
   .pa-demo__setup pre {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+}
+
+/* Engines on a phone: one engine per block, what it decides on beside its name, what it is good
+   for beneath, full width */
+@media (max-width: 40em) {
+  .md-typeset .pa-enginelist table,
+  .md-typeset .pa-enginelist tbody {
+    display: block;
+  }
+
+  .md-typeset .pa-enginelist thead {
+    display: none;
+  }
+
+  .md-typeset .pa-enginelist tr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 0.8rem;
+    padding-block: 0.7rem;
+    border-top: 1px solid var(--pa-line);
+  }
+
+  .md-typeset .pa-enginelist table tr > th,
+  .md-typeset .pa-enginelist table tr > td {
+    padding: 0;
+    border: 0;
+  }
+
+  .md-typeset .pa-enginelist table tr > td:nth-child(2) {
+    color: var(--pa-muted);
+  }
+
+  .md-typeset .pa-enginelist table tr > td:last-child {
+    grid-column: 1 / -1;
+    padding-top: 0.35rem;
   }
 }

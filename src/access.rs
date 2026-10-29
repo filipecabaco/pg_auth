@@ -24,10 +24,11 @@ fn permits(object_type: &str, permission: &str, id: Option<&str>) -> bool {
     sidecar::permits(&subject, object_type, permission, id).unwrap_or_else(|e| fail(&e))
 }
 
-/// The policy on a table protected by its rows' attributes (authz.protect attributes =>), for an
-/// engine that decides on them: the subject's plan, fetched once per transaction and evaluated
-/// here against the row, with no round trip per row; a plan outside the condition language asks
-/// the engine for each row. No subject: false. Engine unreachable: error (fail closed).
+/// The policy on a table protected by its rows' attributes (authz.protect attributes =>): for an
+/// engine that decides on them (Cerbos), or whose conditions and caveats take them (OpenFGA,
+/// SpiceDB). The subject's plan, fetched once per transaction, is evaluated here against the row,
+/// with no round trip per row but for a `check` it reaches; a plan outside the condition language
+/// asks the engine for each row. No subject: false. Engine unreachable: error (fail closed).
 #[pg_extern(stable, parallel_restricted, security_definer)]
 #[search_path(pg_catalog, pg_temp)]
 #[expect(clippy::needless_pass_by_value, reason = "pgrx hands a JsonB argument over by value")]
@@ -37,7 +38,13 @@ fn permits_resource(object_type: &str, permission: &str, id: Option<&str>, attrs
     match &*plan {
         Plan::Always => true,
         Plan::Never => false,
-        Plan::Condition(condition) => crate::condition::allows(condition, id, &attrs.0),
+        // a `check` in it: the engine asked about this row, with its attributes as context
+        Plan::Condition(condition) => crate::condition::allows_checking(condition, id, &attrs.0, &mut || {
+            Some(
+                sidecar::check_resource(&subject, object_type, permission, id, &attrs.0, subject::principal().as_ref())
+                    .unwrap_or_else(|e| fail(&e)),
+            )
+        }),
         Plan::Rows => sidecar::check_resource(&subject, object_type, permission, id, &attrs.0, subject::principal().as_ref())
             .unwrap_or_else(|e| fail(&e)),
     }

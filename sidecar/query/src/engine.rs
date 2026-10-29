@@ -39,6 +39,19 @@ pub struct Change {
     pub condition: Option<(String, Value)>,
 }
 
+/// A row's context for a condition or caveat: the request's, with the row's own values (which
+/// win, for a name both give).
+fn item_context(request: Option<&Value>, row: Option<&Value>) -> Option<Value> {
+    match (request.and_then(Value::as_object), row.and_then(Value::as_object)) {
+        (None, None) => None,
+        (r, w) => {
+            let mut context = r.cloned().unwrap_or_default();
+            context.extend(w.cloned().unwrap_or_default());
+            Some(Value::Object(context))
+        }
+    }
+}
+
 /// `changes` cut into requests, in order: at most `max` each, and no relationship twice in one
 /// (the engines refuse a request that names one relationship twice).
 pub fn batches(changes: &[Change], max: usize) -> Vec<&[Change]> {
@@ -131,9 +144,12 @@ impl Engine {
         context: &Context<'_>,
     ) -> Result<Vec<bool>, String> {
         let chunk: Vec<&String> = at.iter().map(|&i| &ids[i]).collect();
+        // each row's context for conditions and caveats: the request's, and the row's values
+        let contexts: Vec<Option<Value>> =
+            at.iter().map(|&i| item_context(context.request, context.attrs.and_then(|a| a.get(i)))).collect();
         match self {
-            Engine::OpenFga(e) => e.check(subject, permission, object_type, &chunk, context.request).await,
-            Engine::SpiceDb(e) => e.check(subject, permission, object_type, &chunk, context.request).await,
+            Engine::OpenFga(e) => e.check(subject, permission, object_type, &chunk, &contexts).await,
+            Engine::SpiceDb(e) => e.check(subject, permission, object_type, &chunk, &contexts).await,
             Engine::Cerbos(e) => {
                 let attrs: Vec<Option<&Value>> = at.iter().map(|&i| context.attrs.and_then(|a| a.get(i))).collect();
                 e.check(subject, permission, object_type, &chunk, &attrs, context.principal).await
@@ -199,10 +215,22 @@ impl Engine {
 
     /// Which resources the subject may access, as a condition on their attributes; engines that
     /// decide on relationships have none to give.
-    pub async fn plan(&self, (subject, object_type, permission): &Key, principal: Option<&Value>) -> Result<Plan, String> {
+    ///
+    /// For a table whose rows give conditions and caveats their values (protected with
+    /// attributes): SpiceDB answers which objects the subject has, and which it has if a caveat
+    /// holds for the row (`limit` or more: check every row); OpenFGA's ListObjects takes no
+    /// row's values, and fails on a condition missing them, so every row is checked.
+    pub async fn plan(
+        &self,
+        (subject, object_type, permission): &Key,
+        principal: Option<&Value>,
+        context: Option<&Value>,
+        limit: usize,
+    ) -> Result<Plan, String> {
         match self {
             Engine::Cerbos(e) => e.plan(subject, permission, object_type, principal).await,
-            _ => Err(format!("{} plans no conditions: protect the table by its id", self.name())),
+            Engine::SpiceDb(e) => e.plan(subject, permission, object_type, limit, context).await,
+            Engine::OpenFga(_) => Ok(Plan::Rows),
         }
     }
 
@@ -622,14 +650,14 @@ mod tests {
         }
         let e = cerbos(&server);
         let keys = ["all", "none", "mine", "odd", "weird"].map(|action| key("user:anne", "note", action));
-        let plan = |i: usize| e.plan(&keys[i], Some(&principal));
+        let plan = |i: usize| e.plan(&keys[i], Some(&principal), None, 1000);
         assert_eq!(plan(0).await.unwrap(), Plan::Always);
         assert_eq!(plan(1).await.unwrap(), Plan::Never);
         assert_eq!(plan(2).await.unwrap(), Plan::Condition(json!({"op": "eq", "args": [{"column": "owner"}, {"value": "anne"}]})));
         assert_eq!(plan(3).await.unwrap(), Plan::Rows, "outside the language: checked per row");
         assert!(plan(4).await.err().unwrap().contains("KIND_SOMETHING"));
         // no roles: Cerbos cannot answer, and nothing is asked
-        assert!(e.plan(&key("user:anne", "note", "all"), None).await.err().unwrap().contains("no roles"));
+        assert!(e.plan(&key("user:anne", "note", "all"), None, None, 1000).await.err().unwrap().contains("no roles"));
     }
 
     #[tokio::test]
@@ -655,7 +683,7 @@ mod tests {
             .await;
         let principal = json!({"roles": ["user"], "scope": "acme", "policy_version": "v2"});
         let e = cerbos(&server);
-        assert_eq!(e.plan(&key("user:anne", "expense", "view"), Some(&principal)).await.unwrap(), Plan::Never);
+        assert_eq!(e.plan(&key("user:anne", "expense", "view"), Some(&principal), None, 1000).await.unwrap(), Plan::Never);
         let context = Context { principal: Some(&principal), attrs: None, request: None };
         assert_eq!(e.check(&key("user:anne", "expense", "view"), &["1".to_owned()], &context, 1).await.unwrap(), vec![false]);
     }
@@ -693,12 +721,62 @@ mod tests {
         }
     }
 
+    // a table whose rows give caveats their values: SpiceDB's plan decides definite rows in
+    // Postgres and checks only conditional ones, each with its row's values beside the request's;
+    // OpenFGA checks every row, with the same
+    #[tokio::test]
+    async fn rows_giving_caveats_values_are_checked_only_where_the_grant_is_conditional() {
+        let server = MockServer::start().await;
+        let looked_up = [("1", "LOOKUP_PERMISSIONSHIP_HAS_PERMISSION"), ("2", "LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION")]
+            .map(|(id, p)| format!(r#"{{"result":{{"resourceObjectId":"{id}","permissionship":"{p}"}}}}"#))
+            .join("\n");
+        Mock::given(path("/v1/permissions/resources"))
+            .and(body_partial_json(json!({"context": {"region": "eu"}})))
+            .respond_with(ResponseTemplate::new(200).set_body_string(looked_up))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(path("/v1/permissions/checkbulk"))
+            .and(body_partial_json(json!({"items": [{"resource": {"object_id": "2"}, "context": {"region": "eu", "level": 3}}]})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"pairs": [{"item": {"permissionship": "PERMISSIONSHIP_HAS_PERMISSION"}}]})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let e = Engine::SpiceDb(crate::spicedb::SpiceDb::new(&server.uri(), "key", None, Duration::from_secs(5)).unwrap());
+        let k = key("user:anne", "doc", "viewer");
+        let region = json!({"region": "eu"});
+        let Ok(Plan::Condition(plan)) = e.plan(&k, None, Some(&region), 1000).await else { panic!("not a condition") };
+        assert_eq!(
+            plan,
+            json!({"op": "or", "args": [
+                {"op": "in", "args": [{"id": true}, {"value": ["1"]}]},
+                {"op": "and", "args": [{"op": "in", "args": [{"id": true}, {"value": ["2"]}]}, {"op": "check", "args": []}]}]})
+        );
+        // too many to list: every row is checked
+        assert_eq!(e.plan(&k, None, Some(&region), 2).await.unwrap(), Plan::Rows);
+        let row = [json!({"level": 3})];
+        let asked = Context { attrs: Some(&row), request: Some(&region), ..Context::default() };
+        assert_eq!(e.check(&k, &["2".into()], &asked, 1).await.unwrap(), [true]);
+
+        let server = MockServer::start().await;
+        Mock::given(path("/stores/s1/batch-check"))
+            .and(body_partial_json(json!({"checks": [{"context": {"region": "eu", "level": 3}}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": {"0": {"allowed": true}}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(openfga(&server).check(&k, &["2".into()], &asked, 1).await.unwrap(), [true]);
+    }
+
     #[tokio::test]
     async fn each_engine_refuses_what_it_cannot_answer() {
         let server = MockServer::start().await;
         let fga = openfga(&server);
         let c = cerbos(&server);
-        assert!(fga.plan(&key("user:anne", "doc", "viewer"), None).await.err().unwrap().contains("openfga plans no conditions"));
+        // a row's values reach OpenFGA only in a check: every row is checked
+        assert_eq!(fga.plan(&key("user:anne", "doc", "viewer"), None, None, 1000).await.unwrap(), Plan::Rows);
         assert!(matches!(c.list(&key("user:anne", "note", "read"), 10, None).await.unwrap(), Listed::TooMany));
         assert!(c.list_all(&key("user:anne", "note", "read")).await.is_err());
         let (tx, _rx) = mpsc::unbounded_channel();

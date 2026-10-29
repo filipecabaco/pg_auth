@@ -2,7 +2,7 @@
 //! (docs/proposals/cerbos.md).
 
 use super::REPLAN_ON_BREADTH;
-use super::guard::{Guard, call_sublink, hash_by_value, put};
+use super::guard::{Guard, Place, call_sublink, hash_by_value, put};
 use crate::pg::{Memory, Node, Oid, catalog, pg_sys};
 use crate::sidecar;
 use std::collections::HashMap;
@@ -25,7 +25,13 @@ pub fn compile_resource(g: &Guard) -> Result<String, String> {
     let plan: serde_json::Value = serde_json::from_str(&shape).map_err(|e| e.to_string())?;
     let columns = p.attrs.and_then(attribute_columns).ok_or("the policy's attributes are not plain name/column pairs")?;
     let m = g.query.memory();
-    let c = Compiler { m, g, columns };
+    // the policy as it stands: what a `check` in the plan compiles to (the row asked about)
+    let policy = match g.place {
+        Place::Qual(i) => g.rte.security_quals().get(i),
+        Place::OrArm(or, i) => or.args().get(i),
+        Place::Check(wco) => wco.qual(),
+    };
+    let c = Compiler { m, g, columns, policy };
     let (filter, reason) = match plan["plan"].as_str() {
         Some("always") => (m.bool_const(true, false), format!("{ty}#{perm} allows every row")),
         Some("never") => (m.bool_const(false, false), format!("{ty}#{perm} allows no row: no rows read")),
@@ -61,6 +67,8 @@ struct Compiler<'g, 'a> {
     m: Memory<'a>,
     g: &'g Guard<'a>,
     columns: HashMap<String, Node<'a>>,
+    /// the per-row policy call, for `check`
+    policy: Option<Node<'a>>,
 }
 
 impl<'a> Compiler<'_, 'a> {
@@ -78,6 +86,9 @@ impl<'a> Compiler<'_, 'a> {
             Some(m.bool_expr(kind, m.list(compiled)))
         };
         match op {
+            // the engine asked about the row, by the per-row policy (only rows the rest of the
+            // filter leaves undecided reach it)
+            "check" if args.is_empty() => Some(m.copy(self.policy?)),
             "and" => boolean(pg_sys::BoolExprType::AND_EXPR, negated),
             "or" => boolean(pg_sys::BoolExprType::OR_EXPR, negated),
             "not" if args.len() == 1 => boolean(pg_sys::BoolExprType::NOT_EXPR, !negated),

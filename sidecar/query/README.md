@@ -32,6 +32,13 @@ engine is asked); lists are cached per context, checks with one are not, and the
 index is not used for them. A ListObjects that OpenFGA refuses for a parameter the request did
 not give answers `too_many`, so the rows are checked, each such one denied.
 
+`plan` is also answered for OpenFGA and SpiceDB, for tables whose rows give conditions and caveats
+values (protected with attributes): SpiceDB's is one LookupResources, as the condition `id in
+<definite> or (id in <conditional> and check)`, where `{"op":"check"}` asks the engine about the
+row (a `check` with its attributes, which join the request's context); OpenFGA's is `rows` (every
+row checked: ListObjects takes no row's values). Either way a `check` with `attrs` gives each id
+its row's values as context.
+
 `ids`, `too_many` and `allowed` answers also carry `engine_us`, the time the request spent waiting
 on the engine (0 when answered from the cache), which `authz.stats()` sums per backend. `ids` and
 `too_many` (and `plan` answers) carry `valid_ms` when the answer cache is on: how long the extension may keep the

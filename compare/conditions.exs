@@ -3,8 +3,11 @@
 # the row's values for it (authz.relate condition, condition_context), and each request giving it
 # the rest (authz.configure context: a token's claim, the time asked). A share in some regions
 # shows to a token from one of them; a share until a deadline shows until then; a row's new
-# values change what shows; a request without a value a condition needs is not let in. Each step
-# runs on a sidecar that lists and on one that checks rows (LIST_LIMIT 2). See compare/README.md.
+# values change what shows; a request without a value a condition needs is not let in. A
+# protected table's rows give a condition values too (attributes): reports at or below a reader's
+# clearance, with how many rows the engine was asked about (SpiceDB: only those its grant is
+# conditional for; OpenFGA: every row). Each step runs on a sidecar that lists and on one that
+# checks rows (LIST_LIMIT 2). See compare/README.md.
 #
 #   elixir compare/conditions.exs                       # openfga, then spicedb
 #   elixir compare/conditions.exs --engine spicedb --no-build
@@ -27,6 +30,12 @@ defmodule Conditions do
     type doc
       relations
         define viewer: [user, user with in_region, user with before_deadline]
+    type report
+      relations
+        define viewer: [user, user with cleared]
+    condition cleared(clearance: int, level: int) {
+      level <= clearance
+    }
     condition in_region(region: string, allowed: list<string>) {
       region in allowed
     }
@@ -47,6 +56,14 @@ defmodule Conditions do
 
     definition doc {
       relation viewer: user | user with in_region | user with before_deadline
+    }
+
+    caveat cleared(clearance int, level int) {
+      level <= clearance
+    }
+
+    definition report {
+      relation viewer: user | user with cleared
     }
     """}
   }
@@ -75,6 +92,7 @@ defmodule Conditions do
       url = "postgres://postgres:conditions@#{stack.id}-postgres:5432/postgres"
       stack = Stack.start_engine(stack, @bare, @sidecars, engine: engine, sidecar_cache_ms: nil, sidecar_env: [{"PG_AUTH_DATABASE_URL", url}, {"REQUEST_LOG", System.get_env("REQUEST_LOG", "0")}])
       conn = start_postgres(stack)
+      Process.put(:conn, conn)
       setup(conn, engine)
       results = steps(conn)
       if Enum.any?(results, fn {_, o} -> String.starts_with?(o, "FAILED") end), do: diagnose(conn, stack)
@@ -100,7 +118,15 @@ defmodule Conditions do
       "insert into app.docs select generate_series(1, 8)",
       "insert into app.region_shares values (1, 'anne', '{eu}'), (2, 'anne', '{us}')",
       "insert into app.deadline_shares values (3, 'anne', now() + interval '1 hour'), (4, 'anne', now() - interval '1 hour')",
-      "insert into app.shares values (5, 'anne')"
+      "insert into app.shares values (5, 'anne')",
+      # reports with a level each; anne cleared to 3 for 1-4, and given 6 outright
+      "create table app.reports (id int primary key, level int not null)",
+      "create table app.clearances (report_id int, user_id text, clearance int, primary key (report_id, user_id))",
+      "create table app.report_shares (report_id int, user_id text, primary key (report_id, user_id))",
+      "grant select on app.reports to app_user",
+      "insert into app.reports values (1, 1), (2, 2), (3, 3), (4, 5), (5, 1), (6, 9)",
+      "insert into app.clearances select r, 'anne', 3 from generate_series(1, 4) r",
+      "insert into app.report_shares values (6, 'anne')"
     ])
     Postgrex.query!(conn, "select authz.set_rules($1, $2, $3)", [engine, name, rules])
     eventually(fn -> Postgrex.query!(conn, "select pushed_at is not null from authz.rules()", []).rows == [[true]] end) || raise("rules not pushed")
@@ -113,7 +139,14 @@ defmodule Conditions do
                              condition => 'before_deadline', condition_context => '{"deadline": "deadline"}')|,
       "select authz.relate('app.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
                            subject_type => 'user', subject_column => 'user_id')",
-      "select authz.protect('app.docs', type => 'doc', id => 'id', read => 'viewer')"
+      "select authz.protect('app.docs', type => 'doc', id => 'id', read => 'viewer')",
+      ~s|select authz.relate('app.clearances', object_type => 'report', object_column => 'report_id', relation => 'viewer',
+                             subject_type => 'user', subject_column => 'user_id',
+                             condition => 'cleared', condition_context => '{"clearance": "clearance"}')|,
+      "select authz.relate('app.report_shares', object_type => 'report', object_column => 'report_id', relation => 'viewer',
+                           subject_type => 'user', subject_column => 'user_id')",
+      # each row gives the condition its level
+      "select authz.protect('app.reports', type => 'report', id => 'id', read => 'viewer', attributes => array['level'])"
     ])
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.outbox", []).rows == [[0]] end) || raise("relationships not delivered")
   end
@@ -133,6 +166,13 @@ defmodule Conditions do
         if s == :list, do: Postgrex.query!(conn, "update app.region_shares set regions = '{eu,us}' where doc_id = 2", [])
         eventually(fn -> visible(conn, eu, s) == [1, 2, 3, 5] end)
       end),
+      counted("a row's own value meets the grant's: reports at or below anne's clearance", fn s ->
+        eventually(fn -> visible(conn, eu, s, "app.reports") == [1, 2, 3, 6] end)
+      end),
+      both("the row's value changes: report 4 lowered to her clearance shows", fn s ->
+        if s == :list, do: Postgrex.query!(conn, "update app.reports set level = 2 where id = 4", [])
+        eventually(fn -> visible(conn, eu, s, "app.reports") == [1, 2, 3, 4, 6] end)
+      end),
       timed("a deadline passes: the share goes", fn ->
         Postgrex.query!(conn, "insert into app.deadline_shares values (6, 'anne', now() + interval '#{@lasts_s} seconds')", [])
         eventually(fn -> visible(conn, eu, :list) == [1, 2, 3, 5, 6] end) || raise("the share never showed")
@@ -144,6 +184,22 @@ defmodule Conditions do
       end)
     ]
   end
+
+  # the same, with how many rows each sidecar asked the engine about (authz.stats)
+  defp counted(what, f) do
+    {what, outcome} = both(what, fn s -> f.(s) end)
+    asked = for s <- [:list, :check], do: "#{s} #{rows_asked(fn -> f.(s) end)}"
+    {what, if(String.starts_with?(outcome, "FAILED"), do: outcome, else: "ok (rows asked: #{Enum.join(asked, ", ")})")}
+  end
+
+  defp rows_asked(f) do
+    stat = fn -> hd(hd(Postgrex.query!(conn_of(), "select ids_checked from authz.stats()", []).rows)) end
+    before = stat.()
+    f.()
+    stat.() - before
+  end
+
+  defp conn_of, do: Process.get(:conn)
 
   # the same step through the sidecar that lists and the one that checks rows
   defp both(what, f) do
@@ -205,13 +261,13 @@ defmodule Conditions do
   end
 
   # what anne sees with these claims, through the sidecar `via`
-  defp visible(conn, claims, via) do
+  defp visible(conn, claims, via, table \\ "app.docs") do
     {:ok, ids} =
       Postgrex.transaction(conn, fn c ->
         Postgrex.query!(c, "select set_config('pg_auth.sidecar_socket', $1, true)", [Stack.socket(Atom.to_string(via))])
         Postgrex.query!(c, "select set_config('request.jwt.claims', $1, true)", [JSON.encode!(claims)])
         Postgrex.query!(c, "set local role app_user", [])
-        Postgrex.query!(c, "select id from app.docs order by id", []).rows |> List.flatten()
+        Postgrex.query!(c, "select id from #{table} order by id", []).rows |> List.flatten()
       end)
     ids
   end

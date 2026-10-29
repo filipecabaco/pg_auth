@@ -6,6 +6,7 @@
 //! definite permission counts: a caveated relationship evaluated without its context is
 //! conditional, and conditional is denied (fail closed), in lists and checks alike.
 
+use crate::cerbos::Plan;
 use crate::engine::{CallError, Change, Listed, causes, send, send_classified, send_json};
 use serde_json::{Value, json};
 use std::sync::Mutex;
@@ -31,6 +32,32 @@ pub struct SpiceDb {
     written_at: Mutex<Option<Value>>,
     /// the revision of the schema in force (authz.set_rules), written here or by another sidecar
     schema_at: Mutex<Option<String>>,
+}
+
+/// How far a lookup pages: through every object, or until it has this many definite ones (a
+/// list), or this many either way (a plan).
+#[derive(Clone, Copy)]
+enum Limit {
+    None,
+    Definite(usize),
+    Both(usize),
+}
+
+impl Limit {
+    fn at_most(self) -> Option<usize> {
+        match self {
+            Limit::None => None,
+            Limit::Definite(n) | Limit::Both(n) => Some(n),
+        }
+    }
+
+    fn reached(self, definite: usize, conditional: usize) -> bool {
+        match self {
+            Limit::None => false,
+            Limit::Definite(n) => definite >= n,
+            Limit::Both(n) => definite + conditional >= n,
+        }
+    }
 }
 
 /// Whether SpiceDB can hold `id` as an object id: `[a-zA-Z0-9/_|\-=+]`, up to 1024 bytes.
@@ -77,28 +104,56 @@ impl SpiceDb {
         if limit == 0 {
             return Ok(Listed::TooMany);
         }
-        let ids = self.lookup(subject, permission, object_type, Some(limit), self.read_consistency(), context).await?;
+        let (ids, _) = self.lookup(subject, permission, object_type, Limit::Definite(limit), self.read_consistency(), context).await?;
         Ok(if ids.len() >= limit { Listed::TooMany } else { Listed::Ids(ids) })
     }
 
     /// Every object the subject may access, for the permission index, at the latest revision: a
     /// fill must reflect every change the change feed reported before it began.
     pub async fn list_all(&self, subject: &str, permission: &str, object_type: &str) -> Result<Vec<String>, String> {
-        self.lookup(subject, permission, object_type, None, json!({"fully_consistent": true}), None).await
+        Ok(self.lookup(subject, permission, object_type, Limit::None, json!({"fully_consistent": true}), None).await?.0)
+    }
+
+    /// For a table whose rows give its caveats values (protected with attributes): the objects
+    /// the subject has, and those it has if a caveat holds for the row's values, which the
+    /// request does not give (SpiceDB answers them conditional). The rest it has not. As a plan:
+    /// `id in definite or (id in conditional and check)`, checking only conditional rows. Too many
+    /// (`limit` or more): check every row.
+    pub async fn plan(
+        &self,
+        subject: &str,
+        permission: &str,
+        object_type: &str,
+        limit: usize,
+        context: Option<&Value>,
+    ) -> Result<Plan, String> {
+        if limit == 0 {
+            return Ok(Plan::Rows);
+        }
+        let (definite, conditional) =
+            self.lookup(subject, permission, object_type, Limit::Both(limit), self.read_consistency(), context).await?;
+        if definite.len() + conditional.len() >= limit {
+            return Ok(Plan::Rows);
+        }
+        Ok(Plan::Condition(json!({"op": "or", "args": [
+            {"op": "in", "args": [{"id": true}, {"value": definite}]},
+            {"op": "and", "args": [{"op": "in", "args": [{"id": true}, {"value": conditional}]}, {"op": "check", "args": []}]}
+        ]})))
     }
 
     /// LookupResources pages: every page repeats the first call (SpiceDB refuses a cursor whose
     /// call differs in anything but the cursor) and reads its revision, which the cursor carries.
+    /// -> the objects the subject has, and those it has if a caveat holds (conditional).
     async fn lookup(
         &self,
         subject: &str,
         permission: &str,
         object_type: &str,
-        limit: Option<usize>,
+        limit: Limit,
         consistency: Value,
         context: Option<&Value>,
-    ) -> Result<Vec<String>, String> {
-        let page = limit.map_or(LOOKUP_PAGE, |l| l.min(LOOKUP_PAGE));
+    ) -> Result<(Vec<String>, Vec<String>), String> {
+        let page = limit.at_most().map_or(LOOKUP_PAGE, |l| l.min(LOOKUP_PAGE));
         let mut body = json!({
             "consistency": consistency,
             "resource_object_type": object_type,
@@ -109,24 +164,28 @@ impl SpiceDb {
         if let Some(c) = context {
             body["context"] = c.clone();
         }
-        let mut ids = Vec::new();
+        let (mut ids, mut conditional) = (Vec::new(), Vec::new());
         loop {
             let lines = self.stream("/v1/permissions/resources", body.clone()).await?;
             let mut cursor = None;
             for line in &lines {
                 let result = result_of(line, "lookup resources")?;
                 cursor = field(result, "after_result_cursor").cloned().or(cursor);
-                // only a definite permission: a conditional one lacks its caveat's context
-                if permissionship(result) == Some(1) {
-                    let id = field(result, "resource_object_id")
-                        .and_then(Value::as_str)
-                        .ok_or("spicedb lookup resources: no resource_object_id")?;
-                    ids.push(id.to_string());
-                }
+                // a definite permission, or a conditional one, whose caveat lacks values
+                let found = match permissionship(result) {
+                    Some(1) => &mut ids,
+                    Some(2) => &mut conditional,
+                    _ => continue,
+                };
+                let id =
+                    field(result, "resource_object_id").and_then(Value::as_str).ok_or("spicedb lookup resources: no resource_object_id")?;
+                found.push(id.to_string());
             }
             match cursor {
-                Some(c) if lines.len() >= page && limit.is_none_or(|l| ids.len() < l) => body["optional_cursor"] = c,
-                _ => return Ok(ids),
+                Some(c) if lines.len() >= page && !limit.reached(ids.len(), conditional.len()) => {
+                    body["optional_cursor"] = c;
+                }
+                _ => return Ok((ids, conditional)),
             }
         }
     }
@@ -139,12 +198,13 @@ impl SpiceDb {
         permission: &str,
         object_type: &str,
         ids: &[&String],
-        context: Option<&Value>,
+        contexts: &[Option<Value>],
     ) -> Result<Vec<bool>, String> {
         let subject = subject_reference(subject)?;
         let items: Vec<Value> = ids
             .iter()
-            .map(|id| {
+            .zip(contexts.iter().chain(std::iter::repeat(&None)))
+            .map(|(id, context)| {
                 let mut item =
                     json!({"resource": {"object_type": object_type, "object_id": id}, "permission": permission, "subject": subject});
                 if let Some(c) = context {

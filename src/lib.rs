@@ -169,6 +169,11 @@ mod tests {
                                             {"op": "ne", "args": [{"column": "status"}, {"value": "draft"}]},
                                             {"op": "not", "args": [{"op": "eq", "args": [{"column": "owner"}, {"value": "bob"}]}]}]}}),
                                         "user:anyid" => serde_json::json!({"plan": "condition", "condition": {"op": "in", "args": [{"id": true}, {"value": ["2", "4"]}]}}),
+                                        // SpiceDB's plan for rows giving caveats values: note 1 is
+                                        // carol's for good, 2 and 3 if the caveat holds for the row
+                                        "user:carol" => serde_json::json!({"plan": "condition", "condition": {"op": "or", "args": [
+                                            {"op": "in", "args": [{"id": true}, {"value": ["1"]}]},
+                                            {"op": "and", "args": [{"op": "in", "args": [{"id": true}, {"value": ["2", "3"]}]}, {"op": "check", "args": []}]}]}}),
                                         _ => serde_json::json!({"plan": "never"}),
                                     }
                                 }
@@ -1396,6 +1401,37 @@ mod tests {
         Spi::run("select set_config('pg_auth.subject_roles', 'admin', true), set_config('pg_auth.subject_id', 'admin', true), set_config('role', 'authz_test_user', true)").unwrap();
         assert!(fails("execute alices"), "another shape of plan is refused rather than filtered with alice's");
         reset_role();
+    }
+
+    #[pg_test]
+    fn a_plan_decides_definite_rows_in_postgres_and_checks_only_conditional_ones() {
+        fixture();
+        Spi::run(
+            "create table public.notes (id int primary key, owner text, status text);
+             insert into public.notes values (1, 'x', 'draft'), (2, 'carol', 'draft'), (3, 'dave', 'draft'), (4, 'carol', 'draft');
+             select authz.protect('public.notes', 'note', 'id', 'read', attributes => array['owner', 'status']);
+             grant select on public.notes to authz_test_user",
+        )
+        .unwrap();
+        let calls = || Spi::get_one::<i64>("select sidecar_calls from authz.stats()").unwrap().unwrap_or_default();
+        let before = calls();
+        as_subject("carol");
+        // 1 for good; 2 and 3 checked with their rows (the engine allows 2); 4 neither, not asked
+        let seen = Spi::get_one::<String>("select string_agg(id::text, ',' order by id) from public.notes").unwrap();
+        reset_role();
+        assert_eq!(seen.as_deref(), Some("1,2"));
+        assert_eq!(calls() - before, 3, "one plan, and one check per conditional row");
+        // the filter the planner uses: the ids, then the row check for the conditional ones
+        as_subject("carol");
+        let explained: Vec<String> = Spi::connect(|c| {
+            c.select("explain (costs off) select * from public.notes", None, &[])
+                .unwrap()
+                .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                .collect()
+        });
+        reset_role();
+        let explained = explained.join("\n");
+        assert!(explained.contains("permits_resource") && explained.contains("ANY"), "{explained}");
     }
 
     #[pg_test]

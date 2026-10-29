@@ -74,7 +74,7 @@ struct State {
     refresh_concurrency: usize,
     /// lists per subject and request context (as JSON; "" for none)
     lists: Cache<(Key, String), Listed>,
-    /// plans per subject and principal (its roles and attributes, as JSON; "" for none)
+    /// plans per subject, principal (its roles and attributes) and context (`plan_key`)
     plans: Cache<(Key, String), Plan>,
     /// lists and plans being refreshed ahead of their expiry
     refreshing: Mutex<HashSet<Refresh>>,
@@ -378,8 +378,8 @@ async fn answer(state: &Arc<State>, request: Request, engine: &mut Duration) -> 
                 Err(e) => Response::Error { error: e },
             }
         }
-        Request::Plan { subject, permission, object_type, principal } => {
-            let key = ((subject, object_type, permission), principal.as_ref().map(ToString::to_string).unwrap_or_default());
+        Request::Plan { subject, permission, object_type, principal, context } => {
+            let key = ((subject, object_type, permission), plan_key(principal.as_ref(), &context));
             // kept for the TTL, as lists are: the extension keeps it until its half-life
             let half = u64::try_from(state.ttl.as_millis()).unwrap_or(u64::MAX) / 2;
             let (plan, valid_ms) = if let Some((plan, left)) = state.plans.get(&key) {
@@ -389,7 +389,7 @@ async fn answer(state: &Arc<State>, request: Request, engine: &mut Duration) -> 
                 (plan, left.saturating_sub(half))
             } else {
                 let started = Instant::now();
-                let plan = state.engine.plan(&key.0, principal.as_ref()).await;
+                let plan = state.engine.plan(&key.0, principal.as_ref(), context.at_now().as_ref(), state.list_limit).await;
                 *engine += started.elapsed();
                 match plan {
                     Ok(plan) => {
@@ -454,8 +454,8 @@ fn refresh(state: &Arc<State>, what: Refresh) {
                 }
             }
             Refresh::Plan(key) => {
-                let principal = serde_json::from_str::<serde_json::Value>(&key.1).ok();
-                if let Ok(plan) = state.engine.plan(&key.0, principal.as_ref()).await {
+                let (principal, context) = from_plan_key(&key.1);
+                if let Ok(plan) = state.engine.plan(&key.0, principal.as_ref(), context.at_now().as_ref(), state.list_limit).await {
                     state.plans.refreshed(key, plan);
                 }
             }
@@ -502,6 +502,21 @@ fn asked_line(request: &Request) -> String {
         Request::Plan { subject, permission, object_type, .. } => format!("plan   {subject} {object_type}#{permission}"),
         Request::Fill { subject, permission, object_type, .. } => format!("fill   {subject} {object_type}#{permission}"),
     }
+}
+
+/// A plan's cache key beside its subject, type and permission: the principal and the context it
+/// was asked with ("" for neither).
+fn plan_key(principal: Option<&serde_json::Value>, context: &protocol::Asked) -> String {
+    if principal.is_none() && context.is_empty() {
+        return String::new();
+    }
+    serde_json::json!({"principal": principal, "asked": context}).to_string()
+}
+
+fn from_plan_key(key: &str) -> (Option<serde_json::Value>, protocol::Asked) {
+    let v = serde_json::from_str::<serde_json::Value>(key).unwrap_or_default();
+    let principal = v.get("principal").filter(|p| !p.is_null()).cloned();
+    (principal, v.get("asked").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default())
 }
 
 /// A list's cache key for its context: lists asked with another context are other answers.
@@ -873,6 +888,7 @@ mod serving {
         assert_eq!(c.ask(r#"{"op":"ping"}"#).await["engine"], "openfga", "the connection still serves");
         // no permission index: a fill is not queued
         assert_eq!(c.ask(r#"{"op":"fill","subject":"user:anne","permission":"viewer","type":"doc"}"#).await["queued"], false);
-        assert!(c.ask(r#"{"op":"plan","subject":"user:anne","permission":"viewer","type":"doc"}"#).await["error"].is_string());
+        // OpenFGA's plan: every row is checked (ListObjects takes no row's values)
+        assert_eq!(c.ask(r#"{"op":"plan","subject":"user:anne","permission":"viewer","type":"doc"}"#).await["plan"], "rows");
     }
 }

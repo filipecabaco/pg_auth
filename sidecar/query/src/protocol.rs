@@ -67,6 +67,8 @@ pub enum Request {
         #[serde(rename = "type")]
         object_type: String,
         principal: Option<serde_json::Value>,
+        #[serde(flatten)]
+        context: Asked,
     },
     /// Fill the subject's set in the permission index, in the background; with `wait_ms`,
     /// answer once that fill ends (or after `wait_ms`).

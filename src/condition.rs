@@ -7,24 +7,34 @@
 //!
 //! The language: `{"op": "and|or|not|eq|ne|lt|le|gt|ge|in", "args": [...]}`, an argument being
 //! `{"column": name}` (the row's attribute), `{"id": true}` (the row's id), `{"value": json}` or
-//! an expression. Anything else is unknown: denied.
+//! an expression; and `{"op": "check", "args": []}`, which asks the engine about the row with its
+//! attributes (SpiceDB: a grant whose caveat needs the row's own values). Anything else is
+//! unknown: denied.
 
 use serde_json::Value;
 use std::cmp::Ordering;
 
-/// Whether the condition allows a row with this id and these attributes.
-pub fn allows(condition: &Value, id: &str, attrs: &Value) -> bool {
-    eval(condition, id, attrs) == Some(true)
+/// Whether the condition allows a row with this id and these attributes; a `check` is not
+/// decided here (unknown). The tests' shorthand.
+#[cfg(test)]
+fn allows(condition: &Value, id: &str, attrs: &Value) -> bool {
+    allows_checking(condition, id, attrs, &mut || None)
 }
 
-fn eval(e: &Value, id: &str, attrs: &Value) -> Option<bool> {
+/// The same, a `check` asking the engine (`check`, reached only where the rest of the condition
+/// leaves the row undecided).
+pub fn allows_checking(condition: &Value, id: &str, attrs: &Value, check: &mut dyn FnMut() -> Option<bool>) -> bool {
+    eval(condition, id, attrs, check) == Some(true)
+}
+
+fn eval(e: &Value, id: &str, attrs: &Value, check: &mut dyn FnMut() -> Option<bool>) -> Option<bool> {
     let op = e.get("op")?.as_str()?;
     let args = e.get("args")?.as_array()?;
-    let all = |want: bool| -> Option<bool> {
+    let mut all = |want: bool| -> Option<bool> {
         // and: any false is false; or: any true is true; otherwise unknown unless all are known
         let mut unknown = false;
         for a in args {
-            match eval(a, id, attrs) {
+            match eval(a, id, attrs, check) {
                 Some(b) if b != want => return Some(b),
                 None => unknown = true,
                 _ => {}
@@ -35,7 +45,8 @@ fn eval(e: &Value, id: &str, attrs: &Value) -> Option<bool> {
     match (op, args.as_slice()) {
         ("and", _) => all(true),
         ("or", _) => all(false),
-        ("not", [a]) => eval(a, id, attrs).map(|b| !b),
+        ("check", []) => check(),
+        ("not", [a]) => eval(a, id, attrs, check).map(|b| !b),
         ("in", [a, list]) => {
             let a = operand(a, id, attrs);
             Some(operand(list, id, attrs)?.as_array()?.iter().any(|item| equal(a.as_ref(), item)))
@@ -178,6 +189,19 @@ mod tests {
         // different kinds are unequal, not unknown
         let nine = json!({"op": "ne", "args": [{"column": "size"}, {"value": 9}]});
         assert!(allows(&nine, "1", &json!({"size": "9"})));
+        // a check is reached only where the rest leaves the row undecided
+        let hybrid = json!({"op": "or", "args": [
+            {"op": "in", "args": [{"id": true}, {"value": ["1"]}]},
+            {"op": "and", "args": [{"op": "in", "args": [{"id": true}, {"value": ["2"]}]}, {"op": "check", "args": []}]}]});
+        let mut asked = Vec::new();
+        for id in ["1", "2", "3"] {
+            allows_checking(&hybrid, id, &json!({}), &mut || {
+                asked.push(id);
+                Some(true)
+            });
+        }
+        assert_eq!(asked, ["2"]);
+        assert!(!allows(&hybrid, "2", &json!({})), "undecided without the engine: denied");
         let listed = json!({"op": "in", "args": [{"id": true}, {"value": ["1", "2"]}]});
         assert!(allows(&listed, "2", &json!({})) && !allows(&listed, "3", &json!({})));
         assert!(!allows(&json!({"op": "regex", "args": []}), "1", &json!({})));

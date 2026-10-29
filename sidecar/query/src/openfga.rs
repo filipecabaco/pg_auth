@@ -257,7 +257,7 @@ impl OpenFga {
         permission: &str,
         object_type: &str,
         ids: &[&String],
-        context: Option<&Value>,
+        contexts: &[Option<Value>],
     ) -> Result<Vec<bool>, String> {
         let checks: Vec<Value> = ids
             .iter()
@@ -267,7 +267,7 @@ impl OpenFga {
                     "tuple_key": {"user": subject, "relation": permission, "object": format!("{object_type}:{id}")},
                     "correlation_id": i.to_string()
                 });
-                if let Some(c) = context {
+                if let Some(Some(c)) = contexts.get(i) {
                     check["context"] = c.clone();
                 }
                 check

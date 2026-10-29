@@ -201,6 +201,24 @@ select authz.protect('app.memberships', type => 'org', id => 'org_id', read => '
   - With rules kept in Postgres, a table naming a condition the rules do not have, a parameter
     the condition does not take, or a relation that does not take `user with <condition>` fails
     at commit.
+  - **The protected row's own values.** A condition can also take values from the row being read
+    (a report's level against a reader's clearance): protect the table with them as attributes,
+    named as the condition's parameters (`attribute_map` when a column is named otherwise).
+
+    ```sql
+    -- condition cleared(clearance: int, level: int) { level <= clearance }: the clearance from the
+    -- relationship's row, the level from each report
+    select authz.protect('app.reports', type => 'report', id => 'id', read => 'viewer',
+                         attributes => array['level']);
+    ```
+
+    What that costs depends on the engine, since an engine's list cannot take a value per row:
+
+    | engine | how rows are decided | expect |
+    |---|---|---|
+    | SpiceDB | one LookupResources per subject (with the request's context): rows granted outright and rows not granted at all are decided in Postgres, by an indexable `id = ANY(...)` filter; only rows granted through a caveat that needs the row's values are checked, each with them | the cost of a list, plus one round trip per row whose grant is conditional. A subject with more than `LIST_LIMIT` objects has every row checked |
+    | OpenFGA | ListObjects takes no row's values (and fails on a condition missing one), so every row read is checked with its values | one round trip per row read: fine for reads by key and small pages, slow for scans. Prefer SpiceDB for this shape, or a column the relationship can carry instead |
+    | Cerbos | attributes are its own model: plans compile into filters on the columns | no round trip per row (docs: Cerbos attributes) |
 - **If the engine is down,** changes wait and are delivered when it is back. A change the engine
   refuses (a relation the model does not have) is set aside with its reason, and `authz.doctor()`
   reports it; the changes after it go on.

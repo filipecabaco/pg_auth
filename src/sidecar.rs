@@ -1144,7 +1144,8 @@ pub fn plan(
         PLANS.with(|c| c.borrow_mut().insert((key, generation), plan.clone()));
         return Ok(plan);
     }
-    let v = call(&json!({"op": "plan", "subject": subject, "permission": permission, "type": object_type, "principal": principal()}))?;
+    let v =
+        call(&asking(json!({"op": "plan", "subject": subject, "permission": permission, "type": object_type, "principal": principal()})))?;
     let plan = match v.get("plan").and_then(Value::as_str) {
         Some("always") => Plan::Always,
         Some("never") => Plan::Never,
@@ -1181,9 +1182,9 @@ pub fn check_resource(
     if let Some(hit) = RESOURCE_CHECKS.with(|c| c.borrow().get(&key).copied()) {
         return Ok(hit);
     }
-    let v = call(
-        &json!({"op": "check", "subject": subject, "permission": permission, "type": object_type, "ids": [id], "attrs": [attrs], "principal": principal}),
-    )?;
+    let v = call(&asking(
+        json!({"op": "check", "subject": subject, "permission": permission, "type": object_type, "ids": [id], "attrs": [attrs], "principal": principal}),
+    ))?;
     let allowed = v.get("allowed").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_bool).unwrap_or(false);
     arm_cache_reset();
     RESOURCE_CHECKS.with(|c| c.borrow_mut().insert(key, allowed));

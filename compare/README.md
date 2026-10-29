@@ -228,7 +228,10 @@ given the end as an expiration, ends it itself with the sidecar paused.
 (`authz.configure(context => ...)`), on a real OpenFGA and SpiceDB, through a sidecar that lists
 and one that checks rows (`LIST_LIMIT` 2): a share in some regions shows to a token from one of
 them, a token without the claim is not let in, the row's new regions are followed, and a share
-until a deadline goes once it passes (timed). The rules are stored in Postgres: one sidecar pushes
+until a deadline goes once it passes (timed). A protected table's own values meet the grant's
+(reports at or below a reader's clearance, `attributes => array['level']`), and the step reports
+how many rows each sidecar asked the engine about: SpiceDB only the rows whose grant is
+conditional, OpenFGA every row. The rules are stored in Postgres: one sidecar pushes
 them, the other follows.
 
     elixir compare/conditions.exs                       # OpenFGA, then SpiceDB

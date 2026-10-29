@@ -41,97 +41,188 @@ select authz.configure(subject => 'guc');      -- pg_auth.subject_id, set by a t
 No subject means no rows. `select * from authz.current_subject()` says who pg_auth sees and
 why.
 
-## 3. Protect tables
+## 3. The rules and their notes
+
+The setup is the engine's rules, in the engine's own syntax, kept in Postgres with
+`authz.set_rules`. Comments starting `pg_auth:` say which tables they protect and which tables'
+rows are relationships. The engine reads them as comments; pg_auth reads only them. This is the
+whole setup of the demo on the home page, on OpenFGA:
 
 ```sql
-select authz.protect('app.documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
--- or positionally:
-select authz.protect('app.documents', 'document', 'id',     'viewer', 'editor');
-select authz.protect('app.comments',  'document', 'document_id', 'viewer');
+select authz.configure(subject => 'jwt');
+
+select authz.set_rules('openfga', 'model', $$
+model
+  schema 1.1
+type user
+type org
+  # pg_auth: rows of memberships (org_id, role, user_id)
+  # pg_auth: protects memberships (org_id): read can_read, write can_manage
+  relations
+    define admin: [user]
+    define member: [user]
+    define can_read: member or admin
+    define can_manage: admin
+type document
+  # pg_auth: protects documents (id): read viewer, write editor
+  # pg_auth: protects shares (doc_id): read viewer, write editor
+  # pg_auth: org from documents.org_id
+  # pg_auth: shared_with from shares(doc_id).user_id: until expires_at
+  relations
+    define org: [org]
+    define shared_with: [user]
+    define viewer: shared_with or can_read from org
+    define editor: can_manage from org
+$$);
 ```
 
-Arguments: the table, the object type a row is (`type`), the column holding its id (`id`, the
-row's own id or a parent's such as `org_id`), the permission to read (`read`) and to write
-(`write`; writes are denied without it). The table gets RLS policies that pg_auth's planner
-hook turns into an indexable filter or a batched check; partitions created later are protected
-too. Index the id column, as you would for RLS.
+When the transaction commits, the three tables are protected, the rows of `memberships`,
+`documents` and `shares` are relationships in OpenFGA, and the sidecar sends it the model. A
+membership inserted through PostgREST then shows its org's documents to the new member, and a
+share shows until its `expires_at`.
 
-- **Several ways to reach a row** (an order visible to its buyer, or to its seller's staff):
-  protect the table once per way, each with its own `name`. A row is visible when any allows it.
-- **Inserts checked on the parent.** A table protected by its own id cannot authorize an INSERT
-  (the engine has no object yet): `insert_type => 'project', insert_id => 'project_id',
-  insert_permission => 'create'`.
-- **A key that is an expression** (a storage path's first folder): `id => null, key =>
-  'split_part(name, ''/'', 1)'`. It must be IMMUTABLE; index the expression.
-- **A permission inherited down a tree the app stores** (folders with `parent_id`):
-  `hierarchy => 'app.folders(id, parent_id)', direct => 'viewer_direct'`, with the model
-  reading `viewer: viewer_direct or viewer from parent`. The engine lists only direct grants and
-  Postgres expands them; triggers keep a closure of the tree. `authz.drop_hierarchy(type,
-  permission)` removes the declaration.
-- **Rules on the row's own attributes** (an engine that decides on them: Cerbos): `attributes
-  => array['owner_id', 'status']` sends those columns, by name, as the resource's attributes.
-  The policy is then `authz.permits_resource`, which the planner replaces with the subject's plan
-  (always, never, or a condition on the attributes) compiled into a filter on those columns:
-  indexes serve it as they serve RLS, and its values are read at execution, so a cached plan
-  serves every subject whose plan has the same shape. A condition Cerbos expresses with more than
-  comparisons, `and`, `or`, `not` and `in` keeps the policy: the plan evaluated per row, or Cerbos
-  asked per row. The principal's roles come from the claim `roles_claim` (default
-  `role`; `authz.configure(roles_claim => 'app_metadata.roles')`) or, with `subject => 'guc'`,
-  from `pg_auth.subject_roles` (comma separated, superuser-only like `pg_auth.subject_id`); its
-  attributes are the token's claims. See docs/proposals/cerbos.md.
-  An attribute named otherwise than its column (Cerbos's demos write `ownerId`) takes
-  `attribute_map => '{"ownerId": "owner_id"}'`, alongside or instead of `attributes`.
-  **Scoped policies** (a tenant's overrides, `scope:` in the policy) need the request's scope:
-  `authz.configure(scope_claim => 'tenant_id')` sends that claim as Cerbos's scope, on the
-  principal and the resource (`pg_auth.subject_scope` for a session subject, superuser-only;
-  `policy_version` for a policy version other than `default`). Without one, Cerbos answers from
-  the base policy and a scoped override, deny rules included, does not apply; `authz.doctor()`
-  says so.
+The same setup on SpiceDB, and an attribute policy on Cerbos:
+
+```sql
+select authz.set_rules('spicedb', 'schema', $$
+use expiration
+
+definition user {}
+
+definition org {
+  // pg_auth: rows of memberships (org_id, role, user_id)
+  // pg_auth: protects memberships (org_id): read can_read, write can_manage
+  relation admin: user
+  relation member: user
+  permission can_read = member + admin
+  permission can_manage = admin
+}
+
+definition document {
+  // pg_auth: protects documents (id): read viewer, write editor
+  // pg_auth: protects shares (doc_id): read viewer, write editor
+  // pg_auth: org from documents.org_id
+  // pg_auth: shared_with from shares(doc_id).user_id: until expires_at
+  relation org: org
+  relation shared_with: user | user with expiration
+  permission viewer = shared_with + org->can_read
+  permission editor = org->can_manage
+}
+$$);
+
+select authz.set_rules('cerbos', 'resource/document', $$
+# pg_auth: protects documents (id): read view, write edit, attributes (owner, status)
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: document
+  rules:
+    - actions: ["view"]
+      effect: EFFECT_ALLOW
+      roles: ["authenticated"]
+      condition:
+        match:
+          any:
+            of:
+              - expr: request.resource.attr.owner == request.principal.id
+              - expr: request.resource.attr.status == "published"
+    - actions: ["edit"]
+      effect: EFFECT_ALLOW
+      roles: ["authenticated"]
+      condition:
+        match:
+          expr: request.resource.attr.owner == request.principal.id
+$$);
+```
+
+Each note becomes a plain RLS policy on its table that only asks pg_auth
+(`authz.permits('document', 'viewer', id)`), so `pg_policies` lists them; pg_auth's planner hook
+turns them into an indexable filter or a batched check. The policies hold no rule of their own:
+the engine decides every row (`compare/notes.exs` changes the engine behind Postgres's back and
+the rows follow).
+
+### Where a note goes
+
+A note belongs to the type it sits in:
+
+- **OpenFGA:** a `#` comment inside a `type` block. A model stored as JSON has no comments, so no
+  notes.
+- **SpiceDB:** a `//` comment inside a `definition`'s braces, or the comment just before it
+  (`/** ... */` too).
+- **Cerbos:** a `#` comment anywhere in the policy; it belongs to the policy's resource. Cerbos
+  keeps no relationships: its only note is `protects`.
+
+### Protecting a table: `protects`
+
+```text
+protects <table> (<id>): read <permission>[, <clause>, ...]
+```
+
+The table's rows are objects of the note's type, with `<id>` their id: a column (the row's own
+id, or a parent's such as `org_id`), or an IMMUTABLE expression over the row
+(`protects objects (split_part(name, '/', 1)): read viewer`, a storage path's first folder).
+Index it as you would for RLS. Partitions created later are protected too.
+
+| clause | |
+|---|---|
+| `read <permission>` | required: the permission to read a row |
+| `write <permission>` | to insert, update and delete; without it, writes are denied |
+| `update <permission>`, `delete <permission>` | their own permission (GitHub: push to update, delete to delete) |
+| `insert <type>#<permission> from <column>` | inserts checked on the parent: a table protected by its own id cannot authorize an INSERT, the engine has no object yet (`insert project#create from project_id`) |
+| `attributes (<column>, <column> as <name>)` | the row's values the rules read: Cerbos's attributes, or a condition's parameters (below) |
+| `tree <table>(<id>, <parent>) from <permission>` | a permission inherited down a tree the app stores |
+
+- **Several ways to reach a row** (an order visible to its buyer, or to its seller's staff): one
+  `protects` note per way, in each type. A row is visible when any allows it.
+- **A tree** (folders with `parent_id`): `protects folders (id): read viewer, tree folders(id,
+  parent_id) from viewer_direct`, with the model reading `viewer: viewer_direct or viewer from
+  parent`. The engine lists only direct grants and Postgres expands them; triggers keep a closure
+  of the tree.
+- **Rules on the row's own attributes** (Cerbos): `attributes (owner_id, status)` sends those
+  columns as the resource's attributes, `owner_id as ownerId` under another name. Cerbos's plan for
+  the subject (always, never, or a condition on the attributes) is compiled into a filter on those
+  columns: indexes serve it as they serve RLS, and a cached plan serves every subject whose plan has
+  the same shape. A condition Cerbos expresses with more than comparisons, `and`, `or`, `not` and
+  `in` is evaluated per row. The principal's roles come from the claim `roles_claim` (default
+  `role`; `authz.configure(roles_claim => 'app_metadata.roles')`) or, with `subject => 'guc'`, from
+  `pg_auth.subject_roles` (comma separated, superuser-only like `pg_auth.subject_id`); its
+  attributes are the token's claims. **Scoped policies** (a tenant's overrides, `scope:` in the
+  policy) need the request's scope: `authz.configure(scope_claim => 'tenant_id')` sends that claim
+  as Cerbos's scope (`pg_auth.subject_scope` for a session subject; `policy_version` for a version
+  other than `default`). Without one, a scoped override does not apply; `authz.doctor()` says so.
 - **Row state** (`not deleted`, `published`) stays plain SQL: add an ordinary restrictive policy
   next to pg_auth's; it joins the scan's filter.
-- **Updates and deletes needing their own permission** (GitHub: push to update, delete to delete):
-  `on_update => 'can_push', on_delete => 'can_delete'`. `write` still checks inserts; without it, inserts
-  are denied unless checked on the parent.
-- `force => false` lets the table owner bypass the policies (default: forced).
 
-`authz.unbind(table)` removes pg_auth's policies from a table.
-
-## 4. Grant access by writing rows
+### Rows that are relationships: `rows of` and `<relation> from`
 
 An app with no backend changes who may see what by writing rows, through PostgREST like any other
-table: a membership, a share, a team. `authz.relate` declares that a table's rows are relationships
-in the engine (OpenFGA or SpiceDB), and pg_auth delivers each change.
+table: a membership, a share, a team. Two notes make a table's rows relationships in the engine
+(OpenFGA or SpiceDB), and pg_auth delivers each change:
 
-```sql
--- org:<org_id>#<role>@user:<user_id>, the relation read from the row
-select authz.relate('app.memberships', object_type => 'org', object_column => 'org_id',
-                    relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
--- document:<doc_id>#shared_with@team:<team>#member, a fixed relation and a team's members
-select authz.relate('app.shares', object_type => 'document', object_column => 'doc_id',
-                    relation => 'shared_with', subject_type => 'team', subject_column => 'team',
-                    subject_relation => 'member');
--- who may write those rows is pg_auth too: only an org's admins manage its members
-select authz.protect('app.memberships', type => 'org', id => 'org_id', read => 'can_read', write => 'can_manage');
+```text
+rows of memberships (org_id, role, user_id)             -- org:<org_id>#<role>@user:<user_id>
+org from documents.org_id                               -- document:<id>#org@org:<org_id>
+shared_with from shares(doc_id).user_id                 -- document:<doc_id>#shared_with@user:<user_id>
 ```
 
-- **One table, several kinds.** Apps keep one `shares` table for users, teams and the public.
-  Declare it once per kind with a `filter` on the row, and read any part from a column or fix it:
-  `object_type` or `object_type_column`, `object_column` or `object_id`, `subject_type` or
-  `subject_type_column`, `subject_column` or `subject_id`, `subject_relation` or
-  `subject_relation_column`. `subject_id => '*'` is everyone (`user:*`), `object_id => 'main'` a
-  singleton object.
+- `rows of <table> (<object>, <relation>, <subject>)` reads the relation from the middle column.
+  The relations a row may name are the ones in the model that take the subject; a row naming
+  another fails at once (`check_violation`), where the app sees it, instead of the engine refusing
+  it after the commit.
+- `<relation> from <table>[(<object>)].<subject>` writes one relation. The object column defaults
+  to the column the table is protected by, else its single-column primary key.
+- The subject's type comes from the model (the relation's one directly related type). Clauses say
+  otherwise, after a colon:
 
-  ```sql
-  select authz.relate('app.shares', name => 'team', filter => 'grantee_kind = ''team''',
-                      object_type => 'doc', object_column => 'doc_id', relation_column => 'role',
-                      subject_type => 'team', subject_column => 'grantee_id', subject_relation => 'member',
-                      relations => array['viewer', 'editor']);
-  select authz.relate('app.shares', name => 'public', filter => 'grantee_kind = ''public''',
-                      object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
-                      subject_type => 'user', subject_id => '*');
-  ```
-- **Relations a row may name.** `relations => array[...]` makes a write naming another one fail at once
-  (`check_violation`), where the app sees it, instead of the engine refusing it after the commit.
+| clause | |
+|---|---|
+| `subject <type>`, `subject <type>#<relation>` | the subject's type, or a userset (`subject team#member`: the team's members) |
+| `subject <type>:*` | everyone (`user:*`): no subject column (`viewer from shares(doc_id): subject user:*, when public`) |
+| `until <column>` | the relationship ends at the row's timestamp (null: for good) |
+| `condition <name>(<parameter> = <column>, ...)` | written with an OpenFGA condition or SpiceDB caveat, the row giving those parameters |
+| `when <SQL>` | only rows matching it; takes the rest of the note (one `shares` table for users, teams and the public, one note per kind) |
+| `name <name>` | the declaration's name, when the generated `<type>_<relation>` is not wanted |
+
 - **Write to relations, read permissions.** The rows write plain relations (`admin`, `member`,
   `shared_with`); tables are protected by permissions computed from them (`viewer: shared_with or
   can_read from org`). SpiceDB only takes writes to relations, and the model reads the same in
@@ -140,55 +231,37 @@ select authz.protect('app.memberships', type => 'org', id => 'org_id', read => '
   `authz.outbox` with the write itself, so a rolled-back write never reaches the engine. The
   sidecar delivers it on commit, and every backend asks again: the change shows within tens of
   milliseconds (`compare/relationships.exs`).
-- **Grants that end.** `expires_column => 'expires_at'` names a timestamp column: the
-  relationship holds until then (null: for good). The sidecar deletes it from the engine when it
-  is due, and every backend asks again, as for any revocation: it goes within a few hundred
-  milliseconds of its end. An end moved later keeps it, one moved earlier or into the past ends it
-  now, a renewal writes it again; a row whose end has passed is no relationship at all.
-
-  ```sql
-  select authz.relate('app.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
-                      subject_type => 'user', subject_column => 'user_id', expires_column => 'expires_at');
-  insert into app.shares values (1, 'bob', now() + interval '7 days');   -- bob sees doc 1 for a week
-  ```
-
+- **Grants that end.** `until expires_at`: the sidecar deletes the relationship from the engine
+  when it is due, and every backend asks again, as for any revocation: it goes within a few
+  hundred milliseconds of its end. An end moved later keeps it, one moved earlier or into the past
+  ends it now, a renewal writes it again; a row whose end has passed is no relationship at all.
   SpiceDB also gets the end as the relationship's expiration, so the engine ends it itself if the
-  sidecar is down (within its revision window, a few seconds). Its schema says so: `use expiration`,
-  and `relation viewer: user | user with expiration` (`user with expiration` alone when every row
-  has an end: a `not null` column). OpenFGA has no expiry of its own: its grants end when the
+  sidecar is down (within its revision window, a few seconds). Its schema says so: `use
+  expiration`, and `relation shared_with: user | user with expiration` (`user with expiration`
+  alone when the column is `not null`). OpenFGA has no expiry of its own: its grants end when the
   sidecar deletes them, so while the sidecar is down an ended grant stays, like any revocation.
   Ends waiting in the outbox are not changes waiting: `authz.doctor()` counts them apart.
-- **Conditions and caveats.** A relationship can be written with an OpenFGA condition or a
-  SpiceDB caveat, the row giving its values, and each request the rest: a share in some regions,
-  a grant until a deadline, an office's IP range.
-
-  ```sql
-  -- the row gives `allowed`; each request gives `region` (the token's claim) and the time asked
-  select authz.relate('app.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
-                      subject_type => 'user', subject_column => 'user_id',
-                      condition => 'in_region', condition_context => '{"allowed": "regions"}');
-  select authz.configure(context => '{"current_time": "now", "region": {"claim": "region"},
-                                      "client_ip": {"setting": "request.headers", "key": "x-forwarded-for"}}');
-  ```
+- **Conditions and caveats.** A relationship can carry an OpenFGA condition or a SpiceDB caveat,
+  the row giving its values, and each request the rest: a share in some regions, a grant until a
+  deadline, an office's IP range.
 
   ```text
   condition in_region(region: string, allowed: list<string>) {     # OpenFGA
     region in allowed
   }
   type doc
+    # pg_auth: viewer from shares(doc_id).user_id: condition in_region(allowed = regions)
     relations
       define viewer: [user, user with in_region]
-
-  caveat in_region(region string, allowed list<string>) {         // SpiceDB
-    region in allowed
-  }
-  definition doc {
-    relation viewer: user | user with in_region
-  }
   ```
 
-  - `condition_context` maps each parameter the row gives to its column (a null column gives
-    none). New values in the row write the relationship again with them.
+  ```sql
+  -- what every request gives: the time asked, the token's region claim, a header
+  select authz.configure(context => '{"current_time": "now", "region": {"claim": "region"},
+                                      "client_ip": {"setting": "request.headers", "key": "x-forwarded-for"}}');
+  ```
+
+  - A null column gives no value. New values in the row write the relationship again with them.
   - `authz.configure(context => ...)` names what every request gives: `"now"` (the time the
     engine is asked, RFC 3339), `{"claim": "region"}` (the token's claim, `a.b` for a nested one),
     or `{"setting": "request.headers", "key": "x-forwarded-for"}` (a setting, or a key of its
@@ -198,40 +271,81 @@ select authz.protect('app.memberships', type => 'org', id => 'org_id', read => '
     up to the sidecar's `CACHE_TTL_MS` (1 s), so a grant ends within that of its deadline. The
     permission index is not used while a context is configured: a set is filled for no request
     in particular. Broad subjects are then checked row by row.
-  - With rules kept in Postgres, a table naming a condition the rules do not have, a parameter
-    the condition does not take, or a relation that does not take `user with <condition>` fails
-    at commit.
   - **The protected row's own values.** A condition can also take values from the row being read
     (a report's level against a reader's clearance): protect the table with them as attributes,
-    named as the condition's parameters (`attribute_map` when a column is named otherwise).
-
-    ```sql
-    -- condition cleared(clearance: int, level: int) { level <= clearance }: the clearance from the
-    -- relationship's row, the level from each report
-    select authz.protect('app.reports', type => 'report', id => 'id', read => 'viewer',
-                         attributes => array['level']);
-    ```
-
-    What that costs depends on the engine, since an engine's list cannot take a value per row:
+    named as the condition's parameters (`protects reports (id): read viewer, attributes
+    (level)`). What that costs depends on the engine, since an engine's list cannot take a value
+    per row:
 
     | engine | how rows are decided | expect |
     |---|---|---|
     | SpiceDB | one LookupResources per subject (with the request's context): rows granted outright and rows not granted at all are decided in Postgres, by an indexable `id = ANY(...)` filter; only rows granted through a caveat that needs the row's values are checked, each with them | the cost of a list, plus one round trip per row whose grant is conditional. A subject with more than `LIST_LIMIT` objects has every row checked |
     | OpenFGA | ListObjects takes no row's values (and fails on a condition missing one), so every row read is checked with its values | one round trip per row read: fine for reads by key and small pages, slow for scans. Prefer SpiceDB for this shape, or a column the relationship can carry instead |
-    | Cerbos | attributes are its own model: plans compile into filters on the columns | no round trip per row (docs: Cerbos attributes) |
+    | Cerbos | attributes are its own model: plans compile into filters on the columns | no round trip per row |
 - **If the engine is down,** changes wait and are delivered when it is back. A change the engine
-  refuses (a relation the model does not have) is set aside with its reason, and `authz.doctor()`
-  reports it; the changes after it go on.
+  refuses is set aside with its reason, and `authz.doctor()` reports it; the changes after it go
+  on.
 - **Needs** the sidecar's `PG_AUTH_DATABASE_URL` (as for the permission index), and a unique key
-  over the columns, so two rows are never one relationship. Rows already in the table are delivered
-  when it is declared; `authz.unrelate(table)` stops delivering.
+  over the columns, so two rows are never one relationship. Rows already in the table are
+  delivered when the note first appears.
 
-### The whole setup as one document
+### Versions, pushes and checks
 
-`authz.setup(jsonb)` takes who is asking, every relationship table and every protection as one
-document, applies it in one transaction, and keeps it with every earlier version
-(`authz.setups`); `select jsonb_pretty(authz.setup())` shows the one in force. It compiles into the
-calls above, so it can express what they can, and reads as a single thing to review:
+```sql
+select engine, name, version, pushed_at, error from authz.rules();   -- the versions in force
+select jsonb_pretty(authz.setup());                                  -- what the notes set up
+```
+
+- **Versions.** Every change is a new version in `authz.rules`, with who stored it and when; the
+  same text again is not one. `authz.rules()` shows the latest of each, `body` included. A
+  migration carries the rules with the tables they protect, and they are reviewed as written.
+- **What changes.** A new version sets up what its notes say: a note removed removes its
+  protection or relationship table, one unchanged is left as it is (its rows are not delivered
+  again).
+- **Pushed.** The sidecar pushes the latest version within milliseconds (OpenFGA: a new
+  authorization model, which it then reads with; SpiceDB: WriteSchema; Cerbos: its Admin API), and
+  every backend asks again, since new rules may change any answer. Each push is recorded in
+  `pushed_at`. Relationships wait for the rules they need: none is delivered while that engine's
+  rules are not pushed.
+- **Checked.** The notes are applied when the rules are stored, so their tables and columns must
+  exist by then, and a note that does not parse fails at once, naming its line. A note naming a
+  type or permission the rules do not have fails when the transaction commits, naming what they
+  have:
+
+  ```text
+  ERROR:  the setup names what the rules stored with authz.set_rules do not have:
+  public.docs: document has no vewer in the openfga model (it has: editor, org, viewer)
+  ```
+
+  That check runs at commit, so a migration can change the rules and the tables using them
+  together. A relationship that ends needs, on SpiceDB, a relation that takes it with an
+  expiration (and as it is, when the column may be null). One written with a condition needs a
+  relation that takes `user with <condition>`, a condition the rules have, and parameters it
+  takes. Cerbos policies are checked for their resource and actions (`approve:*` covers
+  `approve:big`). What the stored rules do not show, the engine still checks when they are pushed.
+- **Refused.** Rules the engine refuses (an undefined relation, a policy that does not compile) are
+  kept with its reason in `error`, `authz.doctor()` fails its `rules` check, and the engine keeps
+  the version before. Cerbos stores policies it cannot compile and goes on with the ones before:
+  the sidecar asks it whether they compile, and puts the versions before back when they do not.
+  Store a corrected version to replace it.
+- **OpenFGA's DSL** is converted to the API's JSON by the sidecar (schema 1.1: types, relations,
+  `[user, user:*, team#member, user with in_region]`, `or`, `and`, `but not`, `from`, conditions);
+  modules are refused. JSON is taken as is, without notes.
+- **Every sidecar follows them.** The engine's id for the rules in force (OpenFGA's model, SpiceDB's
+  schema revision) is kept beside them, and every sidecar asks with it from the next request, not
+  only the one that pushed them.
+- **Cerbos** must store policies in a database with its Admin API on
+  (`storage.driver: sqlite3` or `postgres`, `server.adminAPI.enabled: true`), and the sidecar needs
+  its credentials (`CERBOS_ADMIN_USER`, `CERBOS_ADMIN_PASSWORD`). One `authz.set_rules` row per
+  policy, named as you would name its file.
+
+## 4. Rules managed in the engine itself
+
+Rules kept in the engine, or in a policy directory or git store Cerbos reads, stay there: pg_auth
+pushes only what `authz.set_rules` stored. The notes are then written as calls, the lower level the
+notes compile into. `authz.setup(jsonb)` takes the whole setup as one document, applies it in one
+transaction and keeps every version (`authz.setups`); `authz.protect` and `authz.relate` declare
+one table at a time:
 
 ```sql
 select authz.setup($${
@@ -240,129 +354,32 @@ select authz.setup($${
     {"table": "app.memberships", "object": {"type": "org", "column": "org_id"},
      "relation": {"column": "role", "allowed": ["admin", "member"]},
      "subject": {"type": "user", "column": "user_id"}},
-    {"table": "app.shares", "by": "grantee_kind",
-     "object": {"type": "doc", "column": "doc_id"}, "relation": "viewer",
-     "subject": {"user":   {"type": "user", "column": "grantee_id"},
-                 "team":   {"type": "team", "column": "grantee_id", "relation": "member"},
-                 "public": {"type": "user", "id": "*"}}}],
+    {"table": "app.shares", "object": {"type": "doc", "column": "doc_id"}, "relation": "viewer",
+     "subject": {"type": "user", "column": "user_id"}, "expires": {"column": "expires_at"}}],
   "protect": [
-    {"table": "app.docs", "type": "doc", "column": "id",
-     "select": "viewer", "write": "editor", "delete": "owner"},
+    {"table": "app.docs", "type": "doc", "column": "id", "select": "viewer", "write": "editor"},
     {"table": "app.memberships", "type": "org", "column": "org_id",
      "select": "can_read", "write": "can_manage"}]
 }$$);
+
+select authz.protect('app.docs', type => 'doc', id => 'id', read => 'viewer', write => 'editor');
+select authz.relate('app.memberships', object_type => 'org', object_column => 'org_id',
+                    relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
 ```
 
-- `"column"` names a column of the row; `"id"` is a fixed value (`"*"`: everyone).
-- `"by"` declares a table once per value of a column: the subject is a map from those values.
-- `"relation"` is a name, or `{"column": ..., "allowed": [...]}`.
-- `"expires": {"column": ...}` ends each relationship at the row's timestamp (`expires_column`).
-- `"condition": {"name": ..., "context": {"parameter": "column"}}` writes it with an OpenFGA
-  condition or SpiceDB caveat (`condition`, `condition_context`).
 - A protection takes `"select"`, `"write"`, `"update"`, `"delete"`, `"insert"` (a permission, or
-  `{"type", "column", "permission"}` on the parent), `"column"` or `"key"`, `"attributes"` (a list of
-  columns, or `{"name": "column"}`), `"hierarchy"` (`{"tree", "direct"}`), `"name"` and `"force"`.
-- `"subject"` takes `authz.configure`'s settings: `"source"`, `"claim"`, `"type"`, `"roles"`,
-  `"scope"`, `"policy_version"`, `"context"`, `"jwks"`, `"claims_setting"`, `"token_setting"`,
-  `"token_header"`.
+  `{"type", "column", "permission"}` on the parent), `"column"` or `"key"`, `"attributes"` (a list
+  of columns, or `{"name": "column"}`), `"hierarchy"` (`{"tree", "direct"}`), `"name"` and
+  `"force"` (`false` lets the table owner bypass the policies; the notes always force them).
+- A relationship table takes `"object"`, `"relation"` (a name, or `{"column", "allowed"}`),
+  `"subject"` (`"column"` or a fixed `"id"`, `"*"` for everyone), `"by"` (one declaration per value
+  of a column), `"filter"`, `"expires"` and `"condition"` (`{"name", "context"}`).
+- `"subject"` takes `authz.configure`'s settings.
 - What the previous document declared and this one does not is removed. Unknown keys fail, naming
-  what the place takes. A relationship table declared exactly as before is not delivered again.
-
-### The engine's rules, kept in Postgres
-
-The model, the schema or the policies can be kept in Postgres too, in the engine's own language,
-so a migration carries them with the tables they protect and they are reviewed as written.
-`authz.set_rules(engine, name, text)` stores a new version, and the sidecar pushes it to the engine:
-
-```sql
--- OpenFGA: one model, in its DSL
-select authz.set_rules('openfga', 'model', $$
-model
-  schema 1.1
-type user
-type org
-  relations
-    define admin: [user]
-    define member: [user]
-    define can_read: member or admin
-type document
-  relations
-    define org: [org]
-    define viewer: can_read from org
-$$);
-
--- SpiceDB: one schema
-select authz.set_rules('spicedb', 'schema', $$
-definition user {}
-definition org {
-  relation admin: user
-  relation member: user
-  permission can_read = member + admin
-}
-definition document {
-  relation org: org
-  permission viewer = org->can_read
-}
-$$);
-
--- Cerbos: one row per policy, named as you would name its file
-select authz.set_rules('cerbos', 'resource/document', $$
-apiVersion: api.cerbos.dev/v1
-resourcePolicy:
-  version: default
-  resource: document
-  rules:
-    - actions: ["view"]
-      effect: EFFECT_ALLOW
-      roles: ["user"]
-      condition:
-        match:
-          expr: request.resource.attr.owner == request.principal.id
-$$);
-
-select engine, name, version, pushed_at, error from authz.rules();   -- the versions in force
-```
-
-- **Versions.** Every change is a new version in `authz.rules`, with who stored it and when; the
-  same text again is not one. `authz.rules()` shows the latest of each, `body` included.
-- **Pushed.** The sidecar pushes the latest version within milliseconds (OpenFGA: a new
-  authorization model, which it then reads with; SpiceDB: WriteSchema; Cerbos: its Admin API), and
-  every backend asks again, since new rules may change any answer. Each push is recorded in
-  `pushed_at`.
-- **Checked against the setup.** A protected table naming a type or permission the stored rules do
-  not have, or a relationship table writing a relation they compute, or a subject its relation
-  does not take, fails when the transaction commits, naming what they have:
-
-  ```text
-  ERROR:  the setup names what the rules stored with authz.set_rules do not have:
-  public.docs: document has no vewer in the openfga model (it has: editor, org, viewer)
-  ```
-
-  The check runs at commit, so a migration can change the rules and the tables using them
-  together. A table whose relationships end needs, on SpiceDB, a relation that takes them with an
-  expiration (and as they are, when the column may be null). A table written with a condition
-  (`condition =>`) needs a relation that takes `user with <condition>`, a condition the rules
-  have, and parameters it takes. Cerbos policies are checked for their resource and actions (`approve:*` covers
-  `approve:big`). What the stored rules do not show, the engine still checks when they are pushed
-  (a relation computed from one that does not exist, a condition that does not compile).
-- **Refused.** Rules the engine refuses (an undefined relation, a policy that does not compile) are
-  kept with its reason in `error`, `authz.doctor()` fails its `rules` check, and the engine keeps
-  the version before. Cerbos stores policies it cannot compile and goes on with the ones before:
-  the sidecar asks it whether they compile, and puts the versions before back when they do not.
-  Store a corrected version to replace it.
-- **OpenFGA's DSL** is converted to the API's JSON by the sidecar (schema 1.1: types, relations,
-  `[user, user:*, team#member, user with in_region]`, `or`, `and`, `but not`, `from`, conditions);
-  modules are refused. JSON is taken as is.
-- **Every sidecar follows them.** The engine's id for the rules in force (OpenFGA's model, SpiceDB's
-  schema revision) is kept beside them, and every sidecar asks with it from the next request, not
-  only the one that pushed them.
-- **Cerbos** must store policies in a database with its Admin API on
-  (`storage.driver: sqlite3` or `postgres`, `server.adminAPI.enabled: true`), and the sidecar needs
-  its credentials (`CERBOS_ADMIN_USER`, `CERBOS_ADMIN_PASSWORD`). A policy directory or git store
-  is read-only: keep those rules where they are.
-- **Optional.** Rules managed in the engine itself stay there: pg_auth pushes only what
-  `authz.set_rules` stored. Once it is used, Postgres is the source of truth for that engine.
-- **Order.** Store the rules before `authz.relate` declares tables that write their relations: the
+  what the place takes. With rules stored but no notes in them, a setup written this way is left
+  as it is; with notes, the notes' setup replaces it.
+- `authz.unbind(table)` removes pg_auth's policies from a table, `authz.unrelate(table)` stops
+  delivering its rows. Store the rules before declaring tables that write their relations: the
   engine refuses a relationship whose relation its model does not have yet.
 
 ## 5. Inspect and debug
@@ -452,7 +469,7 @@ written through a relationship table clears every one of them:
   the commit in the measurements (`compare/relationships.exs`), on both engines.
 - **Written in the engine directly** (its API, another service): up to the engine's own window
   plus the sidecar's second: about 11 s on OpenFGA with caches, 6 s on SpiceDB by default.
-- **A grant with an end** (`expires_column`): gone 60 to 120 ms after its end through the outbox;
+- **A grant with an end** (`until`): gone 60 to 120 ms after its end through the outbox;
   on SpiceDB the engine also ends it itself, within its revision window.
 - **A request context with the time** (`"now"`): answers are kept up to the sidecar's 1 s, so a
   condition on the time holds up to a second past its boundary.

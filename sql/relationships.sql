@@ -179,7 +179,7 @@ begin
         if after is not null and r.relations is not null and not after[2] = any (r.relations) then
             raise exception 'relation % is not one of %', after[2], array_to_string(r.relations, ', ')
                 using errcode = 'check_violation',
-                      hint = format('%s declares the relations its rows may name (authz.relate relations => ...)', tg_relid::regclass);
+                      hint = format('the relations %s may name are those its subject can hold in the rules (or authz.relate''s relations)', tg_relid::regclass);
         end if;
     end if;
     if before is not distinct from after and expired_before is not distinct from expires and context_before is not distinct from context_after then

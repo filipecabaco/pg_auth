@@ -30,14 +30,22 @@ the rows the engine allows. Grants written as rows reach the engine through an o
 
 ```sql
 select authz.configure(subject => 'jwt');   -- the JWT's sub, as Supabase and PostgREST set it
-select authz.protect('documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
+select authz.set_rules('openfga', 'model', $$
+...
+type org
+  # pg_auth: rows of memberships (org_id, role, user_id)
+  ...
+type document
+  # pg_auth: protects documents (id): read viewer, write editor
+  # pg_auth: org from documents.org_id
+  ...
+$$);
 -- share by writing a row: bob sees org 1's documents
-select authz.relate('memberships', object_type => 'org', object_column => 'org_id',
-                    relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
 insert into memberships values (1, 'bob', 'member');
 ```
 
-The engine's rules can be kept in Postgres with your migrations (`authz.set_rules`).
+The rules stay in the engine's own syntax, kept in Postgres with your migrations; their
+`pg_auth:` comments protect and relate the tables.
 
 ## Ask why a row is hidden {#why}
 

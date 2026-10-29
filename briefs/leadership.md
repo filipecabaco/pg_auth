@@ -28,8 +28,9 @@ rows", and gets hard quickly after that:
 
 ## What it does
 
-- **One line per table.** `authz.protect('documents', type => 'document', id => 'id', read => 'viewer')`
-  installs the policies; the planner turns the engine's answer into an indexable filter.
+- **One comment per table.** `# pg_auth: protects documents (id): read viewer`, written in the
+  engine's own rules, installs the policies; the planner turns the engine's answer into an
+  indexable filter.
 - **Grants are rows.** Inserting into a memberships table delivers the relationship to the engine;
   the subject sees the change 4 to 34 ms after commit (measured against OpenFGA and SpiceDB).
 - **It explains itself.** `authz.why` says why a row is hidden; `authz.doctor` checks the setup and

@@ -34,17 +34,28 @@ create policy write on documents for update to authenticated
 
 With pg_auth, the rules live in the engine's model, once, and each table names what it is:
 
-```
-type document                                   # OpenFGA model
+```sql
+select authz.set_rules('openfga', 'model', $$
+model
+  schema 1.1
+type user
+type org
+  relations
+    define admin: [user]
+    define member: [user]
+type document
+  # pg_auth: protects documents (id): read viewer, write editor
+  # pg_auth: org from documents.org_id
   relations
     define org: [org]
     define viewer: [user] or member from org
     define editor: [user] or admin from org
+$$);
 ```
 
-```sql
-select authz.protect('public.documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
-```
+The model stays in OpenFGA's own syntax (SpiceDB's and Cerbos's work the same way). The
+`pg_auth:` comments are the setup: the first protects the `documents` table, the second makes
+each row's `org_id` a relationship in the engine. The sidecar sends the model to OpenFGA.
 
 Every client now sees exactly the documents the engine allows, and a change to the model, such as
 a new role or a document shared, applies with no migration and no policy to edit.
@@ -119,7 +130,7 @@ create extension pg_auth;
 alter system set pg_auth.sidecar_socket = '/run/pg_auth/default.sock';
 select pg_reload_conf();
 select authz.configure(subject => 'jwt');      -- the JWT's sub, as Supabase and PostgREST set it
-select authz.protect('public.documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
+select authz.set_rules('openfga', 'model', $$ ... $$);   -- your model, with its pg_auth: notes
 select * from authz.doctor();
 ```
 
@@ -130,13 +141,13 @@ to reach a row, inherited folders, attribute rules, inserts checked on the paren
 ## Grant access by writing rows
 
 An app with no backend grants and revokes access the way it writes anything else: a row, through
-PostgREST. `authz.relate` declares a table's rows to be relationships in the engine, and pg_auth
-delivers each change; who may write those rows is pg_auth too.
+PostgREST. A note in the model declares a table's rows to be relationships in the engine, and
+pg_auth delivers each change; who may write those rows is pg_auth too.
 
-```sql
-select authz.relate('public.memberships', object_type => 'org', object_column => 'org_id',
-                    relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
-select authz.protect('public.memberships', type => 'org', id => 'org_id', read => 'can_read', write => 'can_manage');
+```
+type org
+  # pg_auth: rows of memberships (org_id, role, user_id)
+  # pg_auth: protects memberships (org_id): read can_read, write can_manage
 ```
 ```sql
 insert into memberships values (1, 'bob', 'member');   -- as an org admin: bob sees org 1's documents ~25 ms later

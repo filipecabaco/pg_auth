@@ -48,8 +48,10 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
                                      OpenFGA or SpiceDB
 ```
 
-- **Binding.** `authz.protect('public.docs', 'org', 'org_id', 'view', 'edit')` (table, object type, id
-  column, read permission, optional write permission) installs the policy `authz.permits('<type>', '<permission>', column::text)` on the table and on
+- **Binding.** A note in the engine's rules (`# pg_auth: protects docs (org_id): read view, write
+  edit`, in the `org` type), or the lower-level `authz.protect('public.docs', 'org', 'org_id',
+  'view', 'edit')` it compiles into (table, object type, id column, read permission, optional write
+  permission), installs the policy `authz.permits('<type>', '<permission>', column::text)` on the table and on
   every partition, now and later.
 - **Sidecar.** A separate process next to Postgres that speaks one small protocol (`list`,
   `check`, `fill`, `ping`) and translates it to an engine's API: OpenFGA's or SpiceDB's, chosen by

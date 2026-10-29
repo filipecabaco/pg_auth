@@ -20,14 +20,18 @@
       </p>
       <div class="pa-setup">
         <p>The rules live in an authorization engine, a service running next to Postgres (here
-          <b data-engine-name>OpenFGA</b>). The <code>documents</code> table points at it with one line:</p>
-<pre data-for="relationships"><code>select authz.protect('documents',
-  type => 'document', id => 'id',
-  read => 'viewer', write => 'editor');</code></pre>
-<pre data-for="attributes"><code>select authz.protect('documents',
-  type => 'document', id => 'id',
-  read => 'read', write => 'update',
-  attributes => array['owner', 'status']);</code></pre>
+          <b data-engine-name>OpenFGA</b>), in its own syntax. One comment in them protects the <code>documents</code> table:</p>
+<pre data-engine-show="openfga"><code>type document
+  <span class="n"># pg_auth: protects documents (id): read viewer, write editor</span>
+  relations
+    define viewer: shared_with or can_read from org</code></pre>
+<pre data-engine-show="spicedb"><code>definition document {
+  <span class="n">// pg_auth: protects documents (id): read viewer, write editor</span>
+  permission viewer = shared_with + org-&gt;can_read
+}</code></pre>
+<pre data-engine-show="cerbos"><code><span class="n"># pg_auth: protects documents (id): read view, write edit, attributes (owner, status)</span>
+resourcePolicy:
+  resource: document</code></pre>
         <p data-for="relationships">The rules: an organisation's members read its documents, and only its admins edit
           them. Anne is the admin of org 1, which owns three documents. Bob is in no org yet.</p>
         <p data-for="attributes">The rule: everyone reads published documents and their own drafts, and only the owner
@@ -58,75 +62,81 @@
         <em class="pa-demo__status" role="status">not started</em>
       </div>
       <div class="pa-demo__screen">
-        {#- Setup: what the demo's database ran, and the rules the engine reads, exactly as docker/demo
-            loads them (sql/*.sql, models/model.fga, models/schema.zed, cerbos/document.yaml):
-            change them there and here together -#}
+        {#- Setup: the whole of it, exactly as docker/demo loads it (sql/*.sql stores rules/openfga.fga,
+            rules/spicedb.zed and rules/cerbos.yaml with authz.set_rules): change them there and here
+            together -#}
         <div class="pa-demo__setup" role="tabpanel" aria-label="The permission setup for this engine">
           <div>
-            <b>In Postgres</b>
-<pre data-for="relationships"><code><span class="c">-- who is asking: the token's sub, as PostgREST sets it</span>
+            <b>The whole setup, run once in Postgres</b>
+<pre data-engine-show="openfga"><code><span class="c">-- who is asking: the token's sub, as PostgREST sets it</span>
 select authz.configure(subject => 'jwt');
 
-<span class="c">-- rows that are relationships in the engine</span>
-select authz.relate('documents', object_type => 'document',
-  object_column => 'id', relation => 'org',
-  subject_type => 'org', subject_column => 'org_id');
-select authz.relate('memberships', object_type => 'org',
-  object_column => 'org_id', relation_column => 'role',
-  subject_type => 'user', subject_column => 'user_id');
-
-<span class="c">-- what each row is, and the permissions to read and write it</span>
-select authz.protect('documents', type => 'document',
-  id => 'id', read => 'viewer', write => 'editor');
-select authz.protect('memberships', type => 'org',
-  id => 'org_id', read => 'can_read', write => 'can_manage');
-<span class="c">-- and the same two calls for shares (doc_id, user_id)</span></code></pre>
-<pre data-for="attributes"><code><span class="c">-- who is asking: the token's sub, its role claim as the role</span>
-select authz.configure(subject => 'jwt');
-
-<span class="c">-- what each row is, the permissions, and the columns the rules read</span>
-select authz.protect('documents', type => 'document',
-  id => 'id', read => 'read', write => 'update',
-  attributes => array['owner', 'status']);</code></pre>
-          </div>
-          <div>
-            <b>In <span data-engine-name>OpenFGA</span>, in its own format</b>
-<pre data-engine-show="openfga"><code>model
+<span class="c">-- the model, in OpenFGA's own syntax; its pg_auth: notes protect and relate the tables</span>
+select authz.set_rules('openfga', 'model', $$
+model
   schema 1.1
 type user
 type org
+  <span class="n"># pg_auth: rows of memberships (org_id, role, user_id)</span>
+  <span class="n"># pg_auth: protects memberships (org_id): read can_read, write can_manage</span>
   relations
     define admin: [user]
     define member: [user]
-    define can_manage: admin
     define can_read: member or admin
+    define can_manage: admin
 type document
+  <span class="n"># pg_auth: protects documents (id): read viewer, write editor</span>
+  <span class="n"># pg_auth: protects shares (doc_id): read viewer, write editor</span>
+  <span class="n"># pg_auth: org from documents.org_id</span>
+  <span class="n"># pg_auth: shared_with from shares(doc_id).user_id: until expires_at</span>
   relations
     define org: [org]
     define shared_with: [user]
     define viewer: shared_with or can_read from org
-    define editor: can_manage from org</code></pre>
-<pre data-engine-show="spicedb"><code>definition user {}
+    define editor: can_manage from org
+$$);</code></pre>
+<pre data-engine-show="spicedb"><code><span class="c">-- who is asking: the token's sub, as PostgREST sets it</span>
+select authz.configure(subject => 'jwt');
+
+<span class="c">-- the schema, in SpiceDB's own syntax; its pg_auth: notes protect and relate the tables</span>
+select authz.set_rules('spicedb', 'schema', $$
+use expiration
+
+definition user {}
 
 definition org {
-    relation admin: user
-    relation member: user
-    permission can_manage = admin
-    permission can_read = member + admin
+  <span class="n">// pg_auth: rows of memberships (org_id, role, user_id)</span>
+  <span class="n">// pg_auth: protects memberships (org_id): read can_read, write can_manage</span>
+  relation admin: user
+  relation member: user
+  permission can_read = member + admin
+  permission can_manage = admin
 }
 
 definition document {
-    relation org: org
-    relation shared_with: user
-    permission viewer = shared_with + org-&gt;can_read
-    permission editor = org-&gt;can_manage
-}</code></pre>
-<pre data-engine-show="cerbos"><code>apiVersion: api.cerbos.dev/v1
+  <span class="n">// pg_auth: protects documents (id): read viewer, write editor</span>
+  <span class="n">// pg_auth: protects shares (doc_id): read viewer, write editor</span>
+  <span class="n">// pg_auth: org from documents.org_id</span>
+  <span class="n">// pg_auth: shared_with from shares(doc_id).user_id: until expires_at</span>
+  relation org: org
+  relation shared_with: user | user with expiration
+  permission viewer = shared_with + org-&gt;can_read
+  permission editor = org-&gt;can_manage
+}
+$$);</code></pre>
+<pre data-engine-show="cerbos"><code><span class="c">-- who is asking: the token's sub, its role claim as the role</span>
+select authz.configure(subject => 'jwt');
+
+<span class="c">-- the policy, in Cerbos's own syntax; its pg_auth: note protects the table</span>
+select authz.set_rules('cerbos', 'resource/document', $$
+<span class="n"># pg_auth: protects documents (id): read view, write edit, attributes (owner, status)</span>
+apiVersion: api.cerbos.dev/v1
 resourcePolicy:
   version: default
   resource: document
   rules:
-    - actions: ["read"]
+    <span class="c"># anyone signed in reads published documents and their own drafts</span>
+    - actions: ["view"]
       effect: EFFECT_ALLOW
       roles: ["authenticated"]
       condition:
@@ -135,16 +145,18 @@ resourcePolicy:
             of:
               - expr: request.resource.attr.owner == request.principal.id
               - expr: request.resource.attr.status == "published"
-    - actions: ["update"]
+    <span class="c"># only the owner edits</span>
+    - actions: ["edit"]
       effect: EFFECT_ALLOW
       roles: ["authenticated"]
       condition:
         match:
-          expr: request.resource.attr.owner == request.principal.id</code></pre>
+          expr: request.resource.attr.owner == request.principal.id
+$$);</code></pre>
           </div>
-          <p class="pa-demo__setup-note">pg_auth does not translate the rules: the engine reads them in its own
-            format, conditions and caveats included. Keep them in the engine, or in Postgres with
-            <code>authz.set_rules</code>.</p>
+          <p class="pa-demo__setup-note">The rules stay in the engine's own syntax: pg_auth reads only the
+            <code>pg_auth:</code> notes, and the sidecar sends the rest to <span data-engine-name>OpenFGA</span> as it is.
+            Each note becomes a plain RLS policy that asks the engine, so <code>pg_policies</code> lists it.</p>
         </div>
         {#- Before boot: step 1 as the demo printed it (OpenFGA), recorded from docker/demo; the rest
             is the visitor's to run -#}
@@ -296,18 +308,19 @@ resourcePolicy:
     define <b>viewer</b>: shared_with or member from org</code></pre>
         </li>
         <li>
-          <p>Point each table at it:</p>
-<pre class="pa-code"><code>select authz.protect('documents',
-  type => 'document', id => 'id', read => '<b>viewer</b>');</code></pre>
+          <p>Name the table it protects, in a comment beside it:</p>
+<pre class="pa-code"><code>type document
+  # pg_auth: protects documents (id): read <b>viewer</b></code></pre>
         </li>
       </ol>
     </div>
   </div>
   <p class="pa-proof">
     Sharing with a team or adding a role is a change to the model, or a row in a table: there is no
-    policy to edit. The model can live with your migrations: <code>authz.set_rules</code> sends it to
-    the engine, and a migration naming a permission the model does not define fails to commit.
-    <a href="{{ 'usage/#3-protect-tables' | url }}">Protecting tables</a>&nbsp;·&nbsp;<a href="{{ 'usage/#the-engines-rules-kept-in-postgres' | url }}">Rules kept in Postgres</a>
+    policy to edit. The model lives with your migrations: <code>authz.set_rules</code> stores it,
+    its notes protect the tables, the sidecar sends it to the engine, and a note naming a
+    permission the model does not define fails to commit.
+    <a href="{{ 'usage/#3-the-rules-and-their-notes' | url }}">The rules and their notes</a>
   </p>
 </section>
 
@@ -486,7 +499,7 @@ resourcePolicy:
     <h2 class="pa-h2">Try it on your own Postgres</h2>
     <p class="pa-sub">
       Build the extension, preload it, run the sidecar next to Postgres pointed at your engine, and
-      protect a table.
+      store your rules with a note naming the table they protect.
     </p>
     <a class="pa-btn pa-btn--primary" href="{{ 'usage/' | url }}">Getting started</a>
   </div>
@@ -499,7 +512,10 @@ create extension pg_auth;
 alter system set pg_auth.sidecar_socket = '/run/pg_auth/default.sock';
 select pg_reload_conf();
 select authz.configure(subject => 'jwt');
-select authz.protect('documents', type => 'document',
-  id => 'id', read => 'viewer', write => 'editor');</code></pre>
+select authz.set_rules('openfga', 'model', $$
+type document
+  # pg_auth: protects documents (id): read viewer, write editor
+  ...
+$$);</code></pre>
 </section>
 {% endblock %}

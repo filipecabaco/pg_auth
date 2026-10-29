@@ -1,22 +1,22 @@
 #!/bin/sh
-# Postgres, the three engines and a sidecar for each, then tmux: admin on top, anne and bob side by
-# side, the sidecars' log below. The snapshot is taken at the admin prompt, so visitors restore a
-# machine that is already up. When tmux exits the console runs this again; everything is still up.
+# Postgres, the three engines and a sidecar for each, then tmux: anne and bob side by side, each a
+# psql session as that user. The snapshot is taken at bob's prompt, so visitors restore a machine
+# that is already up. When tmux exits the console runs this again; everything is still up.
 PSQL="psql -h /run/postgresql -U postgres -X -q -tA"
-LOG=/run/pg_auth/sidecar.log
 
 # Go's runtime, sized for a browser tab: one thread each, collected early
 export GOMAXPROCS=1 GOGC=50 GOMEMLIMIT=96MiB
 
 wait_for() { until curl -sf -o /dev/null "$@"; do sleep 0.3; done; }
 
-# a sidecar per engine, as the postgres user (its socket is created 0660); its log lines tagged
-# with the engine and appended to the log pane's file
+# a sidecar per engine, as the postgres user (its socket is created 0660)
 sidecar() {
   name=$1; shift
-  ( su-exec postgres env "$@" REQUEST_LOG=1 PG_AUTH_SOCKET=/run/pg_auth/$name.sock pg-auth-sidecar 2>&1 \
-    | awk -v engine="$name" '{ sub(/^pg-auth-sidecar: /, ""); printf "%-8s %s\n", engine, $0; fflush() }' >> $LOG ) &
+  su-exec postgres env "$@" PG_AUTH_SOCKET=/run/pg_auth/$name.sock pg-auth-sidecar > /run/pg_auth/$name-sidecar.log 2>&1 &
 }
+
+# how many panes have finished training (train/*.sql)
+trained() { $PSQL -d openfga -c "select count(*) from pg_stat_activity where application_name = 'trained'"; }
 
 if [ ! -S /run/pg_auth/cerbos.sock ]; then
   install -d -o postgres -g postgres /run/postgresql /run/pg_auth
@@ -39,7 +39,6 @@ if [ ! -S /run/pg_auth/cerbos.sock ]; then
     -H 'Authorization: Bearer demo' -d @/etc/demo/schema.json; do sleep 0.3; done
   wait_for http://127.0.0.1:3592/_cerbos/health
 
-  : > $LOG
   sidecar openfga OPENFGA_URL=http://127.0.0.1:8080 OPENFGA_STORE_ID="$store" OPENFGA_MODEL_ID="$model" \
     PG_AUTH_DATABASE_URL="host=/run/postgresql user=postgres dbname=openfga"
   sidecar spicedb SPICEDB_URL=http://127.0.0.1:8443 SPICEDB_TOKEN=demo \
@@ -54,19 +53,17 @@ if [ ! -S /run/pg_auth/cerbos.sock ]; then
 
   # train each engine, its sidecar and Postgres on the demo's statements (rolled back)
   for db in openfga spicedb cerbos; do
-    psql -X -q -h /run/postgresql -U admin -d $db -v solo=1 -f /etc/demo/train/admin.sql
+    psql -X -q -h /run/postgresql -U admin -d $db -f /etc/demo/train/engine.sql
   done
 fi
 
+# anne's pane trains first and bob's after it, so bob's prompt (the snapshot's ready text) is the
+# last thing drawn
 tmux kill-server 2>/dev/null
 CONNECT="psql -h /run/postgresql -d openfga"
-exec tmux new-session -s demo -n demo "$CONNECT -U admin -v train=/etc/demo/train/admin.sql; sh" \; \
-  select-pane -T " admin · superuser " \; \
-  split-window -v -l 8 "sh /usr/local/bin/demo-log" \; \
-  select-pane -T " sidecar log " \; \
-  select-pane -t 0 \; \
-  split-window -v -p 42 "$CONNECT -U anne -v train=/etc/demo/train/anne.sql; sh" \; \
-  select-pane -T " anne " \; \
-  split-window -h "$CONNECT -U bob -v train=/etc/demo/train/bob.sql; sh" \; \
-  select-pane -T " bob " \; \
-  select-pane -t 0
+tmux new-session -d -s demo -n demo "$CONNECT -U anne -v train=/etc/demo/train/anne.sql; sh"
+tmux select-pane -t demo:0.0 -T " anne "
+until [ "$(trained)" -ge 1 ] 2>/dev/null; do sleep 0.2; done
+tmux split-window -h -t demo:0.0 "$CONNECT -U bob -v train=/etc/demo/train/bob.sql; sh"
+tmux select-pane -t demo:0.1 -T " bob "
+exec tmux attach -t demo

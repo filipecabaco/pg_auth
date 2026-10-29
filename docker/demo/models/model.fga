@@ -12,4 +12,4 @@ type document
     define org: [org]
     define shared_with: [user]
     define viewer: shared_with or can_read from org
-    define editor: can_read from org
+    define editor: can_manage from org

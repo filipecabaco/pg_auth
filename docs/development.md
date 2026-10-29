@@ -107,21 +107,19 @@ and Cerbos each with its sidecar, on an emulated arm64 machine built by
   only distro snowglobe boots: `pg_auth:alpine-arm64`.
 - `docker/demo/` adds the engines (static Go binaries copied from their images, data in memory),
   a database per engine (`openfga`, `spicedb`, `cerbos`, each `pg_auth.sidecar_socket` pointing at
-  its sidecar), and tmux with four panes: admin (a superuser), anne and bob (login roles whose
-  `request.jwt.claims` are set as PostgREST would), and the sidecars' request log
-  (`REQUEST_LOG=1`).
-- Before the snapshot, every pane runs the demo's own statements in a rolled-back transaction
+  its sidecar, `documents` already protected), and tmux with two psql panes: anne and bob, login
+  roles whose `request.jwt.claims` are set as PostgREST would set them.
+- Before the snapshot, both panes run the demo's own statements in a rolled-back transaction
   (`docker/demo/train/`), and `start.sh` does the same for each engine, so a visitor's first clicks
   find warm code, catalogs, caches and connections: snowglobe drops the page cache at the snapshot
   and warms only what was read while booting.
-- `docs/javascripts/demo.js` restores the snapshot and types each step into its pane (alt-1 to
-  alt-4 switch panes); the engine switcher reconnects the three psql panes to that engine's
-  database.
+- `docs/javascripts/demo.js` restores the snapshot and types each of the three steps into its pane
+  (alt-1 and alt-2 switch panes); the engine buttons reconnect both panes to that engine's database.
 
 To try a change to the demo without the browser, run the image and drive tmux:
 
 ```sh
 docker build --platform linux/arm64 -t pg_auth-demo docker/demo
 docker run -d -t --name demo --network none pg_auth-demo
-docker exec demo tmux capture-pane -p -t demo:0.3   # the sidecar log pane
+docker exec demo tmux capture-pane -p -t demo:0.1   # bob's pane
 ```

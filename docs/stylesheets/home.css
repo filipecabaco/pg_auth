@@ -1,4 +1,4 @@
-/* Landing page (overrides/home.html): one app in three acts beside a live demo. The stage is
+/* Landing page (overrides/home.html): two users of one app, three steps, beside a live demo. The stage is
    always dark, it is the brand surface; the sections below follow Material's light/dark scheme.
    Material sets html to 125%, so 1rem is 20px here. */
 
@@ -135,7 +135,21 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.6rem;
-  margin-bottom: 1.8rem;
+  margin-bottom: 0.8rem;
+}
+
+/* the hero's boot button has done its job once the demo runs */
+.pa-home.is-running .pa-actions [data-boot] {
+  display: none;
+}
+
+/* where it runs, plainly, under the actions */
+.pa-where {
+  max-width: 34em;
+  margin: 0;
+  font-size: 0.62rem;
+  line-height: 1.55;
+  color: #a3a3a3;
 }
 
 .pa-home code {
@@ -145,97 +159,32 @@
   color: #d7f5e6;
 }
 
-/* The acts: a rail with a marker per act. The green fill travels down the rail to the lit act;
-   it is the page's one authored motion. */
+/* How the table is set up: the one line, in the story column */
 
-.pa-acts {
-  --fill: 0.6rem;
-  list-style: none;
-  margin: 0;
-  padding: 0 0 0 2rem;
-  position: relative;
+.pa-setup {
+  margin: 0 0 1.4rem;
 }
 
-.pa-acts::before,
-.pa-acts::after {
-  content: "";
-  position: absolute;
-  left: 0.6rem;
-  top: 0.6rem;
-  width: 2px;
-}
-
-.pa-acts::before {
-  bottom: 0.6rem;
-  background: var(--pa-frame);
-}
-
-.pa-acts::after {
-  height: calc(var(--fill) - 0.6rem);
-  background: var(--pa-green);
-  transition: height 700ms var(--pa-ease);
-}
-
-.pa-act {
-  position: relative;
-  padding-bottom: 1.2rem;
-}
-
-.pa-act:last-child {
-  padding-bottom: 0;
-}
-
-.pa-act__mark {
-  position: absolute;
-  left: -2rem;
-  top: 0.05rem;
-  width: 1.25rem;
-  height: 1.25rem;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #262626;
-  color: #9a9a9a;
-  font: 600 0.5rem/1 var(--pa-mono);
-  z-index: 1;
-  transition: background-color 500ms var(--pa-ease) 200ms, color 500ms var(--pa-ease) 200ms;
-}
-
-.pa-act.is-on .pa-act__mark,
-.pa-act:has(~ .pa-act.is-on) .pa-act__mark {
-  background: var(--pa-green);
-  color: var(--pa-green-ink);
-}
-
-.pa-act h2 {
-  margin: 0 0 0.3rem;
-  font-size: 1rem;
-  line-height: 1.25;
-}
-
-.pa-act__pick {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: #cfcfcf;
-  font: 700 1rem/1.25 var(--md-text-font-family, Inter, system-ui, sans-serif);
-  letter-spacing: -0.02em;
-  text-align: left;
-  text-wrap: balance;
-  cursor: pointer;
-  transition: color 160ms;
-}
-
-.pa-act__pick:hover,
-.pa-act.is-on .pa-act__pick {
-  color: #fff;
-}
-
-.pa-act p {
+.pa-setup p {
   font-size: 0.68rem;
   line-height: 1.55;
   color: #a3a3a3;
-  margin: 0;
+  margin: 0 0 0.45rem;
+}
+
+.pa-setup pre {
+  margin: 0 0 0.6rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--pa-pane);
+  border: 1px solid var(--pa-frame);
+  border-radius: 0.4rem;
+  overflow-x: auto;
+}
+
+.pa-setup pre code {
+  font-size: 0.6rem;
+  line-height: 1.6;
+  white-space: pre;
 }
 
 /* OpenFGA and SpiceDB play the relationship steps; Cerbos the attribute ones */
@@ -249,6 +198,8 @@
 .pa-demo {
   position: sticky;
   top: 3.4rem;
+  /* a scroll to the demo lands below the sticky header */
+  scroll-margin-top: 3.6rem;
   height: min(42rem, calc(100vh - 4.4rem));
   min-height: 30rem;
   display: flex;
@@ -346,134 +297,14 @@
   }
 }
 
-/* Steps of the lit act, as a command strip above the panes: each types its statement into one */
-
-.pa-demo__steps {
-  padding: 0.45rem;
-  border-bottom: 1px solid #222;
-  background: #121212;
-}
-
-.pa-steps {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: 0.3rem;
-}
-
-.pa-steps > li {
-  display: grid;
-}
-
-.pa-steps[hidden] {
-  display: none;
-}
-
-.pa-step {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) 0.7rem;
-  grid-template-areas: "who code done" "who note done";
-  column-gap: 0.5rem;
-  row-gap: 0.15rem;
-  align-items: center;
-  align-content: start;
-  text-align: left;
-  padding: 0.4rem 0.5rem;
-  background: #1a1a1a;
-  border: 1px solid #262626;
-  border-radius: 0.35rem;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-  transition: border-color 160ms, background-color 160ms;
-}
-
-.pa-step:hover {
-  border-color: #3ecf8e80;
-  background: #1d1d1d;
-}
-
-.pa-who {
-  grid-area: who;
-  align-self: start;
-  justify-self: start;
-  min-width: 2.6rem;
-  padding: 0.15rem 0.3rem;
-  border: 1px solid #3a3a3a;
-  border-radius: 0.25rem;
-  font: 600 0.5rem/1.2 var(--pa-mono);
-  text-align: center;
-  color: #c8c8c8;
-}
-
-.pa-step code {
-  grid-area: code;
-  font-size: 0.56rem;
-  line-height: 1.45;
-  color: #d7f5e6;
-  overflow-wrap: anywhere;
-}
-
-.pa-step em {
-  grid-area: note;
-  font-style: normal;
-  font-size: 0.56rem;
+.pa-demo__title {
+  font: 0.58rem var(--pa-mono);
   color: #9a9a9a;
 }
 
-.pa-step::after {
-  content: "";
-  grid-area: done;
-  width: 0.7rem;
-  height: 0.7rem;
-  background: var(--pa-green);
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8.5l3.2 3.2L13 5' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
-  opacity: 0;
-  transition: opacity 300ms var(--pa-ease);
-}
-
-.pa-step.is-done::after {
-  opacity: 1;
-}
-
-.pa-step.is-done .pa-who {
-  border-color: #3ecf8e80;
-  color: var(--pa-green);
-}
-
-.pa-demo__panes {
-  display: flex;
-  border-bottom: 1px solid #222;
-  overflow-x: auto;
-}
-
-.pa-demo__pane {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.45rem 0.7rem;
-  border: 0;
-  border-right: 1px solid #222;
-  background: none;
-  color: #9a9a9a;
-  font: 600 0.56rem/1 var(--pa-mono);
-  white-space: nowrap;
-  cursor: pointer;
-  box-shadow: inset 0 -2px 0 transparent;
-  transition: color 160ms, box-shadow 300ms var(--pa-ease);
-}
-
-.pa-demo__pane kbd {
-  font: 0.5rem/1 var(--pa-mono);
-  color: #7a7a7a;
-}
-
-.pa-demo__pane.is-on {
+.pa-demo__title b {
   color: #ededed;
-  background: #151515;
-  box-shadow: inset 0 -2px 0 var(--pa-green);
+  font-weight: 600;
 }
 
 .pa-demo__screen {
@@ -491,14 +322,14 @@
   scrollbar-color: #3a3a3a transparent;
 }
 
-/* Before boot: Act I as the demo printed it, in the panes' own layout, labelled as a recording */
+/* Before boot: the three steps as the demo printed them, side by side, labelled as a recording */
 
 .pa-demo__poster {
   position: absolute;
   inset: 0.35rem;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto 1fr;
   gap: 1px;
   background: #262626;
   border: 1px solid #262626;
@@ -510,41 +341,135 @@
   margin: 0;
   padding: 0.35rem 0.6rem;
   background: #151515;
-  font: 0.54rem var(--pa-mono);
+  font: 0.56rem var(--pa-mono);
   color: #a3a3a3;
 }
 
 .pa-demo__poster > div {
   background: var(--pa-pane);
-  padding: 0.4rem 0.6rem;
+  padding: 0.45rem 0.6rem;
   min-width: 0;
   overflow: hidden;
 }
 
 .pa-demo__poster b {
   display: block;
-  margin-bottom: 0.3rem;
-  font: 600 0.52rem var(--pa-mono);
+  margin-bottom: 0.35rem;
+  font: 600 0.54rem var(--pa-mono);
   color: #8f8f8f;
 }
 
 .pa-demo__poster pre {
   margin: 0;
-  font: 0.56rem/1.5 var(--pa-mono);
+  font: 0.58rem/1.5 var(--pa-mono);
   font-variant-ligatures: none;
   color: #c4c4c4;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.pa-poster__admin,
-.pa-poster__log {
-  grid-column: 1 / -1;
-}
-
 .pa-home.is-running .pa-demo__poster,
 .pa-home.is-running .pa-demo__boot {
   display: none;
+}
+
+/* The three steps, under the panes: each types its statement into a pane, the next one is lit */
+
+.pa-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0.45rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+  border-top: 1px solid #222;
+  background: #121212;
+}
+
+.pa-steps > li {
+  display: grid;
+}
+
+.pa-step {
+  display: grid;
+  grid-template-columns: 1.1rem minmax(0, 1fr) 0.7rem;
+  grid-template-areas: "n what done" "n code done" "n note done";
+  column-gap: 0.45rem;
+  row-gap: 0.15rem;
+  align-content: start;
+  text-align: left;
+  padding: 0.5rem 0.55rem;
+  background: #1a1a1a;
+  border: 1px solid #262626;
+  border-radius: 0.4rem;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 200ms, background-color 200ms;
+}
+
+.pa-step:hover {
+  border-color: #3ecf8e80;
+}
+
+.pa-step.is-next {
+  border-color: var(--pa-green);
+  background: #1c211e;
+}
+
+.pa-step__n {
+  grid-area: n;
+  width: 1.1rem;
+  height: 1.1rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #2a2a2a;
+  color: #cfcfcf;
+  font: 600 0.52rem/1 var(--pa-mono);
+}
+
+.pa-step.is-next .pa-step__n,
+.pa-step.is-done .pa-step__n {
+  background: var(--pa-green);
+  color: var(--pa-green-ink);
+}
+
+.pa-step__what {
+  grid-area: what;
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.pa-step code {
+  grid-area: code;
+  font-size: 0.54rem;
+  line-height: 1.45;
+  color: #d7f5e6;
+  overflow-wrap: anywhere;
+}
+
+.pa-step em {
+  grid-area: note;
+  font-style: normal;
+  font-size: 0.54rem;
+  color: #9a9a9a;
+}
+
+.pa-step::after {
+  content: "";
+  grid-area: done;
+  width: 0.7rem;
+  height: 0.7rem;
+  background: var(--pa-green);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8.5l3.2 3.2L13 5' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  opacity: 0;
+  transition: opacity 300ms var(--pa-ease);
+}
+
+.pa-step.is-done::after {
+  opacity: 1;
 }
 
 /* The boot bar: under the recording, never over it */
@@ -573,17 +498,54 @@
   pointer-events: none;
 }
 
-.pa-demo__note {
-  margin: 0;
-  padding: 0.4rem 0.7rem;
+/* The foot: the same steps on another engine, quietly */
+
+.pa-demo__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 1rem;
+  padding: 0.4rem 0.6rem;
   border-top: 1px solid #222;
+}
+
+.pa-demo__foot p {
+  margin: 0;
   font-size: 0.54rem;
   color: #8f8f8f;
 }
 
-.pa-demo__note a {
+/* after the three steps, the hint suggests one to try by hand */
+.pa-demo__hint--after,
+.pa-home.is-played .pa-demo__hint:not(.pa-demo__hint--after) {
+  display: none;
+}
+
+.pa-home.is-played .pa-demo__hint--after {
+  display: block;
+  flex-basis: 100%;
+  order: -1;
+  font-size: 0.62rem;
+  line-height: 1.5;
+  color: #ededed;
+}
+
+.pa-demo__hint code {
+  color: #d7f5e6;
+}
+
+.pa-demo__foot a {
   color: #b0b0b0;
   text-underline-offset: 0.15em;
+}
+
+.pa-engines span {
+  align-self: center;
+  white-space: nowrap;
+  padding: 0 0.4rem 0 0.3rem;
+  font: 0.54rem var(--pa-mono);
+  color: #8f8f8f;
 }
 
 /* ── Sections below the stage ─────────────────────────────────────────── */
@@ -620,65 +582,60 @@
   text-underline-offset: 0.15em;
 }
 
-/* One model instead of policies */
+/* One rule, both ways: by hand on the left, pg_auth's two steps on the right */
 
 .pa-compare {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2rem;
   align-items: start;
 }
 
-.pa-compare__with {
-  display: grid;
-  gap: 1rem;
+.md-typeset .pa-compare h3 {
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin: 0 0 0.3rem;
 }
 
-/* Material centres figures as a flex column; these are files, read from the left */
-.md-typeset .pa-file {
-  display: block;
-  width: auto;
-  max-width: none;
-  text-align: left;
-  margin: 0;
-  border: 1px solid var(--pa-line);
-  border-radius: 0.6rem;
-  overflow: hidden;
-  background: var(--md-code-bg-color);
-}
-
-.md-typeset .pa-file figcaption {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  margin: 0;
-  max-width: none;
-  padding: 0.5rem 0.8rem;
-  border-bottom: 1px solid var(--pa-line);
-  font: 600 0.58rem var(--pa-mono);
-  color: var(--md-code-fg-color);
-  text-align: left;
-}
-
-.md-typeset .pa-file figcaption span {
-  font-weight: 400;
+.md-typeset .pa-compare p {
+  font-size: 0.68rem;
   color: var(--pa-muted);
+  margin: 0 0 0.6rem;
 }
 
-.md-typeset .pa-file--one {
-  border-color: #3ecf8e80;
+.md-typeset .pa-two {
+  list-style: none;
+  counter-reset: pa-two;
+  margin: 0;
+  padding: 0;
 }
 
-.md-typeset .pa-file--one figcaption span {
-  color: var(--pa-green);
+.md-typeset .pa-two li {
+  counter-increment: pa-two;
+  position: relative;
+  margin: 0 0 1rem;
+  padding-left: 1.7rem;
 }
 
-.md-typeset .pa-file pre,
+.md-typeset .pa-two li::before {
+  content: counter(pa-two);
+  position: absolute;
+  left: 0;
+  top: 0.05rem;
+  width: 1.1rem;
+  height: 1.1rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--pa-green);
+  color: var(--pa-green-ink);
+  font: 600 0.52rem/1 var(--pa-mono);
+}
+
 .md-typeset .pa-code {
   margin: 0;
 }
 
-.md-typeset .pa-file pre > code,
 .md-typeset .pa-code > code {
   font-variant-ligatures: none;
   font-size: 0.6rem;
@@ -689,12 +646,11 @@
   background: none;
 }
 
-.md-typeset .pa-file .c,
 .md-typeset .pa-code .c {
   color: var(--md-code-hl-comment-color, #8f8f8f);
 }
 
-.md-typeset .pa-file b {
+.md-typeset .pa-code b {
   color: var(--pa-green);
 }
 
@@ -728,7 +684,7 @@
 
 .pa-expect__grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 2rem;
 }
 
@@ -929,7 +885,6 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* the frame carries the steps beside their output; the acts read above it */
   .pa-demo {
     position: relative;
     top: 0;
@@ -972,15 +927,8 @@
 }
 
 @media (max-width: 40em) {
-  /* alt-N means nothing on a phone: the four tabs fit without it */
-  .pa-demo__pane kbd {
-    display: none;
-  }
-
-  .pa-demo__pane {
-    flex: 1;
-    justify-content: center;
-    padding-inline: 0.4rem;
+  .pa-steps {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .pa-demo__boot {
@@ -1003,4 +951,73 @@
   display: block;
   margin: 0;
   padding: 0;
+}
+
+.pa-setup p b {
+  color: #ededed;
+  font-weight: 600;
+}
+
+/* authz.why's rows, as a table that wraps on a phone instead of scrolling sideways */
+.md-typeset table.pa-why {
+  display: table;
+  width: 100%;
+  margin: 0.8rem 0 0;
+  font-size: 0.66rem;
+  border: 1px solid var(--pa-line);
+  border-radius: 0.6rem;
+}
+
+.md-typeset .pa-why th,
+.md-typeset .pa-why td {
+  padding: 0.45rem 0.7rem;
+  border-top: 1px solid var(--pa-line);
+  background: none;
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-typeset .pa-why thead th {
+  border-top: 0;
+  font: 600 0.56rem var(--pa-mono);
+  color: var(--pa-muted);
+}
+
+.md-typeset .pa-why td:first-child {
+  font-family: var(--pa-mono);
+  font-size: 0.6rem;
+  white-space: nowrap;
+}
+
+.md-typeset .pa-why td:nth-child(2) {
+  font-family: var(--pa-mono);
+  font-size: 0.6rem;
+  color: var(--pa-green);
+}
+
+.md-typeset .pa-why tr.is-no td {
+  color: var(--md-default-fg-color);
+  font-weight: 600;
+}
+
+.md-typeset .pa-why tr.is-no td:nth-child(2) {
+  color: var(--pa-error);
+}
+
+.md-typeset .pa-why tbody tr:hover {
+  background: none;
+  box-shadow: none;
+}
+
+@media (max-width: 40em) {
+  /* code wraps on a phone rather than hiding its end off-screen */
+  .md-typeset .pa-code > code,
+  .pa-setup pre code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .md-typeset .pa-why td:first-child {
+    white-space: normal;
+  }
 }

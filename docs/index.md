@@ -15,10 +15,12 @@ Your app's permissions, enforced by Postgres, with no backend. An authorization 
 SpiceDB or Cerbos) decides who may see and change each row, and Postgres enforces that decision
 for every client: your browser app through Supabase or PostgREST, an application server, psql.
 
-The home page runs a live demo in the browser tab: Postgres 18 with pg_auth, the three engines and
-their sidecars, following one app (a team document editor) in three acts.
+The home page runs a live demo in the browser tab: Postgres 18 with pg_auth and the three engines.
+Anne and Bob use the same app; Bob sees nothing until Anne adds him to her organisation by inserting
+one row. It runs on Postgres you run yourself (the extension is preloaded and a sidecar runs beside
+it); hosted Supabase does not allow that yet.
 
-## Write the model once. Protect a table in one line
+## Protect a table in one line
 
 ```sql
 select authz.configure(subject => 'jwt');   -- the JWT's sub, as Supabase and PostgREST set it

@@ -3,17 +3,36 @@
 {#- The landing page. index.md selects this with `template: home.html`; its markdown body is not
     rendered here, so the guide copy lives in the docs pages and this file carries the pitch.
 
-    One app, a team document editor, told in three acts beside a live demo (docker/demo, built
-    with snowglobe into docs/demo/ and driven by docs/javascripts/demo.js). The benchmark figures
+    Two users of one app, Anne and Bob, in three steps beside a live demo (docker/demo, built with
+    snowglobe into docs/demo/ and driven by docs/javascripts/demo.js). The benchmark figures
     between the `bench:` markers are written by the re-zero (bench/docker/apply_zero.exs). -#}
 
 {% block tabs %}
 {{ super() }}
-<section class="pa-home" data-demo="{{ 'demo/' | url }}" data-state="idle" data-engine="openfga" data-family="relationships" data-act="protect">
+<section class="pa-home" data-demo="{{ 'demo/' | url }}" data-state="idle" data-engine="openfga" data-family="relationships">
   <div class="pa-wrap pa-stage">
     <div class="pa-story">
       <h1 class="pa-title">Your app's permissions, <em>enforced by Postgres.</em> No backend.</h1>
-      <p class="pa-lede">One app, a team document editor, in three acts, running beside you in this tab.</p>
+      <p class="pa-lede">
+        Your app talks to Postgres directly, through an API like PostgREST, with no server of its own.
+        pg_auth makes Postgres show each user only the rows they may see. Below, Anne and Bob use the
+        same app, <span data-for="relationships">and Anne gives Bob access by writing one row.</span><span data-for="attributes">and Bob sees a document once Anne publishes it.</span>
+      </p>
+      <div class="pa-setup">
+        <p>The rules live in an authorization engine, a service running next to Postgres (here
+          <b data-engine-name>OpenFGA</b>). The <code>documents</code> table points at it with one line:</p>
+<pre data-for="relationships"><code>select authz.protect('documents',
+  type => 'document', id => 'id',
+  read => 'viewer', write => 'editor');</code></pre>
+<pre data-for="attributes"><code>select authz.protect('documents',
+  type => 'document', id => 'id',
+  read => 'read', write => 'update',
+  attributes => array['owner', 'status']);</code></pre>
+        <p data-for="relationships">The rules: an organisation's members read its documents, and only its admins edit
+          them. Anne is the admin of org 1, which owns three documents. Bob is in no org yet.</p>
+        <p data-for="attributes">The rule: everyone reads published documents and their own drafts, and only the owner
+          edits. Anne owns three documents, one of them published.</p>
+      </div>
       <div class="pa-actions">
         <button type="button" class="pa-btn pa-btn--primary" data-boot>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>
@@ -21,105 +40,71 @@
         </button>
         <a class="pa-btn pa-btn--quiet" href="{{ 'usage/#2-who-is-asking' | url }}">How it works with no backend</a>
       </div>
-
-      {#- The acts tell the story; the lit act's steps are in the demo frame, beside their output -#}
-      <ol class="pa-acts">
-        <li class="pa-act is-on" data-act="protect">
-          <span class="pa-act__mark" aria-hidden="true">I</span>
-          <h2><button type="button" class="pa-act__pick">Write the model once. Protect a table in one line.</button></h2>
-          <p data-for="relationships">The engine's model says who views and who edits a document. One call points
-            <code>documents</code> at it, and every client, your browser app through PostgREST included, reads only what it allows.</p>
-          <p data-for="attributes">Cerbos's rule: anyone signed in reads published documents and their own drafts. One call
-            points <code>documents</code> at it, and pg_auth turns the rule into a filter on <code>owner</code> and <code>status</code>.</p>
-        </li>
-        <li class="pa-act" data-act="grant">
-          <span class="pa-act__mark" aria-hidden="true">II</span>
-          <h2><button type="button" class="pa-act__pick">Share by writing a row.</button></h2>
-          <p data-for="relationships">A membership is a row your app inserts through the API it already uses. pg_auth hands it to
-            the engine, and Bob sees org 1's documents moments later. Only an org's admins may add one.</p>
-          <p data-for="attributes">The rule reads the row's own fields, so changing one changes who sees it: Anne publishes a
-            draft and Bob sees it. Only a document's owner may edit it.</p>
-        </li>
-        <li class="pa-act" data-act="explain">
-          <span class="pa-act__mark" aria-hidden="true">III</span>
-          <h2><button type="button" class="pa-act__pick">Ask why a row is hidden.</button></h2>
-          <p>Row level security hides rows without a word. <code>authz.why</code> names the subject, each policy and the
-            missing permission; <code>authz.doctor</code> checks the setup and prints each fix.</p>
-        </li>
-      </ol>
+      <p class="pa-where">
+        Runs on Postgres you run yourself, with the extension preloaded and the engine beside it.
+        Hosted Supabase does not allow that yet. Experimental, pre-release, no license yet. The demo
+        downloads about 150 MB.
+      </p>
     </div>
 
-    <div class="pa-demo" aria-label="Live demo: psql as admin, anne and bob, and the sidecars' log">
+    <div class="pa-demo" aria-label="Live demo: psql as anne and as bob">
       <div class="pa-demo__bar">
-        <div class="pa-engines" role="group" aria-label="Engine">
-          <button type="button" data-engine="openfga" aria-pressed="true">OpenFGA</button>
-          <button type="button" data-engine="spicedb" aria-pressed="false">SpiceDB</button>
-          <button type="button" data-engine="cerbos" aria-pressed="false">Cerbos</button>
-        </div>
+        <span class="pa-demo__title">psql as <b>anne</b> and as <b>bob</b></span>
         <em class="pa-demo__status" role="status">not started</em>
       </div>
-
-      <div class="pa-demo__steps" role="group" aria-label="Steps of the lit act: each types its statement into a pane">
-        <ol class="pa-steps" data-act="protect">
-          <li><button type="button" class="pa-step" data-pane="bob" data-cmd="select * from documents;"><span class="pa-who">bob</span><code>select * from documents;</code><em>no rules yet: every row</em></button></li>
-          <li data-for="relationships"><button type="button" class="pa-step" data-pane="admin" data-cmd="select authz.protect('documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');"><span class="pa-who">admin</span><code>select authz.protect('documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');</code><em>the one line</em></button></li>
-          <li data-for="attributes"><button type="button" class="pa-step" data-pane="admin" data-cmd="select authz.protect('documents', type => 'document', id => 'id', read => 'read', write => 'update', attributes => array['owner', 'status']);"><span class="pa-who">admin</span><code>select authz.protect('documents', type => 'document', id => 'id', read => 'read', write => 'update', attributes => array['owner', 'status']);</code><em>the one line</em></button></li>
-          <li><button type="button" class="pa-step" data-pane="anne" data-cmd="select * from documents;"><span class="pa-who">anne</span><code>select * from documents;</code><em data-for="relationships">org 1's admin: its three documents</em><em data-for="attributes">her own, and what is published</em></button></li>
-          <li><button type="button" class="pa-step" data-pane="bob" data-cmd="select * from documents;"><span class="pa-who">bob</span><code>select * from documents;</code><em data-for="relationships">in no org yet: nothing</em><em data-for="attributes">only what is published</em></button></li>
-        </ol>
-        <ol class="pa-steps" data-act="grant" hidden>
-          <li data-for="relationships"><button type="button" class="pa-step" data-pane="anne" data-cmd="insert into memberships values (1, 'bob', 'member');"><span class="pa-who">anne</span><code>insert into memberships values (1, 'bob', 'member');</code><em>a row, delivered to the engine</em></button></li>
-          <li data-for="attributes"><button type="button" class="pa-step" data-pane="anne" data-cmd="update documents set status = 'published' where id = 2;"><span class="pa-who">anne</span><code>update documents set status = 'published' where id = 2;</code><em>her draft, published</em></button></li>
-          <li><button type="button" class="pa-step" data-pane="bob" data-cmd="select * from documents;"><span class="pa-who">bob</span><code>select * from documents;</code><em data-for="relationships">now a member: org 1's documents</em><em data-for="attributes">the newly published one too</em></button></li>
-          <li data-for="relationships"><button type="button" class="pa-step" data-pane="bob" data-cmd="insert into memberships values (2, 'bob', 'admin');"><span class="pa-who">bob</span><code>insert into memberships values (2, 'bob', 'admin');</code><em>refused: he does not manage org 2</em></button></li>
-          <li data-for="attributes"><button type="button" class="pa-step" data-pane="bob" data-cmd="update documents set title = 'Mine now' where id = 1;"><span class="pa-who">bob</span><code>update documents set title = 'Mine now' where id = 1;</code><em>0 rows: he is not the owner</em></button></li>
-        </ol>
-        <ol class="pa-steps" data-act="explain" hidden>
-          <li data-for="relationships"><button type="button" class="pa-step" data-pane="admin" data-cmd="select * from authz.why('documents', '4', as_subject => 'user:bob');"><span class="pa-who">admin</span><code>select * from authz.why('documents', '4', as_subject => 'user:bob');</code><em>why bob cannot see Hiring</em></button></li>
-          <li data-for="attributes"><button type="button" class="pa-step" data-pane="admin" data-cmd="select * from authz.why('documents', '5', as_subject => 'user:bob', subject_roles => array['authenticated']);"><span class="pa-who">admin</span><code>select * from authz.why('documents', '5', as_subject => 'user:bob', subject_roles => array['authenticated']);</code><em>why bob cannot see Pricing</em></button></li>
-          <li><button type="button" class="pa-step" data-pane="admin" data-cmd="select check_name, status from authz.doctor();"><span class="pa-who">admin</span><code>select check_name, status from authz.doctor();</code><em>the setup, checked</em></button></li>
-        </ol>
-      </div>
-
-      <div class="pa-demo__panes" role="group" aria-label="Panes">
-        <button type="button" class="pa-demo__pane is-on" data-pane="admin">admin<kbd>alt 1</kbd></button>
-        <button type="button" class="pa-demo__pane" data-pane="anne">anne<kbd>alt 2</kbd></button>
-        <button type="button" class="pa-demo__pane" data-pane="bob">bob<kbd>alt 3</kbd></button>
-        <button type="button" class="pa-demo__pane" data-pane="log">sidecar log<kbd>alt 4</kbd></button>
-      </div>
       <div class="pa-demo__screen">
-        {#- Before boot: Act I as the demo printed it (OpenFGA), recorded from docker/demo -#}
+        {#- Before boot: step 1 as the demo printed it (OpenFGA), recorded from docker/demo; the rest
+            is the visitor's to run -#}
         <div class="pa-demo__poster">
-          <p class="pa-poster__label">Recorded: Act I on OpenFGA. Boot the demo to run it yourself.</p>
-<div class="pa-poster__admin"><b>admin · superuser</b><pre>admin@openfga=# select authz.protect('documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
-NOTICE:  documents is protected: a row is document:&lt;id&gt;; reading needs viewer, writing needs editor</pre></div>
-<div><b>anne</b><pre>anne@openfga=&gt; select * from documents;
+          <p class="pa-poster__label">Step 1, recorded: the same query, two users. Boot the demo to share and see what changes.</p>
+<div><b>anne</b><pre>anne=&gt; select * from documents;
  id | org_id |    title
 ----+--------+-------------
   1 |      1 | Roadmap
   2 |      1 | Budget
   3 |      1 | Launch plan
 (3 rows)</pre></div>
-<div><b>bob</b><pre>bob@openfga=&gt; select * from documents;
+<div><b>bob</b><pre>bob=&gt; select * from documents;
  id | org_id | title
 ----+--------+-------
 (0 rows)</pre></div>
-<div class="pa-poster__log"><b>sidecar log</b><pre>openfga  list   user:anne document#viewer → [1, 2, 3]  (cached)
-openfga  list   user:bob document#viewer → []  (cached)</pre></div>
         </div>
       </div>
+
+      <ol class="pa-steps" aria-label="Three steps: each types its statement into a pane">
+        <li><button type="button" class="pa-step is-next" data-pane="both" data-cmd="select * from documents;">
+          <span class="pa-step__n">1</span><span class="pa-step__what">Who sees what</span>
+          <code>select * from documents;</code><em>as anne, then as bob</em></button></li>
+        <li data-for="relationships"><button type="button" class="pa-step" data-pane="anne" data-cmd="insert into memberships values (1, 'bob', 'member');">
+          <span class="pa-step__n">2</span><span class="pa-step__what">Anne adds Bob</span>
+          <code>insert into memberships values (1, 'bob', 'member');</code><em>a row, delivered to the engine</em></button></li>
+        <li data-for="attributes"><button type="button" class="pa-step" data-pane="anne" data-cmd="update documents set status = 'published' where id = 2;">
+          <span class="pa-step__n">2</span><span class="pa-step__what">Anne publishes a draft</span>
+          <code>update documents set status = 'published' where id = 2;</code><em>a field the rule reads</em></button></li>
+        <li><button type="button" class="pa-step" data-pane="bob" data-cmd="select * from documents;">
+          <span class="pa-step__n">3</span><span class="pa-step__what">Bob looks again</span>
+          <code>select * from documents;</code><em>as bob</em></button></li>
+      </ol>
+
       <div class="pa-demo__boot">
         <button type="button" class="pa-btn pa-btn--primary" data-boot>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>
           Boot the live demo
         </button>
-        <p>Experimental, pre-release. Postgres 18 with pg_auth and OpenFGA, SpiceDB and Cerbos, each with its
-          sidecar, emulated in this tab: about 150 MB once, then offline.</p>
+        <p>Experimental, pre-release. Postgres 18 with pg_auth and the authorization engines, emulated in
+          this tab: about 150 MB once, then offline.</p>
       </div>
-      <p class="pa-demo__note">
-        Click a step to type it, or click into the terminal and type. The engines keep their data in
-        memory here; built with <a href="https://github.com/filipecabaco/snowglobe">snowglobe</a>.
-      </p>
+      <div class="pa-demo__foot">
+        <div class="pa-engines" role="group" aria-label="Engine">
+          <span>Run the steps on</span>
+          <button type="button" data-engine="openfga" aria-pressed="true">OpenFGA</button>
+          <button type="button" data-engine="spicedb" aria-pressed="false">SpiceDB</button>
+          <button type="button" data-engine="cerbos" aria-pressed="false">Cerbos</button>
+        </div>
+        <p class="pa-demo__hint">Or click into a pane and type. Built with <a href="https://github.com/filipecabaco/snowglobe">snowglobe</a>.</p>
+        <p class="pa-demo__hint pa-demo__hint--after" data-for="relationships">Now try one of your own: click into bob's pane and run <code>update documents set title = 'Mine' where id = 1;</code> and it changes 0 rows: only admins edit.</p>
+        <p class="pa-demo__hint pa-demo__hint--after" data-for="attributes">Now try one of your own: click into bob's pane and run <code>update documents set title = 'Mine' where id = 1;</code> and it changes 0 rows: only the owner edits.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -127,54 +112,74 @@ openfga  list   user:bob document#viewer → []  (cached)</pre></div>
 
 {% block content %}
 <section class="pa-section" id="model">
-  <h2 class="pa-h2">The rules live in one model, not in every table</h2>
+  <h2 class="pa-h2">Write each rule once, not in every table</h2>
   <p class="pa-sub">
-    The same app with hand-written row level security needs helper functions, a policy per
-    operation and the indexes behind them, for every table that needs them. With pg_auth the model
-    says who may do what, once, and each table says what it is.
+    Who may read a document? Members of its organisation, and anyone it was shared with. Here is
+    that one rule, both ways.
   </p>
   <div class="pa-compare">
-    <figure class="pa-file">
-      <figcaption>documents.sql, hand-written <span>4 policies, 2 helpers, per table</span></figcaption>
-<pre><code><span class="c">-- who is a member, who was shared the document</span>
-create function private.is_member(org uuid) returns boolean
-language sql stable security definer set search_path = '' as $$
-  select exists (select 1 from public.memberships m
-    where m.org_id = org and m.user_id = (select auth.uid()))
-$$;
-create function private.is_shared(doc uuid) returns boolean …
-
-alter table documents enable row level security;
-create policy read on documents for select to authenticated
-  using ((select private.is_member(org_id))
-      or (select private.is_shared(id)));
-create policy write on documents for update to authenticated
-  using ((select private.is_member(org_id)))
-  with check ((select private.is_member(org_id)));
-<span class="c">-- … insert, delete, and the same again for the next table</span></code></pre>
-    </figure>
-    <div class="pa-compare__with">
-      <figure class="pa-file">
-        <figcaption>The model, once <span>OpenFGA</span></figcaption>
-<pre><code>type document
+    <div class="pa-compare__side">
+      <h3>Row level security, by hand</h3>
+      <p>A policy per operation, on every table that needs the rule.</p>
+<pre class="pa-code"><code>create policy read on documents
+  for select to authenticated
+  using (
+    exists (select 1 from memberships m
+            where m.org_id = documents.org_id
+              and m.user_id = (select auth.uid()))
+    or exists (select 1 from shares s
+               where s.doc_id = documents.id
+                 and s.user_id = (select auth.uid())));
+<span class="c">-- then update, insert and delete,</span>
+<span class="c">-- and again for comments, files, …</span></code></pre>
+    </div>
+    <div class="pa-compare__side">
+      <h3>pg_auth</h3>
+      <ol class="pa-two">
+        <li>
+          <p>Say who is a viewer, once, in the engine's model:</p>
+<pre class="pa-code"><code>type document
   relations
     define org: [org]
     define shared_with: [user]
-    define <b>viewer</b>: shared_with or can_read from org
-    define <b>editor</b>: can_read from org</code></pre>
-      </figure>
-      <figure class="pa-file pa-file--one">
-        <figcaption>documents.sql <span>one line</span></figcaption>
-<pre><code>select authz.protect('documents',
-  type => 'document', id => 'id',
-  read => 'viewer', write => 'editor');</code></pre>
-      </figure>
+    define <b>viewer</b>: shared_with or member from org</code></pre>
+        </li>
+        <li>
+          <p>Point each table at it:</p>
+<pre class="pa-code"><code>select authz.protect('documents',
+  type => 'document', id => 'id', read => '<b>viewer</b>');</code></pre>
+        </li>
+      </ol>
     </div>
   </div>
   <p class="pa-proof">
-    A new role, a document shared, a team given access: a change to the model or a row in a table,
-    with no migration and no policy to edit.
-    <a href="{{ 'usage/#3-protect-tables' | url }}">Protecting tables</a>
+    Sharing with a team or adding a role is a change to the model, or a row in a table. There is no
+    policy to edit. <a href="{{ 'usage/#3-protect-tables' | url }}">Protecting tables</a>
+  </p>
+</section>
+
+<section class="pa-section" id="why">
+  <h2 class="pa-h2">Ask why a row is hidden</h2>
+  <p class="pa-sub">
+    Row level security (Postgres's per-row access rules) hides rows without a word.
+    <code>authz.why</code> says who Postgres thinks is asking, and which permission is missing. In the
+    demo's data, after Anne added Bob to org 1, a database administrator asks why Bob still cannot
+    see document 4, which belongs to org 2:
+  </p>
+<pre class="pa-code"><code>select * from authz.why('documents', '4', as_subject => 'user:bob');</code></pre>
+  <table class="pa-why">
+    <thead><tr><th>step</th><th>ok</th><th>detail</th></tr></thead>
+    <tbody>
+      <tr><td>subject</td><td>yes</td><td>user:bob (pg_auth.as_subject: an administrator acting as this subject)</td></tr>
+      <tr><td>row level security</td><td>yes</td><td>on, forced: the table owner is checked too</td></tr>
+      <tr><td>row</td><td>yes</td><td>id = 4 exists</td></tr>
+      <tr class="is-no"><td>policy pg_auth</td><td>no</td><td>user:bob lacks document#viewer on document:4; writes need document#editor</td></tr>
+      <tr class="is-no"><td>verdict</td><td>no</td><td>hidden from user:bob: no pg_auth policy allows it</td></tr>
+    </tbody>
+  </table>
+  <p class="pa-proof">
+    Postgres's answer, with its t and f shown as yes and no. <code>authz.doctor()</code> checks the whole setup and prints
+    the statement that fixes each problem. <a href="{{ 'usage/#5-inspect-and-debug' | url }}">Inspect and debug</a>
   </p>
 </section>
 
@@ -184,9 +189,9 @@ create policy write on documents for update to authenticated
     <div><dt>A view that leaks</dt><dd>Policies are forced on the table's owner, and the subject comes from the request, not the role running the query.</dd></div>
     <div><dt>Policy recursion (<code>42P17</code>)</dt><dd>pg_auth's policy reads only the row, so it cannot recurse into another table's policies.</dd></div>
     <div><dt>A partition queried directly</dt><dd>Every partition gets the policy, including ones created later.</dd></div>
-    <div><dt>An update that changes 0 rows</dt><dd>Read and write permissions are installed together, so a writer can always find the rows it may write.</dd></div>
+    <div><dt>A writer who cannot find their own rows</dt><dd>By hand, an update with no matching read policy changes 0 rows without a word. Read and write permissions are installed together, so whoever may write a row can find it.</dd></div>
     <div><dt>A spoofed identity</dt><dd>The request cannot set its own subject, and with no subject there are no rows.</dd></div>
-    <div><dt>An engine that is down</dt><dd>The statement fails. Rows are never shown because nobody could answer.</dd></div>
+    <div><dt>An engine that is down</dt><dd>Queries fail rather than guess: no row is shown because nobody could answer.</dd></div>
   </dl>
   <p class="pa-proof">
     What it shares with row level security, where Postgres sets the rules: superusers and
@@ -262,22 +267,31 @@ create policy write on documents for update to authenticated
           {%- for t in [0.25, 0.5, 1.0, 2.0] %}<span style="--v: {{ t }}">{{ t }}x</span>{% endfor %}
         </div>
         <figcaption>One dot per scenario: pg_auth's time as a share of the best-practice policy's.
+          Left of the dashed line, pg_auth was faster; right of it, slower.
           <a href="{{ 'benchmarks/' | url }}">The table, and how it was measured</a></figcaption>
       </figure>
     </div>
     <div class="pa-expect__item">
       <h3>A grant shows within tens of milliseconds</h3>
       <p>
-        A membership or a share written as a row was visible to its subject 4 to 34 ms after the
-        commit, measured end to end against OpenFGA and SpiceDB. Answers are otherwise as fresh as
-        the engine's, minus the sidecar's one-second cache.
+        A membership or a share written as a row showed to its subject 4 to 34 ms after the commit,
+        measured against OpenFGA and SpiceDB: pg_auth tells every session to ask again. A change made
+        in the engine itself, outside Postgres, shows within the sidecar's one-second cache.
+      </p>
+    </div>
+    <div class="pa-expect__item">
+      <h3>When the engine is down, queries fail</h3>
+      <p>
+        Statements on protected tables fail rather than guess: at once if the engine refuses the
+        connection, after 4 seconds (configurable) if it hangs. Answers cached in the last second still serve.
+        Grants written as rows wait and are delivered when it is back.
       </p>
     </div>
     <div class="pa-expect__item">
       <h3>It needs a sidecar next to Postgres</h3>
       <p>
         Postgres 15 to 18 with <code>shared_preload_libraries</code>, and the sidecar on the same
-        host: servers you control, or managed Postgres where the provider allows both.
+        host: servers you control. Hosted Supabase and most managed Postgres do not allow that yet.
       </p>
     </div>
     <div class="pa-expect__item">

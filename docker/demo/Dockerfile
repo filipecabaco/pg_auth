@@ -1,5 +1,5 @@
 # The in-browser demo: Postgres with pg_auth, and OpenFGA, SpiceDB and Cerbos each with a sidecar,
-# driven from tmux (admin, anne, bob, and the sidecars' log). Built into a static site by snowglobe
+# driven from tmux (anne and bob side by side). Built into a static site by snowglobe
 # (https://github.com/filipecabaco/snowglobe), which boots this image on an emulated arm64 machine
 # in the visitor's tab. `mise run demo` builds it.
 #
@@ -60,16 +60,15 @@ RUN install -d -o postgres -g postgres -m 700 "$PGDATA" && \
 
 COPY tmux.conf /root/.tmux.conf
 COPY psqlrc /root/.psqlrc
-COPY log.sh /usr/local/bin/demo-log
 COPY start.sh /usr/local/bin/start-demo
 
 ENV LANG=C.UTF-8 HOME=/root TERM=xterm-256color
 WORKDIR /root
 CMD ["/usr/local/bin/start-demo"]
 
-# Snapshot once every pane is up, at the admin prompt. The warm pattern covers the files the first
+# Snapshot once both panes are up, at bob's prompt. The warm pattern covers the files the first
 # statements read: the databases' catalogs and tables.
 LABEL snowglobe.title="pg_auth: authorization enforced by Postgres" \
-      snowglobe.ready="admin@openfga=#" \
+      snowglobe.ready="bob=>" \
       snowglobe.memory="1024" \
       snowglobe.warm="^/var/lib/postgresql/data/(base|global)/"

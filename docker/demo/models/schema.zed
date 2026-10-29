@@ -11,5 +11,5 @@ definition document {
     relation org: org
     relation shared_with: user
     permission viewer = shared_with + org->can_read
-    permission editor = org->can_read
+    permission editor = org->can_manage
 }

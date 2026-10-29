@@ -3,9 +3,20 @@
 # (overrides/home.html, between its `bench:` markers). From the repo root:
 #   elixir bench/docker/pg_auth_table.exs <results dir> > table.md
 #   elixir bench/docker/apply_zero.exs table.md <date> <commit>
-[table_file, date, commit] = System.argv()
+# A run against SpiceDB (run.exs --engine spicedb) goes into docs/benchmarks.md's SpiceDB block
+# only; the landing page and the catalogue keep the OpenFGA run:
+#   elixir bench/docker/apply_zero.exs table.md <date> <commit> spicedb
+[table_file, date, commit | engine] = System.argv()
 table = File.read!(table_file) |> String.trim()
 [summary | _] = String.split(table, "\n", parts: 2)
+
+if engine == ["spicedb"] do
+  f = "docs/benchmarks.md"
+  block = "<!-- results-spicedb:start -->\nCommit `#{commit}`, #{date}.\n" <> table <> "\n<!-- results-spicedb:end -->"
+  File.write!(f, Regex.replace(~r/<!-- results-spicedb:start -->.*<!-- results-spicedb:end -->/s, File.read!(f), fn _ -> block end))
+  IO.puts(summary)
+  System.halt(0)
+end
 
 # README: header date, intro, the summary sentence and the table
 f = "bench/docker/README.md"

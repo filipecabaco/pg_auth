@@ -405,7 +405,8 @@ resourcePolicy:
       <p>
         Overall, {{ '%.2f' | format(bench.ratio) }}x the time of a best-practice policy, planning and
         execution together: {{ bench.scenarios }} scenarios taken from problems people hit with row
-        level security, {{ bench.pairs }} query and subject pairs, measured with OpenFGA. Statements
+        level security, {{ bench.pairs }} query and subject pairs, measured with OpenFGA (0.78x with
+        SpiceDB). Statements
         that finish in well under a millisecond pay for pg_auth's planning work, so expect those to
         take somewhat longer. A rule on a row's own values (a report's level against a reader's
         clearance) is checked row by row on OpenFGA: fine for reads by key, slow for scans.

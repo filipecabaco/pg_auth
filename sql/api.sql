@@ -62,6 +62,10 @@ begin
     end if;
     perform authz.bind(protect.rel, protect.id, protect.type, protect.read, protect.write, protect.force, protect.key, protect.name,
                        protect.insert_type, protect.insert_id, protect.insert_permission, protect.attributes);
+    raise notice '% is protected: a row is %:<%>; reading needs %, writing %', protect.rel, protect.type,
+        coalesce(quote_ident(protect.id), protect.key), protect.read,
+        coalesce('needs ' || protect.write, 'is denied (no write permission)')
+        || coalesce('; decided on the row''s ' || array_to_string(protect.attributes, ', '), '');
 
     if protect.key is not null then
         if not exists (select 1 from pg_index i where i.indrelid = protect.rel and i.indexprs is not null
@@ -103,16 +107,19 @@ $$;
 -- Why a row is, or is not, visible: who pg_auth sees, the table's row level security, the row, and
 -- each of pg_auth's policies on it evaluated for that subject, with the table's other policies
 -- listed. `as_subject` acts as another subject ('user:anne') for the call, whatever the subject
--- source (pg_auth.as_subject); `as_role` also checks that role's privilege to read the table.
+-- source (pg_auth.as_subject), with `subject_roles` its roles for an engine that decides on them
+-- (Cerbos); `as_role` also checks that Postgres role's privilege to read the table.
 -- It reads rows the subject may not see, so it is for administrators.
 --
 --   select * from authz.why('app.documents', '42', as_subject => 'user:anne', as_role => 'authenticated');
-create function authz.why(rel regclass, id text, as_subject text default null, as_role name default null)
+create function authz.why(rel regclass, id text, as_subject text default null, as_role name default null,
+                          subject_roles text[] default null)
 returns table (step text, ok boolean, detail text)
 language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
 #variable_conflict use_column
 declare
     previous text := current_setting('pg_auth.as_subject', true);
+    previous_roles text := current_setting('pg_auth.subject_roles', true);
     who record;
     pk name;
     pktype regtype;
@@ -125,9 +132,13 @@ declare
     pol record;
     rls boolean;
     forced boolean;
+    failure text;
 begin
     if why.as_subject is not null then
         perform set_config('pg_auth.as_subject', why.as_subject, true);
+    end if;
+    if why.subject_roles is not null then
+        perform set_config('pg_auth.subject_roles', array_to_string(why.subject_roles, ','), true);
     end if;
     select * into who from authz.current_subject();
     step := 'subject'; ok := who.subject_id is not null;
@@ -156,6 +167,7 @@ begin
         step := 'row'; ok := false; detail := why.rel::text || ' has no single-column primary key to find the row by';
         return next;
         perform set_config('pg_auth.as_subject', coalesce(previous, ''), true);
+        perform set_config('pg_auth.subject_roles', coalesce(previous_roles, ''), true);
         return;
     end if;
     execute format('select exists (select 1 from %s where %I = $1::%s)', why.rel, pk, pktype) using why.id into found;
@@ -167,12 +179,22 @@ begin
         for b in select * from authz.bindings where bindings.rel = why.rel order by bindings.name loop
             select pg_get_expr(p.polqual, p.polrelid) into qual from pg_policy p
             where p.polrelid = why.rel and p.polname = b.name || '_select';
-            execute format('select (%s)::text, %s from %s where %I = $1::%s',
-                           coalesce(quote_ident(b.column_name), b.key_expr), coalesce(qual, 'false'), why.rel, pk, pktype)
-                using why.id into object, allowed;
+            failure := null;
+            begin
+                execute format('select (%s)::text, %s from %s where %I = $1::%s',
+                               coalesce(quote_ident(b.column_name), b.key_expr), coalesce(qual, 'false'), why.rel, pk, pktype)
+                    using why.id into object, allowed;
+            exception when others then
+                -- an engine that cannot answer for this subject: say so, and go on explaining
+                failure := sqlerrm;
+                allowed := false;
+                execute format('select (%s)::text from %s where %I = $1::%s',
+                               coalesce(quote_ident(b.column_name), b.key_expr), why.rel, pk, pktype) using why.id into object;
+            end;
             object := b.object_type || ':' || coalesce(object, 'null');
             step := 'policy ' || b.name; ok := coalesce(allowed, false);
-            detail := case when object like '%:null' then 'the row''s ' || coalesce(b.column_name, 'key') || ' is NULL: no object, never visible'
+            detail := case when failure is not null then format('%s on %s could not be decided: %s', b.permission, object, failure)
+                           when object like '%:null' then 'the row''s ' || coalesce(b.column_name, 'key') || ' is NULL: no object, never visible'
                            when b.attributes is not null then format('%s on %s with the row''s %s: %s', b.permission, object,
                                 array_to_string(b.attributes, ', '), case when ok then 'allowed' else 'denied by the engine''s rules' end)
                            else format('%s %s %s on %s', coalesce(who.subject_type || ':' || who.subject_id, 'no subject'),
@@ -208,6 +230,7 @@ begin
                    else 'hidden from ' || who.subject_type || ':' || who.subject_id || ': no pg_auth policy allows it' end;
     return next;
     perform set_config('pg_auth.as_subject', coalesce(previous, ''), true);
+    perform set_config('pg_auth.subject_roles', coalesce(previous_roles, ''), true);
 end
 $$;
 
@@ -335,6 +358,6 @@ $$;
 revoke execute on function authz.protect(regclass, text, name, text, text, boolean, text, text, text, name, text, text, text, name[]) from public;
 revoke execute on function authz.check(text, text, text) from public;
 revoke execute on function authz.status() from public;
-revoke execute on function authz.why(regclass, text, text, name) from public;
+revoke execute on function authz.why(regclass, text, text, name, text[]) from public;
 revoke execute on function authz.doctor() from public;
 revoke execute on function authz.answers_changed() from public;

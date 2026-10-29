@@ -360,6 +360,19 @@ mod tests {
     }
 
     #[pg_test]
+    fn why_explains_a_policy_the_engine_cannot_decide_instead_of_failing() {
+        fixture();
+        let refused = why("2", Some("user:refused"));
+        assert!(
+            refused
+                .iter()
+                .any(|s| s.starts_with("policy pg_auth: Some(false) view on org:1 could not be decided") && s.contains("engine down")),
+            "{refused:?}"
+        );
+        assert!(refused.iter().any(|s| s.starts_with("verdict: Some(false) hidden from user:refused")), "{refused:?}");
+    }
+
+    #[pg_test]
     fn as_subject_overrides_the_subject_source() {
         fixture();
         Spi::run("select authz.configure(subject => 'jwt')").unwrap();

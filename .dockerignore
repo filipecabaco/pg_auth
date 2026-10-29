@@ -1,5 +1,7 @@
-target/
+**/target/
 .git/
 .idea/
 .DS_Store
 bench/docker/results/
+docs/demo/
+site/

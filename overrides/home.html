@@ -1,291 +1,331 @@
 {% extends "main.html" %}
 
-{#- The landing page. index.md selects this with `template: home.html`; its
-    markdown body is not rendered here, so the guide copy lives in the docs
-    pages and this file carries the pitch. The benchmark figures between the
-    `bench:` markers are written by the re-zero (bench/docker/pg_auth_table.exs). -#}
+{#- The landing page. index.md selects this with `template: home.html`; its markdown body is not
+    rendered here, so the guide copy lives in the docs pages and this file carries the pitch.
+
+    One app, a team document editor, told in three acts beside a live demo (docker/demo, built
+    with snowglobe into docs/demo/ and driven by docs/javascripts/demo.js). The benchmark figures
+    between the `bench:` markers are written by the re-zero (bench/docker/apply_zero.exs). -#}
 
 {% block tabs %}
 {{ super() }}
-<section class="pa-hero">
-  <div class="pa-wrap pa-hero__grid">
-    <div class="pa-hero__copy">
-      <p class="pa-eyebrow">PostgreSQL extension · Rust + pgrx · <span class="pa-nowrap">PG 15–18</span></p>
-      <h1 class="pa-hero__title">Authorization, enforced by Postgres.</h1>
-      <p class="pa-hero__lede">
-        pg_auth turns an authorization engine's decisions into row level security. Model who may
-        see what in the engine, and every client that reaches Postgres (PostgREST, your API, a psql
-        session) reads only the rows its subject may see. The planner shapes each protected scan
-        with the engine's answer, so checking costs about what a hand-tuned policy does.
-      </p>
-      <div class="pa-hero__actions">
-        <a class="pa-btn pa-btn--primary" href="{{ 'usage/' | url }}">Get started</a>
-        <a class="pa-btn pa-btn--ghost" href="{{ 'design/' | url }}">How it works</a>
-        <a class="pa-btn pa-btn--ghost" href="{{ config.repo_url }}">
-          {% include ".icons/fontawesome/brands/github.svg" %} View on GitHub
-        </a>
+<section class="pa-home" data-demo="{{ 'demo/' | url }}" data-state="idle" data-engine="openfga" data-family="relationships" data-act="protect">
+  <div class="pa-wrap pa-stage">
+    <div class="pa-story">
+      <h1 class="pa-title">Your app's permissions, <em>enforced by Postgres.</em> No backend.</h1>
+      <p class="pa-lede">One app, a team document editor, in three acts, running beside you in this tab.</p>
+      <div class="pa-actions">
+        <button type="button" class="pa-btn pa-btn--primary" data-boot>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>
+          Boot the live demo
+        </button>
+        <a class="pa-btn pa-btn--quiet" href="{{ 'usage/#2-who-is-asking' | url }}">How it works with no backend</a>
       </div>
-      <p class="pa-hero__note">
-        Pre-release: no published build yet, build from source. It needs Postgres 15 to 18 with
-        <code>shared_preload_libraries</code>, and a sidecar next to Postgres that asks the engine:
-        OpenFGA or SpiceDB.
-        <a href="{{ 'usage/' | url }}">How to install</a>
+
+      {#- The acts tell the story; the lit act's steps are in the demo frame, beside their output -#}
+      <ol class="pa-acts">
+        <li class="pa-act is-on" data-act="protect">
+          <span class="pa-act__mark" aria-hidden="true">I</span>
+          <h2><button type="button" class="pa-act__pick">Write the model once. Protect a table in one line.</button></h2>
+          <p data-for="relationships">The engine's model says who views and who edits a document. One call points
+            <code>documents</code> at it, and every client, your browser app through PostgREST included, reads only what it allows.</p>
+          <p data-for="attributes">Cerbos's rule: anyone signed in reads published documents and their own drafts. One call
+            points <code>documents</code> at it, and pg_auth turns the rule into a filter on <code>owner</code> and <code>status</code>.</p>
+        </li>
+        <li class="pa-act" data-act="grant">
+          <span class="pa-act__mark" aria-hidden="true">II</span>
+          <h2><button type="button" class="pa-act__pick">Share by writing a row.</button></h2>
+          <p data-for="relationships">A membership is a row your app inserts through the API it already uses. pg_auth hands it to
+            the engine, and Bob sees org 1's documents moments later. Only an org's admins may add one.</p>
+          <p data-for="attributes">The rule reads the row's own fields, so changing one changes who sees it: Anne publishes a
+            draft and Bob sees it. Only a document's owner may edit it.</p>
+        </li>
+        <li class="pa-act" data-act="explain">
+          <span class="pa-act__mark" aria-hidden="true">III</span>
+          <h2><button type="button" class="pa-act__pick">Ask why a row is hidden.</button></h2>
+          <p>Row level security hides rows without a word. <code>authz.why</code> names the subject, each policy and the
+            missing permission; <code>authz.doctor</code> checks the setup and prints each fix.</p>
+        </li>
+      </ol>
+    </div>
+
+    <div class="pa-demo" aria-label="Live demo: psql as admin, anne and bob, and the sidecars' log">
+      <div class="pa-demo__bar">
+        <div class="pa-engines" role="group" aria-label="Engine">
+          <button type="button" data-engine="openfga" aria-pressed="true">OpenFGA</button>
+          <button type="button" data-engine="spicedb" aria-pressed="false">SpiceDB</button>
+          <button type="button" data-engine="cerbos" aria-pressed="false">Cerbos</button>
+        </div>
+        <em class="pa-demo__status" role="status">not started</em>
+      </div>
+
+      <div class="pa-demo__steps" role="group" aria-label="Steps of the lit act: each types its statement into a pane">
+        <ol class="pa-steps" data-act="protect">
+          <li><button type="button" class="pa-step" data-pane="bob" data-cmd="select * from documents;"><span class="pa-who">bob</span><code>select * from documents;</code><em>no rules yet: every row</em></button></li>
+          <li data-for="relationships"><button type="button" class="pa-step" data-pane="admin" data-cmd="select authz.protect('documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');"><span class="pa-who">admin</span><code>select authz.protect('documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');</code><em>the one line</em></button></li>
+          <li data-for="attributes"><button type="button" class="pa-step" data-pane="admin" data-cmd="select authz.protect('documents', type => 'document', id => 'id', read => 'read', write => 'update', attributes => array['owner', 'status']);"><span class="pa-who">admin</span><code>select authz.protect('documents', type => 'document', id => 'id', read => 'read', write => 'update', attributes => array['owner', 'status']);</code><em>the one line</em></button></li>
+          <li><button type="button" class="pa-step" data-pane="anne" data-cmd="select * from documents;"><span class="pa-who">anne</span><code>select * from documents;</code><em data-for="relationships">org 1's admin: its three documents</em><em data-for="attributes">her own, and what is published</em></button></li>
+          <li><button type="button" class="pa-step" data-pane="bob" data-cmd="select * from documents;"><span class="pa-who">bob</span><code>select * from documents;</code><em data-for="relationships">in no org yet: nothing</em><em data-for="attributes">only what is published</em></button></li>
+        </ol>
+        <ol class="pa-steps" data-act="grant" hidden>
+          <li data-for="relationships"><button type="button" class="pa-step" data-pane="anne" data-cmd="insert into memberships values (1, 'bob', 'member');"><span class="pa-who">anne</span><code>insert into memberships values (1, 'bob', 'member');</code><em>a row, delivered to the engine</em></button></li>
+          <li data-for="attributes"><button type="button" class="pa-step" data-pane="anne" data-cmd="update documents set status = 'published' where id = 2;"><span class="pa-who">anne</span><code>update documents set status = 'published' where id = 2;</code><em>her draft, published</em></button></li>
+          <li><button type="button" class="pa-step" data-pane="bob" data-cmd="select * from documents;"><span class="pa-who">bob</span><code>select * from documents;</code><em data-for="relationships">now a member: org 1's documents</em><em data-for="attributes">the newly published one too</em></button></li>
+          <li data-for="relationships"><button type="button" class="pa-step" data-pane="bob" data-cmd="insert into memberships values (2, 'bob', 'admin');"><span class="pa-who">bob</span><code>insert into memberships values (2, 'bob', 'admin');</code><em>refused: he does not manage org 2</em></button></li>
+          <li data-for="attributes"><button type="button" class="pa-step" data-pane="bob" data-cmd="update documents set title = 'Mine now' where id = 1;"><span class="pa-who">bob</span><code>update documents set title = 'Mine now' where id = 1;</code><em>0 rows: he is not the owner</em></button></li>
+        </ol>
+        <ol class="pa-steps" data-act="explain" hidden>
+          <li data-for="relationships"><button type="button" class="pa-step" data-pane="admin" data-cmd="select * from authz.why('documents', '4', as_subject => 'user:bob');"><span class="pa-who">admin</span><code>select * from authz.why('documents', '4', as_subject => 'user:bob');</code><em>why bob cannot see Hiring</em></button></li>
+          <li data-for="attributes"><button type="button" class="pa-step" data-pane="admin" data-cmd="select * from authz.why('documents', '5', as_subject => 'user:bob', subject_roles => array['authenticated']);"><span class="pa-who">admin</span><code>select * from authz.why('documents', '5', as_subject => 'user:bob', subject_roles => array['authenticated']);</code><em>why bob cannot see Pricing</em></button></li>
+          <li><button type="button" class="pa-step" data-pane="admin" data-cmd="select check_name, status from authz.doctor();"><span class="pa-who">admin</span><code>select check_name, status from authz.doctor();</code><em>the setup, checked</em></button></li>
+        </ol>
+      </div>
+
+      <div class="pa-demo__panes" role="group" aria-label="Panes">
+        <button type="button" class="pa-demo__pane is-on" data-pane="admin">admin<kbd>alt 1</kbd></button>
+        <button type="button" class="pa-demo__pane" data-pane="anne">anne<kbd>alt 2</kbd></button>
+        <button type="button" class="pa-demo__pane" data-pane="bob">bob<kbd>alt 3</kbd></button>
+        <button type="button" class="pa-demo__pane" data-pane="log">sidecar log<kbd>alt 4</kbd></button>
+      </div>
+      <div class="pa-demo__screen">
+        {#- Before boot: Act I as the demo printed it (OpenFGA), recorded from docker/demo -#}
+        <div class="pa-demo__poster">
+          <p class="pa-poster__label">Recorded: Act I on OpenFGA. Boot the demo to run it yourself.</p>
+<div class="pa-poster__admin"><b>admin · superuser</b><pre>admin@openfga=# select authz.protect('documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
+NOTICE:  documents is protected: a row is document:&lt;id&gt;; reading needs viewer, writing needs editor</pre></div>
+<div><b>anne</b><pre>anne@openfga=&gt; select * from documents;
+ id | org_id |    title
+----+--------+-------------
+  1 |      1 | Roadmap
+  2 |      1 | Budget
+  3 |      1 | Launch plan
+(3 rows)</pre></div>
+<div><b>bob</b><pre>bob@openfga=&gt; select * from documents;
+ id | org_id | title
+----+--------+-------
+(0 rows)</pre></div>
+<div class="pa-poster__log"><b>sidecar log</b><pre>openfga  list   user:anne document#viewer → [1, 2, 3]  (cached)
+openfga  list   user:bob document#viewer → []  (cached)</pre></div>
+        </div>
+      </div>
+      <div class="pa-demo__boot">
+        <button type="button" class="pa-btn pa-btn--primary" data-boot>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>
+          Boot the live demo
+        </button>
+        <p>Experimental, pre-release. Postgres 18 with pg_auth and OpenFGA, SpiceDB and Cerbos, each with its
+          sidecar, emulated in this tab: about 150 MB once, then offline.</p>
+      </div>
+      <p class="pa-demo__note">
+        Click a step to type it, or click into the terminal and type. The engines keep their data in
+        memory here; built with <a href="https://github.com/filipecabaco/snowglobe">snowglobe</a>.
       </p>
     </div>
-
-    <div class="pa-term" aria-label="psql: protecting a table and asking how a query will be checked">
-      <div class="pa-term__bar"><span></span><span></span><span></span><em>the engine decides, Postgres enforces</em></div>
-      <pre class="pa-term__body"><code><span class="c">-- who is asking: the JWT's sub, as PostgREST sets it</span>
-<span class="p">=#</span> select authz.configure(subject =&gt; 'jwt');
-
-<span class="c">-- a row of app.documents is the engine's document:&lt;id&gt;</span>
-<span class="p">=#</span> select authz.protect('app.documents',
-     'document', 'id', 'viewer', 'editor');
-
-<span class="c">-- anne may view 38 documents: one call, an index condition</span>
-<span class="p">=#</span> select mode, reason
-     from authz.explain('select * from app.documents');
-<span class="o">    mode    |             reason
-------------+-----------------------------------
- listed ids | user:anne may access 38 document
-            |   objects: indexable filter</span></code></pre>
-    </div>
-  </div>
-
-  <div class="pa-wrap">
-    <dl class="pa-stats">
-      {# bench:stats:start #}
-      <div><dt>0.75<small>x</small></dt><dd>the time of best-practice RLS, over 489 query × subject pairs</dd></div>
-      <div><dt>35</dt><dd>real RLS problems, each a benchmark scenario</dd></div>
-      {# bench:stats:end #}
-      <div><dt>1</dt><dd>engine call per table, at planning, for a listed subject</dd></div>
-      <div><dt>0</dt><dd>rows read when the sidecar or engine fails: the statement errors</dd></div>
-    </dl>
   </div>
 </section>
 {% endblock %}
 
 {% block content %}
-<section class="pa-section" id="paths">
-  <h2 class="pa-h2">Three ways to check a scan</h2>
+<section class="pa-section" id="model">
+  <h2 class="pa-h2">The rules live in one model, not in every table</h2>
   <p class="pa-sub">
-    At planning, pg_auth asks the sidecar once per protected table which objects the subject may
-    access, and picks the plan from the answer. <code>authz.explain(query)</code> says which one a
-    query gets, and why.
+    The same app with hand-written row level security needs helper functions, a policy per
+    operation and the indexes behind them, for every table that needs them. With pg_auth the model
+    says who may do what, once, and each table says what it is.
   </p>
-  <div class="pa-paths">
-    <article class="pa-path">
-      <header><code>listed ids</code><span class="pa-tag">narrow subjects</span></header>
-      <p>Up to the engine's list limit (1000 for OpenFGA), the policy becomes
-        <code>col = ANY(…)</code>, hashed: index scans, partition pruning, and row estimates
-        raised to the subject's share of the table.</p>
-      <dl><div><dt>Engine calls</dt><dd>one per table</dd></div><div><dt>Rows checked</dt><dd class="yes">none</dd></div><div><dt>Cached plans</dt><dd>replanned for another breadth</dd></div></dl>
-    </article>
-    <article class="pa-path">
-      <header><code>batched check</code><span class="pa-tag">broad subjects</span></header>
-      <p>Too many to list: an <code>AuthzBatch</code> node reads rows in batches of 16, doubling
-        to 1000, and checks each batch with one call. It keeps the scan's order, so a
-        <code>LIMIT 20</code> checks a batch or two, not the table.</p>
-      <dl><div><dt>Engine calls</dt><dd>one per batch</dd></div><div><dt>Rows checked</dt><dd class="part">the ones the scan reaches</dd></div><div><dt>Index order</dt><dd class="yes">kept</dd></div></dl>
-    </article>
-    <article class="pa-path pa-path--accent">
-      <header><code>permission index</code><span class="pa-tag">broad, steady state</span></header>
-      <p>The sidecar streams a broad subject's complete list into Postgres and follows the
-        engine's change feed. Rows are checked against the set in memory; a stale set is never
-        used.</p>
-      <dl><div><dt>Engine calls</dt><dd class="yes">none</dd></div><div><dt>Rows checked</dt><dd>in memory</dd></div><div><dt>Revocation</dt><dd>feed read, ~0.2 s</dd></div></dl>
-    </article>
-  </div>
+  <div class="pa-compare">
+    <figure class="pa-file">
+      <figcaption>documents.sql, hand-written <span>4 policies, 2 helpers, per table</span></figcaption>
+<pre><code><span class="c">-- who is a member, who was shared the document</span>
+create function private.is_member(org uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists (select 1 from public.memberships m
+    where m.org_id = org and m.user_id = (select auth.uid()))
+$$;
+create function private.is_shared(doc uuid) returns boolean …
 
-  <div class="pa-split">
-    <div>
-      <h3>One call per table</h3>
-      <p>Point a table at an object type and a permission. pg_auth installs ordinary RLS
-        policies, forced, on every partition now and later, and its planner hook turns them into
-        an indexable filter or a batched check. Several ways to reach a row, inserts checked on
-        the parent, keys that are expressions and trees the app already stores are arguments,
-        not hand-written SQL.</p>
-      <a href="{{ 'usage/#3-protect-tables' | url }}">Protecting tables</a>
+alter table documents enable row level security;
+create policy read on documents for select to authenticated
+  using ((select private.is_member(org_id))
+      or (select private.is_shared(id)));
+create policy write on documents for update to authenticated
+  using ((select private.is_member(org_id)))
+  with check ((select private.is_member(org_id)));
+<span class="c">-- … insert, delete, and the same again for the next table</span></code></pre>
+    </figure>
+    <div class="pa-compare__with">
+      <figure class="pa-file">
+        <figcaption>The model, once <span>OpenFGA</span></figcaption>
+<pre><code>type document
+  relations
+    define org: [org]
+    define shared_with: [user]
+    define <b>viewer</b>: shared_with or can_read from org
+    define <b>editor</b>: can_read from org</code></pre>
+      </figure>
+      <figure class="pa-file pa-file--one">
+        <figcaption>documents.sql <span>one line</span></figcaption>
+<pre><code>select authz.protect('documents',
+  type => 'document', id => 'id',
+  read => 'viewer', write => 'editor');</code></pre>
+      </figure>
     </div>
-<pre class="pa-code"><code><span class="c">-- a comment is visible to whoever may view its document</span>
-select authz.protect('app.comments',
-       'document', 'document_id', 'viewer');
-
-<span class="c">-- a storage path's first folder names the project</span>
-select authz.protect('storage.objects', 'project', null,
-       'viewer', p_key =&gt; 'split_part(name, ''/'', 1)');
-
-<span class="c">-- a stored folder tree: the engine lists direct grants,</span>
-<span class="c">-- Postgres expands them through a closure it maintains</span>
-select authz.protect('app.folders', 'folder', 'id', 'viewer',
-       p_hierarchy =&gt; 'app.folders(id, parent_id)',
-       p_direct    =&gt; 'viewer_direct');</code></pre>
-  </div>
-</section>
-
-<section class="pa-section" id="benchmarks">
-  <h2 class="pa-h2">Against hand-tuned RLS</h2>
-  <p class="pa-sub">
-    Each scenario is an RLS problem people hit in production, with the fix written the way
-    Supabase recommends. A bar is pg_auth's planning plus execution time as a share of that
-    policy's, the geometric mean over the scenario's queries and subjects: left of the line,
-    pg_auth is faster. The engine is OpenFGA v1.22 on its Postgres datastore with caches on, and
-    every variant runs on fresh containers with 4 CPUs and 4 GB.
-    <a href="{{ 'benchmarks/' | url }}">Full table and method</a>
-  </p>
-  <div class="pa-bench" role="table" aria-label="pg_auth time as a share of best-practice RLS, per scenario">
-    <div class="pa-bench__legend" aria-hidden="true">
-      <span class="k k--win">pg_auth faster</span>
-      <span class="k k--loss">best-practice RLS faster</span>
-      <span class="k k--even">dashed line: the same time</span>
-    </div>
-    {% set top = 2.0 %}
-    {# bench:rows:start #}
-    {% set rows = [
-      ("hierarchical-permissions", 0.22),
-      ("nested-rls-chain", 0.23),
-      ("order-by-limit-selective-policy", 0.24),
-      ("supabase-storage-paths", 0.28),
-      ("large-membership-array-overhead", 0.40),
-      ("secdef-helper-oracle", 0.40),
-      ("supabase-owner-or-role", 0.45),
-      ("saas-project-hierarchy", 0.47),
-      ("marketplace-two-party-orders", 0.61),
-      ("large-events-timeseries", 0.70),
-      ("larger-than-memory", 0.74),
-      ("drive-nested-group-sharing", 0.75),
-      ("rls-write-path", 0.75),
-      ("org-membership", 0.81),
-      ("membership-subplan-no-pullup", 0.85),
-      ("update-delete-bulk-rls-cost", 0.87),
-      ("per-row-function-in-policy", 0.88),
-      ("supabase-chat-rooms", 0.93),
-      ("update-select-coupling", 0.96),
-      ("prepared-plan-role-revalidation", 0.97),
-      ("partitioned-rls-no-pruning", 0.98),
-      ("large-fulltext-search", 0.99),
-      ("rls-bypass-paths", 1.02),
-      ("non-leakproof-operators-lose-index", 1.05),
-      ("view-owner-bypass", 1.08),
-      ("leaky-function-and-leakproof-marking", 1.09),
-      ("policy-recursion-42p17", 1.11),
-      ("supabase-claims-rbac", 1.19),
-      ("rls-best-case-tenant-column", 1.29),
-      ("jwt-claims-parsed-per-row", 1.30),
-      ("missing-policy-index", 1.47),
-      ("pool-session-state-leak", 1.50),
-      ("partition-direct-access", 1.52),
-      ("join-two-rls-tables", 1.58),
-      ("tenant-skew-bad-estimates", 1.71),
-    ] %}
-    {# bench:rows:end #}
-    {% for name, v in rows %}
-    <div class="pa-bench__row" role="row">
-      <span class="pa-bench__name" role="rowheader">{{ name }}</span>
-      <div class="pa-bench__track" role="cell">
-        <i class="b {{ 'b--win' if v < 1 else 'b--loss' }}" style="--v: {{ [v / top, 1] | min }}"><b>{{ '%.2f' | format(v) }}x</b></i>
-      </div>
-    </div>
-    {% endfor %}
   </div>
   <p class="pa-proof">
-    Where it loses: statements that finish in well under a millisecond pay for pg_auth's planning
-    work per protected table (joins of two protected tables, short writes), and
-    <code>missing-policy-index</code> keeps its premise, an unindexed column, where the RLS fix
-    adds the index.
+    A new role, a document shared, a team given access: a change to the model or a row in a table,
+    with no migration and no policy to edit.
+    <a href="{{ 'usage/#3-protect-tables' | url }}">Protecting tables</a>
   </p>
 </section>
 
-<section class="pa-section">
-  <h2 class="pa-h2">Built for every surface that reaches Postgres</h2>
-  <div class="pa-features">
-    <div><h3>Every client</h3><p>The policies are ordinary RLS, so PostgREST, GraphQL, Storage, Realtime, application servers and psql all read through them. No authorization left in the app.</p></div>
-    <div><h3>Supabase subjects</h3><p>The subject is a JWT claim as PostgREST sets it, a bearer token verified against a JWKS, or a setting only a trusted role may set. No subject, no rows.</p></div>
-    <div><h3>Broad subjects</h3><p>An admin who sees most rows reads from the permission index or in ordered batches, and a cached plan is rebuilt when a subject of another breadth reuses it.</p></div>
-    <div><h3>Writes</h3><p>Updates and deletes by broad subjects find their rows through the index set. Inserts can be checked on the parent object. Without a write permission, writes are denied.</p></div>
-    <div><h3>Advice</h3><p><code>authz.explain</code> names each table's path and why; <code>authz.last_statement_advice()</code> says where the engine had to check rows and how to stop it; <code>authz.lint()</code> scores hand-written policies.</p></div>
-    <div><h3>Fails closed</h3><p>An unreachable sidecar, an engine error or a malformed answer fails the statement. The settings that steer decisions are superuser-only, and unsafe Rust stays in two modules.</p></div>
-  </div>
+<section class="pa-section pa-mistakes" id="mistakes">
+  <h2 class="pa-h2">The row level security mistakes you cannot make</h2>
+  <dl>
+    <div><dt>A view that leaks</dt><dd>Policies are forced on the table's owner, and the subject comes from the request, not the role running the query.</dd></div>
+    <div><dt>Policy recursion (<code>42P17</code>)</dt><dd>pg_auth's policy reads only the row, so it cannot recurse into another table's policies.</dd></div>
+    <div><dt>A partition queried directly</dt><dd>Every partition gets the policy, including ones created later.</dd></div>
+    <div><dt>An update that changes 0 rows</dt><dd>Read and write permissions are installed together, so a writer can always find the rows it may write.</dd></div>
+    <div><dt>A spoofed identity</dt><dd>The request cannot set its own subject, and with no subject there are no rows.</dd></div>
+    <div><dt>An engine that is down</dt><dd>The statement fails. Rows are never shown because nobody could answer.</dd></div>
+  </dl>
   <p class="pa-proof">
-    A parity suite runs every scenario's queries as each subject and compares the rows with the
-    engine's own answers, including cached plans reused across subjects.
-    <a href="{{ config.repo_url }}/tree/main/compare">How parity is checked</a>
+    What it shares with row level security, where Postgres sets the rules: superusers and
+    <code>BYPASSRLS</code> roles skip every policy, and so does a <code>SECURITY DEFINER</code>
+    function they own. An identity set for a whole session on a pooled connection outlives its
+    request; set it with <code>SET LOCAL</code>, as PostgREST does.
+    <a href="{{ 'research/rls-issues/' | url }}">Every issue, checked</a>
   </p>
 </section>
 
-<section class="pa-section pa-split pa-engines" id="engines">
-  <div>
-    <h2 class="pa-h2">One protocol, any engine</h2>
-    <p class="pa-sub">
-      The extension never talks to an engine. It asks a sidecar on a local Unix socket three
-      questions: which objects may this subject access, may it access these, and fill this
-      subject's permission index. The sidecar translates them to the engine's API (OpenFGA's or
-      SpiceDB's) and keeps the engine's credentials and network calls outside the database.
-    </p>
-    <ul>
-      <li><code>list</code> answers with ids, or <code>too_many</code> past the engine's limit, which sends pg_auth to batched checks.</li>
-      <li><code>check</code> answers a batch of ids in one round trip; missing answers are denials.</li>
-      <li><code>fill</code> streams a broad subject's complete list into Postgres, kept fresh from the engine's change feed.</li>
-    </ul>
-    <a href="{{ 'design/#4-protocol' | url }}">The protocol</a>
+{# bench:stats:start #}
+{% set bench = {"ratio": 0.75, "pairs": 489, "scenarios": 35} %}
+{# bench:stats:end #}
+{# bench:rows:start #}
+{% set rows = [
+  ("hierarchical-permissions", 0.22),
+  ("nested-rls-chain", 0.23),
+  ("order-by-limit-selective-policy", 0.24),
+  ("supabase-storage-paths", 0.28),
+  ("large-membership-array-overhead", 0.40),
+  ("secdef-helper-oracle", 0.40),
+  ("supabase-owner-or-role", 0.45),
+  ("saas-project-hierarchy", 0.47),
+  ("marketplace-two-party-orders", 0.61),
+  ("large-events-timeseries", 0.70),
+  ("larger-than-memory", 0.74),
+  ("drive-nested-group-sharing", 0.75),
+  ("rls-write-path", 0.75),
+  ("org-membership", 0.81),
+  ("membership-subplan-no-pullup", 0.85),
+  ("update-delete-bulk-rls-cost", 0.87),
+  ("per-row-function-in-policy", 0.88),
+  ("supabase-chat-rooms", 0.93),
+  ("update-select-coupling", 0.96),
+  ("prepared-plan-role-revalidation", 0.97),
+  ("partitioned-rls-no-pruning", 0.98),
+  ("large-fulltext-search", 0.99),
+  ("rls-bypass-paths", 1.02),
+  ("non-leakproof-operators-lose-index", 1.05),
+  ("view-owner-bypass", 1.08),
+  ("leaky-function-and-leakproof-marking", 1.09),
+  ("policy-recursion-42p17", 1.11),
+  ("supabase-claims-rbac", 1.19),
+  ("rls-best-case-tenant-column", 1.29),
+  ("jwt-claims-parsed-per-row", 1.30),
+  ("missing-policy-index", 1.47),
+  ("pool-session-state-leak", 1.50),
+  ("partition-direct-access", 1.52),
+  ("join-two-rls-tables", 1.58),
+  ("tenant-skew-bad-estimates", 1.71),
+] %}
+{# bench:rows:end #}
+<section class="pa-section pa-expect" id="cost">
+  <h2 class="pa-h2">What to expect</h2>
+  <div class="pa-expect__grid">
+    <div class="pa-expect__item">
+      <h3>A protected query costs about what a well-written policy does</h3>
+      <p>
+        Measured on {{ bench.scenarios }} scenarios taken from problems people hit with row level
+        security, each against its best-practice policy, over {{ bench.pairs }} query and subject
+        pairs: {{ '%.2f' | format(bench.ratio) }}x its planning and execution time overall. Statements
+        that finish in well under a millisecond pay for pg_auth's planning work, so expect those to
+        take somewhat longer.
+      </p>
+      <figure class="pa-strip">
+        <div class="pa-strip__plot" role="img" aria-label="Each scenario's pg_auth time as a share of best-practice row level security: from {{ '%.2f' | format(rows[0][1]) }}x to {{ '%.2f' | format(rows[-1][1]) }}x, {{ '%.2f' | format(bench.ratio) }}x overall">
+          <span class="pa-strip__even" style="--v: 1"><span>same time</span></span>
+          {%- for name, v in rows %}
+          <i tabindex="0" style="--v: {{ v }}; --row: {{ loop.index0 % 3 }}" data-tip="{{ name }} · {{ '%.2f' | format(v) }}x"></i>
+          {%- endfor %}
+        </div>
+        <div class="pa-strip__axis" aria-hidden="true">
+          {%- for t in [0.25, 0.5, 1.0, 2.0] %}<span style="--v: {{ t }}">{{ t }}x</span>{% endfor %}
+        </div>
+        <figcaption>One dot per scenario: pg_auth's time as a share of the best-practice policy's.
+          <a href="{{ 'benchmarks/' | url }}">The table, and how it was measured</a></figcaption>
+      </figure>
+    </div>
+    <div class="pa-expect__item">
+      <h3>A grant shows within tens of milliseconds</h3>
+      <p>
+        A membership or a share written as a row was visible to its subject 4 to 34 ms after the
+        commit, measured end to end against OpenFGA and SpiceDB. Answers are otherwise as fresh as
+        the engine's, minus the sidecar's one-second cache.
+      </p>
+    </div>
+    <div class="pa-expect__item">
+      <h3>It needs a sidecar next to Postgres</h3>
+      <p>
+        Postgres 15 to 18 with <code>shared_preload_libraries</code>, and the sidecar on the same
+        host: servers you control, or managed Postgres where the provider allows both.
+      </p>
+    </div>
+    <div class="pa-expect__item">
+      <h3>It is experimental</h3>
+      <p>
+        Pre-release, built from source, no license chosen yet. Every engine is checked for parity
+        against its own answers, and the tests run on Postgres 15 to 18.
+        <a href="{{ 'testing/' | url }}">How it is tested</a>
+      </p>
+    </div>
   </div>
-<pre class="pa-code"><code><span class="c"># one JSON object per line, over a Unix socket</span>
-<span class="p">&gt;</span> {"op":"list","subject":"user:anne",
-   "permission":"viewer","type":"document"}
-<span class="o">&lt; {"ids":["1","2"],"engine_us":840,"valid_ms":500}</span>
-
-<span class="p">&gt;</span> {"op":"check","subject":"user:anne",
-   "permission":"viewer","type":"document",
-   "ids":["1","9"]}
-<span class="o">&lt; {"allowed":[true,false],"engine_us":1200}</span>
-
-<span class="p">&gt;</span> {"op":"ping"}
-<span class="o">&lt; {"engine":"spicedb"}</span></code></pre>
 </section>
 
-<section class="pa-section pa-install">
+<section class="pa-section pa-enginelist" id="engines">
+  <h2 class="pa-h2">Pick the engine that fits your rules</h2>
+  <table>
+    <thead><tr><th>Engine</th><th>Decides on</th><th>Good for</th></tr></thead>
+    <tbody>
+      <tr><th><a href="https://openfga.dev">OpenFGA</a></th><td>relationships</td><td>sharing, teams, orgs, folders: who is related to what</td></tr>
+      <tr><th><a href="https://authzed.com/spicedb">SpiceDB</a></th><td>relationships</td><td>the same model, with SpiceDB's schema and consistency</td></tr>
+      <tr><th><a href="https://cerbos.dev">Cerbos</a></th><td>the row's fields and the user's roles</td><td>owners, statuses, departments: rules over attributes</td></tr>
+    </tbody>
+  </table>
+  <p class="pa-proof">
+    Postgres speaks one small protocol to a sidecar on a Unix socket, so changing engines does not
+    touch the database.
+  </p>
+</section>
+
+<section class="pa-section pa-install" id="install">
   <div>
-    <h2 class="pa-h2">Install</h2>
+    <h2 class="pa-h2">Try it on your own Postgres</h2>
     <p class="pa-sub">
-      The extension hooks the planner, so it has to be preloaded. Build it, preload it, run the
-      sidecar next to Postgres, and point Postgres at the sidecar's socket.
+      Build the extension, preload it, run the sidecar next to Postgres pointed at your engine, and
+      protect a table.
     </p>
     <a class="pa-btn pa-btn--primary" href="{{ 'usage/' | url }}">Getting started</a>
   </div>
-<pre class="pa-code"><code><span class="c"># build and install into the active Postgres (15 to 18)</span>
-git clone https://github.com/filipecabaco/pg_auth && cd pg_auth
-cargo pgrx install --release
+<pre class="pa-code"><code><span class="c"># the pinned toolchain, then build into the active Postgres</span>
+mise install
+cargo pgrx install --release --pg-config "$(which pg_config)"
 
-<span class="c"># postgresql.conf, then restart</span>
-shared_preload_libraries = 'pg_auth'
-
-<span class="c"># the sidecar, next to Postgres, asking SpiceDB (or OPENFGA_URL=...)</span>
-SPICEDB_URL=http://localhost:8443 SPICEDB_TOKEN=... \
-  PG_AUTH_SOCKET=/run/pg_auth/authz.sock pg-auth-sidecar
-
-<span class="c"># as a superuser</span>
+<span class="c">-- postgresql.conf: shared_preload_libraries = 'pg_auth'</span>
 create extension pg_auth;
-alter system set pg_auth.sidecar_socket = '/run/pg_auth/authz.sock';
-select pg_reload_conf();</code></pre>
-</section>
-
-<section class="pa-section pa-limits">
-  <h2 class="pa-h2">Good to know</h2>
-  <ul>
-    <li>It needs Postgres 15 to 18, <code>shared_preload_libraries</code> and a sidecar on the same host, so it runs on servers you control, and on managed Postgres only where the provider offers them.</li>
-    <li>The sidecar speaks OpenFGA and SpiceDB. The extension speaks the same small protocol to it whatever the engine and does not know which one is behind it, so another engine is a change to the sidecar, not to Postgres.</li>
-    <li>Answers are as fresh as the engine (OpenFGA's caches, 10 s; SpiceDB's default reads, up to 5 s behind), minus the sidecar's cache TTL (1 s by default). Writes to the engine and to the table do not commit atomically.</li>
-    <li>Row locks, inserts, and writes by broad subjects without a fresh index set check rows one at a time, from the index once it is fresh. Writes keep the per-row policy, since <code>AuthzBatch</code> does no EvalPlanQual rechecks.</li>
-    <li>For a declared hierarchy the app's table, not the engine's parent tuples, decides inheritance. pg_auth cannot verify that the model has the declared shape.</li>
-  </ul>
-</section>
-
-<section class="pa-section pa-reading">
-  <h2 class="pa-h2">Further reading</h2>
-  <div class="pa-features">
-    <div><h3><a href="{{ 'research/why-rls-is-slow/' | url }}">Why RLS is slow</a></h3><p>Where hand-written policies lose time: per-row functions, subplans that do not pull up, leakproof rules, estimates.</p></div>
-    <div><h3><a href="{{ 'research/rls-issues/' | url }}">RLS issues catalogue</a></h3><p>Real problems people hit with RLS, each turned into a benchmark scenario with its best-practice fix.</p></div>
-    <div><h3><a href="{{ 'design/' | url }}">Design</a></h3><p>The planner hook, AuthzBatch, the permission index, plan caching across subjects, the protocol and the security model.</p></div>
-  </div>
+alter system set pg_auth.sidecar_socket = '/run/pg_auth/default.sock';
+select pg_reload_conf();
+select authz.configure(subject => 'jwt');
+select authz.protect('documents', type => 'document',
+  id => 'id', read => 'viewer', write => 'editor');</code></pre>
 </section>
 {% endblock %}

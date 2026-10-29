@@ -42,17 +42,14 @@ s = File.read!(f)
 block = "<!-- results:start -->\nCommit `#{commit}`, #{date}.\n" <> table <> "\n<!-- results:end -->"
 File.write!(f, Regex.replace(~r/<!-- results:start -->.*<!-- results:end -->/s, s, fn _ -> block end))
 
-# home.html: the headline stats and the chart's rows, sorted
+# home.html: the expectations section's figures and its strip's rows, sorted
 [_, pairs, ratio] = Regex.run(~r/Over all (\d+) pairs pg_auth is at ([0-9.]+)x/, summary)
 rows =
   geo
   |> Enum.map(fn {id, g} -> {id, g |> String.trim_trailing("x") |> String.to_float()} end)
   |> Enum.sort_by(fn {id, v} -> {v, id} end)
-  |> Enum.map_join("\n", fn {id, v} -> "      (\"#{id}\", #{:erlang.float_to_binary(v, decimals: 2)})," end)
-stats = """
-      <div><dt>#{ratio}<small>x</small></dt><dd>the time of best-practice RLS, over #{pairs} query × subject pairs</dd></div>
-      <div><dt>#{map_size(geo)}</dt><dd>real RLS problems, each a benchmark scenario</dd></div>
-"""
+  |> Enum.map_join("\n", fn {id, v} -> "  (\"#{id}\", #{:erlang.float_to_binary(v, decimals: 2)})," end)
+stats = ~s({% set bench = {"ratio": #{ratio}, "pairs": #{pairs}, "scenarios": #{map_size(geo)}} %})
 f = "overrides/home.html"
 s = File.read!(f)
 s = Regex.replace(~r/(\{# bench:stats:start #\}\n).*?(\s*\{# bench:stats:end #\})/s, s, fn _, a, b -> a <> String.trim_trailing(stats) <> b end)

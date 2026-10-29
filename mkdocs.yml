@@ -38,6 +38,9 @@ extra_css:
   - stylesheets/supabase.css
   - stylesheets/home.css
 
+extra_javascript:
+  - javascripts/demo.js
+
 extra:
   social:
     - icon: fontawesome/brands/github

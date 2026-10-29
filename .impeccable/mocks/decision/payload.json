@@ -1,0 +1,41 @@
+{
+  "title": "Choose the landing page's structure",
+  "question": "Three structures for pg_auth's landing page, in the pg_auth look (dark ink, Supabase green, code on screen). The roll put the policy-diff first. Lock one, steer, or re-roll.",
+  "options": [
+    {
+      "id": "assigned",
+      "kind": "assigned",
+      "kicker": "THE ROLL",
+      "label": "The policy file collapses",
+      "thesis": "The first screen is a diff: a Supabase-style RLS file (helper functions, four policies) struck through, replaced by one authz.protect line, with the model and a grant-by-row beside it.",
+      "palette": ["#141414", "#3ecf8e", "#ededed", "#e5484d"],
+      "materials": ["code diff", "SQL on screen"],
+      "viewport": "Headline and two actions (boot the demo, read the guide) on the left; the diff and two small cards (the model, a grant written as a row) on the right. The live demo follows directly below.",
+      "risk": "Leads with what you stop writing, so it compares to RLS on the first screen; must stay about effort, never speed.",
+      "html": ".impeccable/mocks/decision/assigned.html"
+    },
+    {
+      "id": "demo-first",
+      "kind": "dealt",
+      "label": "The demo is the first screen",
+      "thesis": "Postgres, the sidecar and OpenFGA boot in the tab: a step rail on the left (protect, grant as a row, Bob sees, why, revoke), Anne's and Bob's psql side by side, the sidecar's log underneath showing the delivery.",
+      "palette": ["#141414", "#0f0f0f", "#3ecf8e", "#ededed"],
+      "materials": ["live terminals", "step rail"],
+      "viewport": "A compact headline, then the multi-window demo fills the viewport; the boot button is the primary action.",
+      "risk": "Before boot, the first screen is a poster of terminals; the headline has to carry the offer on its own.",
+      "html": ".impeccable/mocks/decision/demo-first.html"
+    },
+    {
+      "id": "three-acts",
+      "kind": "dealt",
+      "label": "One app, three acts, the demo beside you",
+      "thesis": "A narrated walk through one app (a team document editor): Act I protect, Act II grant by inserting a row, Act III ask why. The demo stays pinned on the right and follows the act you are reading.",
+      "palette": ["#141414", "#3ecf8e", "#ededed", "#2a2a2a"],
+      "materials": ["scroll story", "pinned demo"],
+      "viewport": "Headline and the three acts as a timeline on the left; the demo frame with tabs (admin, anne, bob, sidecar) on the right, Act I typed in.",
+      "risk": "Scroll-linked, so it needs careful fallback on phones and with reduced motion.",
+      "html": ".impeccable/mocks/decision/three-acts.html"
+    }
+  ],
+  "reroll": { "registers": ["safer", "bolder"] }
+}

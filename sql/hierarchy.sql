@@ -134,12 +134,10 @@ begin
                         select u.node, p.%4$I from up u join %3$s p on p.%2$I = u.ancestor where p.%4$I is not null)
                     select ancestor, node from up', c, p_id, p_source, p_parent);
 
-    execute format('drop trigger if exists authz_closure on %s', p_source);
-    execute format('create trigger authz_closure after insert or update of %I, %I or delete on %s
+    execute format('create or replace trigger authz_closure after insert or update of %I, %I or delete on %s
                     for each row execute function authz.closure_maintain(%L, %L, %L, %L)',
                    p_id, p_parent, p_source, c, p_id, p_parent, typ);
-    execute format('drop trigger if exists authz_closure_changed on %s', p_source);
-    execute format('create trigger authz_closure_changed after insert or update of %I, %I or delete or truncate on %s
+    execute format('create or replace trigger authz_closure_changed after insert or update of %I, %I or delete or truncate on %s
                     for each statement execute function authz.closure_changed(%L)',
                    p_id, p_parent, p_source, c);
 

@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0}
+body{width:1440px;height:900px;overflow:hidden;background:#141414;color:#ededed;font-family:Inter,sans-serif}
+nav{display:flex;align-items:center;gap:28px;padding:22px 72px;border-bottom:1px solid #262626;font-size:14px;color:#a3a3a3}
+nav b{color:#fff;font-size:17px;margin-right:auto}nav b i{color:#3ecf8e;font-style:normal}
+.tag{font:600 11px/1 "JetBrains Mono";letter-spacing:.08em;text-transform:uppercase;color:#3ecf8e;border:1px solid #3ecf8e55;padding:6px 9px;border-radius:4px}
+main{padding:56px 72px 0;display:grid;grid-template-columns:470px 1fr;gap:64px}
+h1{font-size:58px;line-height:1.02;font-weight:800;letter-spacing:-.04em;color:#fff;margin:22px 0 22px}
+h1 em{font-style:normal;color:#3ecf8e}
+p.lede{font-size:18px;line-height:1.6;color:#b8b8b8;margin-bottom:30px}
+.act{display:flex;gap:12px}
+.btn{font:600 15px Inter;padding:14px 20px;border-radius:7px;border:1px solid #333;color:#ededed}
+.btn.p{background:#3ecf8e;color:#0c2e1e;border-color:#3ecf8e}
+.note{margin-top:18px;font-size:13px;color:#969696}
+.diff{background:#1b1b1b;border:1px solid #2a2a2a;border-radius:10px;overflow:hidden;font:13.5px/1.75 "JetBrains Mono"}
+.diff h3{font:600 12px "JetBrains Mono";color:#a0a0a0;padding:12px 18px;border-bottom:1px solid #2a2a2a;display:flex;justify-content:space-between}
+.diff h3 span{color:#e5484d}.diff h3 span.g{color:#3ecf8e}
+.l{padding:0 18px;white-space:pre;color:#a3a3a3}
+.l.del{background:#e5484d14;color:#c98b8d;text-decoration:line-through;text-decoration-color:#e5484d88}
+.l.del:before{content:"- ";color:#e5484d;text-decoration:none}
+.l.add{background:#3ecf8e1c;color:#d7f5e6;font-weight:600;padding-block:10px}
+.l.add:before{content:"+ ";color:#3ecf8e}
+.fold{padding:6px 18px;color:#8f8f8f;font-size:12px;border-block:1px dashed #2f2f2f}
+.model{margin-top:18px;display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.card{background:#1b1b1b;border:1px solid #2a2a2a;border-radius:10px;padding:14px 18px;font:12.5px/1.7 "JetBrains Mono";color:#bdbdbd;white-space:pre}
+.card b{display:block;font:600 11px Inter;color:#969696;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+.card i{color:#3ecf8e;font-style:normal}
+</style></head><body>
+<nav><b>pg<i>_</i>auth</b><span>Guide</span><span>Live demo</span><span>Docs</span><span>GitHub</span><span class="tag">experimental</span></nav>
+<main>
+<section>
+<span class="tag">postgres 15–18 · openfga · spicedb · cerbos</span>
+<h1>Authorization for your Postgres app. <em>No policies to write. No backend to run.</em></h1>
+<p class="lede">Your rules live in one model. Each table says what it is, in one line, and every client (your browser app through Supabase or PostgREST, psql, a script) sees exactly what the model allows.</p>
+<div class="act"><span class="btn p">▶ Boot the live demo</span><span class="btn">Read the no-backend guide</span></div>
+<p class="note">Experimental: built from source. The demo runs Postgres, the sidecar and the engine in this tab.</p>
+</section>
+<section>
+<div class="diff">
+<h3>documents.sql <span>−34 lines</span><span class="g">+1</span></h3>
+<div class="l del">create function private.is_member(org uuid) returns boolean</div>
+<div class="l del">language sql stable security definer set search_path = '' as $$</div>
+<div class="l del">  select exists (select 1 from memberships m where m.org_id = org</div>
+<div class="l del">                 and m.user_id = (select auth.uid()))  $$;</div>
+<div class="l del">create function private.is_shared(doc uuid) returns boolean ...</div>
+<div class="fold">··· 4 policies, 2 helper functions, 3 indexes, per table ···</div>
+<div class="l del">create policy read on documents for select to authenticated</div>
+<div class="l del">  using ((select private.is_member(org_id)) or (select private.is_shared(id)));</div>
+<div class="l del">create policy write on documents for update to authenticated ...</div>
+<div class="l add">select authz.protect('documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');</div>
+</div>
+<div class="model">
+<div class="card"><b>The model, once</b>type document
+  relations
+    define org: [org]
+    define shared_with: [user, team#member]
+    define <i>viewer</i>: shared_with or member from org</div>
+<div class="card"><b>Grant by writing a row</b><i>insert</i> into memberships
+values (1, 'bob', 'member');
+-- bob sees org 1's documents
+-- ~25 ms after commit</div>
+</div>
+</section>
+</main>
+</body></html>

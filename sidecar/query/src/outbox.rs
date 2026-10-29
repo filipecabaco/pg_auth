@@ -118,6 +118,14 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
         tx.execute("select authz.answers_changed()", &[]).await.map_err(pg)?;
     }
     tx.commit().await.map_err(pg)?;
-    eprintln!("pg-auth-sidecar: delivered {} relationship changes", done.len());
+    let shown: Vec<String> = changes
+        .iter()
+        .filter(|(id, _)| done.contains(id))
+        .take(3)
+        .map(|(_, c)| format!("{} {}#{}@{}", if c.write { "write" } else { "delete" }, c.object, c.relation, c.subject))
+        .collect();
+    let more = if done.len() > shown.len() { format!(", and {} more", done.len() - shown.len()) } else { String::new() };
+    let changes_word = if done.len() == 1 { "change" } else { "changes" };
+    eprintln!("pg-auth-sidecar: delivered {} relationship {changes_word}: {}{more}", done.len(), shown.join(", "));
     Ok(done.len() + refused.len())
 }

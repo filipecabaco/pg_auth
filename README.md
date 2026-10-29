@@ -8,7 +8,8 @@ PostgREST or Supabase, an application server, psql. Sharing, teams, roles, inher
 rules on a row's own fields live in one model. A table is protected with one call, and pg_auth
 turns it into row level security that the planner can index.
 
-**Docs:** https://filipecabaco.github.io/pg_auth/
+**Docs and live demo:** https://filipecabaco.github.io/pg_auth/ (the home page boots Postgres with pg_auth,
+OpenFGA, SpiceDB and Cerbos in your browser tab; nothing to install)
 
 ## From policies to one line
 

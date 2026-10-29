@@ -1,0 +1,22 @@
+# Cerbos decides on the row's own fields: anyone signed in reads published documents and their
+# own drafts, and only the owner edits. pg_auth compiles this into a filter on owner and status.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: document
+  rules:
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      roles: ["authenticated"]
+      condition:
+        match:
+          any:
+            of:
+              - expr: request.resource.attr.owner == request.principal.id
+              - expr: request.resource.attr.status == "published"
+    - actions: ["update"]
+      effect: EFFECT_ALLOW
+      roles: ["authenticated"]
+      condition:
+        match:
+          expr: request.resource.attr.owner == request.principal.id

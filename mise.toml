@@ -10,3 +10,18 @@ cargo-deny = "0.20.2"
 # profiling (docs/development.md)
 "cargo:samply" = "0.13.1"
 hyperfine = "2.0.0"
+# the in-browser demo (docker/demo, built into docs/demo/)
+"github:filipecabaco/snowglobe" = "0.2.0"
+
+[tasks.demo]
+description = "Build the in-browser demo (docker/demo, via snowglobe) into docs/demo/"
+run = """
+set -e
+docker build --platform linux/arm64 -f docker/alpine/Dockerfile -t pg_auth:alpine-arm64 .
+rm -rf docs/demo
+snowglobe build docker/demo --out docs/demo
+"""
+
+[tasks.docs]
+description = "Serve the docs site locally with live reload"
+run = 'uvx --from "mkdocs>=1.6,<2" --with mkdocs-material mkdocs serve'

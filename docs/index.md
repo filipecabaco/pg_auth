@@ -11,32 +11,37 @@ hide:
 
 # pg_auth
 
-A PostgreSQL extension that enforces an external authorization engine's decisions as row level
-security, for every client: PostgREST, application servers, ad hoc SQL. The engine decides; a
-sidecar next to Postgres asks it (OpenFGA or SpiceDB; the protocol is engine-neutral);
-pg_auth's planner hook shapes each query so that checking is cheap.
+Your app's permissions, enforced by Postgres, with no backend. An authorization engine (OpenFGA,
+SpiceDB or Cerbos) decides who may see and change each row, and Postgres enforces that decision
+for every client: your browser app through Supabase or PostgREST, an application server, psql.
 
-Built with [pgrx](https://github.com/pgcentralfoundation/pgrx) in Rust, for Postgres 15 to 18.
+The home page runs a live demo in the browser tab: Postgres 18 with pg_auth, the three engines and
+their sidecars, following one app (a team document editor) in three acts.
 
-## Quick start
+## Write the model once. Protect a table in one line
 
 ```sql
-select authz.configure(subject => 'jwt');   -- the JWT's sub, as PostgREST sets it
-select authz.protect('app.documents', 'document', 'id', 'viewer', 'editor');
-select * from authz.explain('select * from app.documents');
+select authz.configure(subject => 'jwt');   -- the JWT's sub, as Supabase and PostgREST set it
+select authz.protect('documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
 ```
 
-## How a protected scan is checked
+## Share by writing a row
 
-| Path | When | Cost |
-|---|---|---|
-| listed ids | the subject's objects fit the engine's list limit (1000 for OpenFGA) | one engine call per table; `col = ANY(...)` is an index condition |
-| batched check | too many to list | an `AuthzBatch` node checks rows in batches as the scan reaches them, in the scan's order |
-| permission index | too many to list, with a fresh set in Postgres | rows checked against the set in memory, no engine call |
+```sql
+select authz.relate('memberships', object_type => 'org', object_column => 'org_id',
+                    relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
+insert into memberships values (1, 'bob', 'member');   -- bob sees org 1's documents
+```
+
+## Ask why a row is hidden
+
+```sql
+select * from authz.why('documents', '4', as_subject => 'user:bob');
+select * from authz.doctor();
+```
 
 ## Next steps
 
-- [Getting started](usage.md): install, subjects, protecting tables, inspecting, settings
-- [How it works](design.md): the planner hook, AuthzBatch, the permission index, plan caching, security
-- [Benchmarks](benchmarks.md): every scenario against best-practice RLS
-- [Why RLS is slow](research/why-rls-is-slow.md) and the [RLS issues catalogue](research/rls-issues.md)
+- [Getting started](usage.md): install, subjects, protecting tables, granting by writing rows, debugging
+- [Performance](performance.md) and [benchmarks](benchmarks.md): what it costs
+- [Implementation](design.md): the planner hook, the protocol, security

@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0}
+body{width:1440px;height:900px;overflow:hidden;background:#141414;color:#ededed;font-family:Inter,sans-serif}
+nav{display:flex;align-items:center;gap:28px;padding:20px 56px;border-bottom:1px solid #262626;font-size:14px;color:#a3a3a3}
+nav b{color:#fff;font-size:17px;margin-right:auto}nav b i{color:#3ecf8e;font-style:normal}
+.tag{font:600 11px/1 "JetBrains Mono";letter-spacing:.08em;text-transform:uppercase;color:#3ecf8e;border:1px solid #3ecf8e55;padding:6px 9px;border-radius:4px}
+header{padding:34px 56px 22px;display:flex;align-items:end;justify-content:space-between;gap:40px}
+h1{font-size:44px;line-height:1.05;font-weight:800;letter-spacing:-.035em;color:#fff;max-width:760px}
+h1 em{font-style:normal;color:#3ecf8e}
+header p{font-size:16px;line-height:1.55;color:#a8a8a8;max-width:420px}
+.stage{margin:0 56px;display:grid;grid-template-columns:300px 1fr;gap:20px;height:640px}
+.steps{display:flex;flex-direction:column;gap:8px}
+.steps h4{font:600 11px "JetBrains Mono";color:#969696;text-transform:uppercase;letter-spacing:.1em;margin:4px 0 6px}
+.s{background:#1b1b1b;border:1px solid #2a2a2a;border-radius:8px;padding:11px 13px;font-size:13px;color:#cfcfcf}
+.s code{display:block;font:12px "JetBrains Mono";color:#8fd9b6;margin-top:5px}
+.s.on{border-color:#3ecf8e;background:#3ecf8e12}
+.s span{font:600 10px "JetBrains Mono";color:#3ecf8e;margin-right:6px}
+.term{background:#0f0f0f;border:1px solid #2a2a2a;border-radius:10px;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 190px;overflow:hidden}
+.pane{border-right:1px solid #222;border-bottom:1px solid #222;padding:14px 16px;font:13px/1.65 "JetBrains Mono";color:#c9c9c9;white-space:pre}
+.pane b{display:block;font:600 11px "JetBrains Mono";color:#969696;margin-bottom:8px;letter-spacing:.06em}
+.pane b i{color:#3ecf8e;font-style:normal}
+.wide{grid-column:1/3;border-right:0;background:#121212;color:#a0a0a0}
+.ok{color:#3ecf8e}.dim{color:#8f8f8f}
+.boot{position:absolute}
+.cta{display:flex;gap:12px;align-items:center;margin:16px 56px 0;font-size:13px;color:#969696}
+.btn{font:600 15px Inter;padding:12px 18px;border-radius:7px;background:#3ecf8e;color:#0c2e1e}
+</style></head><body>
+<nav><b>pg<i>_</i>auth</b><span>Guide</span><span>Docs</span><span>GitHub</span><span class="tag">experimental</span></nav>
+<header>
+<h1>Real authorization for your Postgres app. <em>Try it in this tab.</em></h1>
+<p>Postgres with pg_auth, the sidecar and OpenFGA, booted in your browser. Click a step, or type.</p>
+</header>
+<div class="stage">
+<div class="steps">
+<h4>OpenFGA · SpiceDB · Cerbos</h4>
+<div class="s"><span>01</span>Protect a table<code>select authz.protect('documents', …);</code></div>
+<div class="s"><span>02</span>Anne sees her org's documents<code>select * from documents;</code></div>
+<div class="s on"><span>03</span>Anne adds Bob, as a row<code>insert into memberships values (1,'bob','member');</code></div>
+<div class="s"><span>04</span>Bob sees them<code>select * from documents;</code></div>
+<div class="s"><span>05</span>Why can't Carl?<code>select * from authz.why('documents','2');</code></div>
+<div class="s"><span>06</span>Remove Bob<code>delete from memberships where …;</code></div>
+</div>
+<div class="term">
+<div class="pane"><b>psql · <i>user:anne</i></b>app=> insert into memberships
+     values (1, 'bob', 'member');
+INSERT 0 1
+app=> <span class="dim">█</span></div>
+<div class="pane"><b>psql · <i>user:bob</i></b>app=> select id, title from documents;
+ id |  title
+----+---------
+  1 | Roadmap
+  2 | Budget
+<span class="ok">(2 rows)  ← visible 24 ms after Anne's commit</span></div>
+<div class="pane wide"><b>sidecar · openfga</b>outbox   write org:1 member user:bob
+openfga  POST /stores/demo/write  200  3 ms
+sidecar  <span class="ok">delivered 1 relationship change · backends told to re-ask</span>
+list     user:bob document#viewer → [1, 2]</div>
+</div>
+</div>
+<div class="cta"><span class="btn">▶ Boot Postgres here</span>about 60 MB once, then it runs offline, sandboxed in the tab</div>
+</body></html>

@@ -1,0 +1,539 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-29T13:40:00Z",
+  "title": "Design System: pg_auth",
+  "extensions": {
+    "colorMeta": {
+      "supabase-green": {
+        "role": "primary",
+        "displayName": "Supabase Green",
+        "canonical": "oklch(76.2% 0.154 159.4)",
+        "tonalRamp": [
+          "#000f06",
+          "#022d1b",
+          "#064f32",
+          "#0f734b",
+          "#199a65",
+          "#2ac282",
+          "#5ce7a5",
+          "#c4ffdd"
+        ]
+      },
+      "green-bright": {
+        "role": "primary",
+        "displayName": "Lit Green",
+        "canonical": "oklch(81.6% 0.161 159.8)",
+        "tonalRamp": [
+          "#000f06",
+          "#022d1b",
+          "#074f32",
+          "#10734b",
+          "#009b65",
+          "#13c381",
+          "#52e9a4",
+          "#c4ffdd"
+        ]
+      },
+      "green-ink": {
+        "role": "primary",
+        "displayName": "Deep Moss Ink",
+        "canonical": "oklch(27.1% 0.050 159.8)",
+        "tonalRamp": [
+          "#000f06",
+          "#0a2c1c",
+          "#294a39",
+          "#486a57",
+          "#698c78",
+          "#8baf9a",
+          "#aed4be",
+          "#d3f9e3"
+        ]
+      },
+      "mint-code": {
+        "role": "secondary",
+        "displayName": "Mint Readout",
+        "canonical": "oklch(94.4% 0.037 164.1)",
+        "tonalRamp": [
+          "#000f08",
+          "#122b20",
+          "#2f483d",
+          "#4e685c",
+          "#6e8a7c",
+          "#90ad9f",
+          "#b4d1c3",
+          "#d9f7e8"
+        ]
+      },
+      "error-coral": {
+        "role": "tertiary",
+        "displayName": "Failure Coral",
+        "canonical": "oklch(71.0% 0.149 19.6)",
+        "tonalRamp": [
+          "#1e0003",
+          "#4c010e",
+          "#7f041f",
+          "#a5333d",
+          "#cc575d",
+          "#f47b7e",
+          "#feb2b2",
+          "#ffe8e8"
+        ]
+      },
+      "pane-black": {
+        "role": "neutral",
+        "displayName": "Pane Black",
+        "canonical": "oklch(16.8% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "strip-black": {
+        "role": "neutral",
+        "displayName": "Strip Black",
+        "canonical": "oklch(18.2% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "stage-ink": {
+        "role": "neutral",
+        "displayName": "Stage Ink",
+        "canonical": "oklch(19.1% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "tab-black": {
+        "role": "neutral",
+        "displayName": "Selected Tab Black",
+        "canonical": "oklch(19.6% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "step-graphite": {
+        "role": "neutral",
+        "displayName": "Step Graphite",
+        "canonical": "oklch(21.8% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "header-graphite": {
+        "role": "neutral",
+        "displayName": "Header Graphite",
+        "canonical": "oklch(23.9% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "rule-grey": {
+        "role": "neutral",
+        "displayName": "Rule Grey",
+        "canonical": "oklch(25.2% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "mark-grey": {
+        "role": "neutral",
+        "displayName": "Mark Grey",
+        "canonical": "oklch(26.9% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "frame-grey": {
+        "role": "neutral",
+        "displayName": "Frame Grey",
+        "canonical": "oklch(28.5% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "edge-grey": {
+        "role": "neutral",
+        "displayName": "Edge Grey",
+        "canonical": "oklch(34.8% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Text Muted",
+        "canonical": "oklch(68.6% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Text Secondary",
+        "canonical": "oklch(75.7% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "text-bright": {
+        "role": "neutral",
+        "displayName": "Text Bright",
+        "canonical": "oklch(94.6% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "text-white": {
+        "role": "neutral",
+        "displayName": "Text White",
+        "canonical": "oklch(100.0% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      }
+    },
+    "schemeTokens": [
+      {
+        "name": "--pa-line",
+        "value": "color-mix(in srgb, var(--md-default-fg-color) 13%, transparent)",
+        "purpose": "Rule colour below the stage; follows Material's light/dark scheme."
+      },
+      {
+        "name": "--pa-muted",
+        "value": "var(--md-default-fg-color--light)",
+        "purpose": "Muted text below the stage; #b0b0b0 in the dark scheme."
+      }
+    ],
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The single page headline on the stage; its middle clause in green."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Section headings below the stage."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "The three act titles, which are buttons."
+      },
+      "title-sm": {
+        "displayName": "Title Small",
+        "purpose": "Sub-headings inside a section."
+      },
+      "lede": {
+        "displayName": "Lede",
+        "purpose": "The one line under the headline."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Material prose size; section intros, max 40em."
+      },
+      "body-sm": {
+        "displayName": "Body Small",
+        "purpose": "Act descriptions, ruled-list definitions, proof lines."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Mono labels: engine switcher, pane tabs, file captions, table headers."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "Code figures and the terminal; ligatures off."
+      },
+      "button": {
+        "displayName": "Button",
+        "purpose": "Primary and quiet button labels."
+      }
+    },
+    "shadows": [
+      {
+        "name": "tab-underline",
+        "value": "inset 0 -2px 0 #3ecf8e",
+        "purpose": "The active pane tab's underline. A rule, not elevation."
+      },
+      {
+        "name": "dot-halo",
+        "value": "0 0 0 2px var(--md-default-bg-color)",
+        "purpose": "Ring in the page ground around strip-plot dots so overlaps stay separate."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out-expo",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "The page's easing for the rail fill, act markers, step check and tab underline."
+      },
+      {
+        "name": "rail-fill",
+        "value": "height 700ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "The green fill travelling down the act rail to the lit act; the one authored motion."
+      },
+      {
+        "name": "act-mark",
+        "value": "background-color 500ms cubic-bezier(0.16, 1, 0.3, 1) 200ms",
+        "purpose": "Markers turn green just after the rail fill starts."
+      },
+      {
+        "name": "state-quick",
+        "value": "160ms",
+        "purpose": "Hover colour and border changes on buttons, steps, tabs and act titles."
+      },
+      {
+        "name": "state-settle",
+        "value": "300ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Step check fade-in and active tab underline."
+      },
+      {
+        "name": "status-pulse",
+        "value": "1.1s ease-in-out infinite, opacity to 0.3",
+        "purpose": "Status dot while the demo boots."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "transition: none; animation: none",
+        "purpose": "All of the above stop under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "stack",
+        "value": "960px",
+        "purpose": "60em: one column; demo frame unpinned under the acts."
+      },
+      {
+        "name": "phone",
+        "value": "640px",
+        "purpose": "40em: pane tabs share width without key hints; terminal at 10px."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one solid action: boot the demo, get started.",
+      "html": "<button class=\"ds-btn-primary\"><svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M4 2.5v11l9-5.5z\"/></svg>Boot the live demo</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; gap: 9px; padding: 12.4px 21px; border: 1px solid #3ecf8e; border-radius: 8px; background: #3ecf8e; color: #0c2e1e; font: 600 14.4px/1 Inter, system-ui, sans-serif; cursor: pointer; transition: background-color 160ms, border-color 160ms; } .ds-btn-primary svg { width: 16px; height: 16px; fill: currentColor; } .ds-btn-primary:hover { background: #4ae29e; border-color: #4ae29e; } .ds-btn-primary:focus-visible { outline: 2px solid #3ecf8e; outline-offset: 2px; }"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "Outline companion to the primary, on the dark stage.",
+      "html": "<div style=\"background:#141414;padding:16px\"><a class=\"ds-btn-quiet\" href=\"#\">How it works with no backend</a></div>",
+      "css": ".ds-btn-quiet { display: inline-flex; align-items: center; padding: 12.4px 21px; border: 1px solid #3a3a3a; border-radius: 8px; background: transparent; color: #ededed; font: 600 14.4px/1 Inter, system-ui, sans-serif; text-decoration: none; transition: border-color 160ms, color 160ms; } .ds-btn-quiet:hover { color: #fff; border-color: #3ecf8e; } .ds-btn-quiet:focus-visible { outline: 2px solid #3ecf8e; outline-offset: 2px; }"
+    },
+    {
+      "name": "Engine Switcher",
+      "kind": "nav",
+      "refersTo": "engine-switch",
+      "description": "Segmented mono control in the demo frame's bar.",
+      "html": "<div style=\"background:#0f0f0f;padding:12px\"><div class=\"ds-engines\" role=\"group\" aria-label=\"Engine\"><button aria-pressed=\"true\">OpenFGA</button><button aria-pressed=\"false\">SpiceDB</button><button aria-pressed=\"false\">Cerbos</button></div></div>",
+      "css": ".ds-engines { display: inline-flex; padding: 2.4px; border: 1px solid #2e2e2e; border-radius: 8px; background: #151515; } .ds-engines button { padding: 6px 12px; border: 0; border-radius: 5.6px; background: none; color: #a8a8a8; font: 600 11.6px/1 'JetBrains Mono', ui-monospace, Menlo, monospace; cursor: pointer; transition: background-color 160ms, color 160ms; } .ds-engines button:hover { color: #fff; } .ds-engines button[aria-pressed=\"true\"] { background: #262626; color: #3ecf8e; } .ds-engines button:focus-visible { outline: 2px solid #3ecf8e; outline-offset: 2px; }"
+    },
+    {
+      "name": "Command Strip Step",
+      "kind": "custom",
+      "refersTo": "step",
+      "description": "Signature: a step of the lit act; clicking types its statement into a pane.",
+      "html": "<div style=\"background:#121212;padding:9px;display:grid;gap:6px;max-width:420px\"><button class=\"ds-step\"><span class=\"ds-who\">bob</span><code>select * from documents;</code><em>in no org yet: nothing</em></button><button class=\"ds-step is-done\"><span class=\"ds-who\">anne</span><code>insert into memberships values (1, 'bob', 'member');</code><em>a row, delivered to the engine</em></button></div>",
+      "css": ".ds-step { display: grid; grid-template-columns: auto minmax(0, 1fr) 14px; grid-template-areas: 'who code done' 'who note done'; column-gap: 10px; row-gap: 3px; align-items: center; text-align: left; padding: 8px 10px; background: #1a1a1a; border: 1px solid #262626; border-radius: 7px; color: #ededed; font: inherit; cursor: pointer; transition: border-color 160ms, background-color 160ms; } .ds-step:hover { border-color: #3ecf8e80; background: #1d1d1d; } .ds-step:focus-visible { outline: 2px solid #3ecf8e; outline-offset: 2px; } .ds-who { grid-area: who; align-self: start; min-width: 52px; padding: 3px 6px; border: 1px solid #3a3a3a; border-radius: 5px; font: 600 10px/1.2 'JetBrains Mono', ui-monospace, monospace; text-align: center; color: #c8c8c8; } .ds-step code { grid-area: code; font: 11.2px/1.45 'JetBrains Mono', ui-monospace, monospace; font-variant-ligatures: none; color: #d7f5e6; overflow-wrap: anywhere; } .ds-step em { grid-area: note; font: normal 11.2px Inter, system-ui, sans-serif; color: #9a9a9a; } .ds-step::after { content: ''; grid-area: done; width: 14px; height: 14px; background: #3ecf8e; -webkit-mask: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8.5l3.2 3.2L13 5' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\") center / contain no-repeat; mask: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8.5l3.2 3.2L13 5' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\") center / contain no-repeat; opacity: 0; transition: opacity 300ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-step.is-done::after { opacity: 1; } .ds-step.is-done .ds-who { border-color: #3ecf8e80; color: #3ecf8e; }"
+    },
+    {
+      "name": "Pane Tabs",
+      "kind": "nav",
+      "refersTo": "pane-tab",
+      "description": "Mono tab row over the terminal; the active pane carries a green inset underline.",
+      "html": "<div class=\"ds-panes\"><button class=\"ds-pane is-on\">admin<kbd>alt 1</kbd></button><button class=\"ds-pane\">anne<kbd>alt 2</kbd></button><button class=\"ds-pane\">bob<kbd>alt 3</kbd></button><button class=\"ds-pane\">sidecar log<kbd>alt 4</kbd></button></div>",
+      "css": ".ds-panes { display: flex; background: #0f0f0f; border-bottom: 1px solid #222; overflow-x: auto; } .ds-pane { display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; border: 0; border-right: 1px solid #222; background: none; color: #9a9a9a; font: 600 11.2px/1 'JetBrains Mono', ui-monospace, monospace; white-space: nowrap; cursor: pointer; box-shadow: inset 0 -2px 0 transparent; transition: color 160ms, box-shadow 300ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-pane:hover { color: #ededed; } .ds-pane kbd { font: 10px/1 'JetBrains Mono', ui-monospace, monospace; color: #7a7a7a; } .ds-pane.is-on { color: #ededed; background: #151515; box-shadow: inset 0 -2px 0 #3ecf8e; } .ds-pane:focus-visible { outline: 2px solid #3ecf8e; outline-offset: -2px; }"
+    },
+    {
+      "name": "Act Rail",
+      "kind": "custom",
+      "refersTo": "act-mark",
+      "description": "Signature: the three acts on a rail; green fills down to the lit act.",
+      "html": "<div style=\"background:#141414;padding:16px;max-width:520px\"><ol class=\"ds-acts\" style=\"--fill: 130px\"><li class=\"ds-act\"><span class=\"ds-mark\">I</span><button class=\"ds-pick\">Write the model once. Protect a table in one line.</button><p>One call points documents at the engine's model.</p></li><li class=\"ds-act is-on\"><span class=\"ds-mark\">II</span><button class=\"ds-pick\">Share by writing a row.</button><p>A membership is a row your app inserts.</p></li><li class=\"ds-act\"><span class=\"ds-mark\">III</span><button class=\"ds-pick\">Ask why a row is hidden.</button><p>authz.why names the missing permission.</p></li></ol></div>",
+      "css": ".ds-acts { list-style: none; margin: 0; padding: 0 0 0 40px; position: relative; } .ds-acts::before, .ds-acts::after { content: ''; position: absolute; left: 12px; top: 12px; width: 2px; } .ds-acts::before { bottom: 12px; background: #2a2a2a; } .ds-acts::after { height: calc(var(--fill) - 12px); background: #3ecf8e; transition: height 700ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-act { position: relative; padding-bottom: 24px; } .ds-act:last-child { padding-bottom: 0; } .ds-mark { position: absolute; left: -40px; top: 1px; width: 25px; height: 25px; display: grid; place-items: center; border-radius: 50%; background: #262626; color: #9a9a9a; font: 600 10px/1 'JetBrains Mono', ui-monospace, monospace; z-index: 1; transition: background-color 500ms cubic-bezier(0.16, 1, 0.3, 1) 200ms, color 500ms cubic-bezier(0.16, 1, 0.3, 1) 200ms; } .ds-act.is-on .ds-mark, .ds-act:has(~ .ds-act.is-on) .ds-mark { background: #3ecf8e; color: #0c2e1e; } .ds-pick { padding: 0; border: 0; background: none; color: #cfcfcf; font: 700 20px/1.25 Inter, system-ui, sans-serif; letter-spacing: -0.02em; text-align: left; cursor: pointer; transition: color 160ms; } .ds-pick:hover, .ds-act.is-on .ds-pick { color: #fff; } .ds-pick:focus-visible { outline: 2px solid #3ecf8e; outline-offset: 2px; } .ds-act p { font: 13.6px/1.55 Inter, system-ui, sans-serif; color: #a3a3a3; margin: 6px 0 0; }"
+    },
+    {
+      "name": "Demo Status",
+      "kind": "chip",
+      "refersTo": "demo-frame",
+      "description": "Mono status with a dot: grey at rest, pulsing green while booting, green when running, coral on failure.",
+      "html": "<div style=\"background:#0f0f0f;padding:12px;display:grid;gap:8px\"><em class=\"ds-status\">not started</em><em class=\"ds-status is-loading\">booting</em><em class=\"ds-status is-ready\">running in this tab</em><em class=\"ds-status is-error\">failed: out of memory</em></div>",
+      "css": ".ds-status { display: inline-flex; align-items: center; gap: 7px; font: normal 11.2px 'JetBrains Mono', ui-monospace, monospace; color: #9a9a9a; } .ds-status::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #4a4a4a; } .ds-status.is-loading { color: #d0d0d0; } .ds-status.is-loading::before { background: #3ecf8e; animation: ds-pulse 1.1s ease-in-out infinite; } .ds-status.is-ready { color: #3ecf8e; } .ds-status.is-ready::before { background: #3ecf8e; } .ds-status.is-error { color: #f0777b; } .ds-status.is-error::before { background: #f0777b; } @keyframes ds-pulse { 50% { opacity: 0.3; } } @media (prefers-reduced-motion: reduce) { .ds-status::before { animation: none !important; } }"
+    },
+    {
+      "name": "File Figure",
+      "kind": "card",
+      "refersTo": "file-figure",
+      "description": "Code shown as a file: caption row with a muted note, then the code. The one-line answer gets a green edge.",
+      "html": "<div style=\"background:#141414;padding:16px;display:grid;gap:16px;max-width:520px\"><figure class=\"ds-file\"><figcaption>The model, once <span>OpenFGA</span></figcaption><pre><code>type document\n  relations\n    define <b>viewer</b>: shared_with or can_read from org</code></pre></figure><figure class=\"ds-file ds-file--one\"><figcaption>documents.sql <span>one line</span></figcaption><pre><code>select authz.protect('documents',\n  read => 'viewer', write => 'editor');</code></pre></figure></div>",
+      "css": ".ds-file { margin: 0; border: 1px solid rgba(237, 237, 237, 0.13); border-radius: 12px; overflow: hidden; background: #0f0f0f; } .ds-file figcaption { display: flex; justify-content: space-between; gap: 20px; padding: 10px 16px; border-bottom: 1px solid rgba(237, 237, 237, 0.13); font: 600 11.6px 'JetBrains Mono', ui-monospace, monospace; color: #ededed; } .ds-file figcaption span { font-weight: 400; color: #b0b0b0; } .ds-file--one { border-color: #3ecf8e80; } .ds-file--one figcaption span { color: #3ecf8e; } .ds-file pre { margin: 0; padding: 16px 18px; } .ds-file code { font: 12px/1.65 'JetBrains Mono', ui-monospace, monospace; font-variant-ligatures: none; color: #ededed; } .ds-file b { color: #3ecf8e; }"
+    },
+    {
+      "name": "Ruled List",
+      "kind": "custom",
+      "refersTo": "body-sm",
+      "description": "Supporting points as rule-topped items in two columns, never cards.",
+      "html": "<dl class=\"ds-ruled\"><div><dt>A view that leaks</dt><dd>Policies are forced on the table's owner, and the subject comes from the request.</dd></div><div><dt>An engine that is down</dt><dd>The statement fails. Rows are never shown because nobody could answer.</dd></div></dl>",
+      "css": ".ds-ruled { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 48px; margin: 0; background: #141414; color: #ededed; padding: 16px; font-family: Inter, system-ui, sans-serif; } .ds-ruled > div { padding-block: 16px; border-top: 1px solid rgba(237, 237, 237, 0.13); } .ds-ruled dt { font-weight: 700; font-size: 16px; margin: 0 0 4px; } .ds-ruled dd { margin: 0; color: #b0b0b0; font-size: 14.4px; line-height: 1.55; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Working Terminal",
+    "overview": "The site is a dark console with the product running inside it. The first thing on the page is a live demo frame (psql panes for admin, anne and bob, plus the sidecar log), and everything around it is set like documentation for that console: plain Inter prose, JetBrains Mono for anything a database or a person types, thin rules between things, and one green that means \"on\". Nothing is decorated. Depth comes from a ladder of near-black greys and 1px frames, not from shadows or gradients.\n\nThe stage (the hero story column and the demo frame) is always dark (#141414 ground, #0f0f0f panes), in both colour schemes, because it is the brand surface and a terminal. The sections below it follow Material's scheme: in the dark scheme they stand on the same ink, in the light scheme they take Material's white with the same green. Below the stage, content is laid out as ruled lists, file-like code figures and a plain table; there are no cards with icons and no feature grid.\n\nThe density is that of a well-set README: short sections, generous vertical space between them (72px), and tight, functional spacing inside the console (6 to 12px).",
+    "keyCharacteristics": [
+      "Dark ink stage with a pinned, framed terminal as the hero.",
+      "One accent, Supabase green, used for everything that is lit, pressed, done or ready.",
+      "Inter for prose, JetBrains Mono for SQL, terminals, file names and controls inside the console.",
+      "Depth by stepped near-blacks and 1px frames; no shadows, no gradients.",
+      "Ruled lists and file figures below the stage, never icon cards.",
+      "Motion is the rail fill and terminal typing; everything else is a short state change."
+    ],
+    "rules": [
+      {
+        "name": "The One Green Rule",
+        "body": "Supabase green is the only accent and the only positive state colour: lit, pressed, done, ready, selected and focused are all green. If something new needs to look \"on\", it is green; if it does not mean \"on\", it is grey.",
+        "section": "colors"
+      },
+      {
+        "name": "The Coral Is Failure Rule",
+        "body": "The single non-green hue is Failure Coral, and it appears only when something failed. It is never decoration and never a second accent.",
+        "section": "colors"
+      },
+      {
+        "name": "The Machine Speaks Mono Rule",
+        "body": "Anything a person types or a system prints (SQL, terminal output, pane and engine names, file names, scenario names in tooltips, axis labels) is JetBrains Mono with ligatures off. Anything that explains is Inter.",
+        "section": "typography"
+      },
+      {
+        "name": "The One Headline Rule",
+        "body": "Display size appears once, on the stage. Section headings stop at 27px.",
+        "section": "typography"
+      },
+      {
+        "name": "The Frame Not Float Rule",
+        "body": "A surface is separated by a 1px line and a step on the grey ladder, never by a shadow. If two surfaces need more separation, move one a step on the ladder.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep the stage on Stage Ink (#141414) with Pane Black (#0f0f0f) panes in both colour schemes.",
+      "Do use Supabase Green (#3ecf8e) for every lit, pressed, done, ready and focused state, and Deep Moss Ink (#0c2e1e) for anything written on it.",
+      "Do separate surfaces with 1px lines (Rule Grey #222 inside the frame, Frame Grey #2a2a2a around it, the 13% scheme rule below the stage) and steps on the grey ladder.",
+      "Do set SQL, terminal output, pane names, engine names and file captions in JetBrains Mono with ligatures off.",
+      "Do present code as a file: a caption row naming the file and a muted note, then the code, in a 12px-radius figure.",
+      "Do lay out supporting points as ruled lists or a plain table under a 27px headline.",
+      "Do limit authored motion to the rail fill (700ms, `cubic-bezier(0.16, 1, 0.3, 1)`) and terminal typing; other state changes are 160 to 300ms colour or opacity transitions, and all of it stops under `prefers-reduced-motion`."
+    ],
+    "donts": [
+      "Don't use gradients or drop shadows for depth.",
+      "Don't add a second accent hue; Failure Coral (#f0777b) is for failure only.",
+      "Don't put features in a grid of cards or icon tiles; use ruled lists, file figures or a table.",
+      "Don't split the hero into a headline over a feature grid; the stage is the story column beside the working demo frame.",
+      "Don't lay anything over the demo recording or terminal; controls go in the bar, the strip, the tabs or the boot bar around it.",
+      "Don't make scrolling type or run anything; a statement runs only when someone clicks a step or types."
+    ]
+  }
+}

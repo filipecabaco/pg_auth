@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0}
+body{width:1440px;height:900px;overflow:hidden;background:#141414;color:#ededed;font-family:Inter,sans-serif}
+nav{display:flex;align-items:center;gap:28px;padding:20px 72px;border-bottom:1px solid #262626;font-size:14px;color:#a3a3a3}
+nav b{color:#fff;font-size:17px;margin-right:auto}nav b i{color:#3ecf8e;font-style:normal}
+.tag{font:600 11px/1 "JetBrains Mono";letter-spacing:.08em;text-transform:uppercase;color:#3ecf8e;border:1px solid #3ecf8e55;padding:6px 9px;border-radius:4px}
+main{display:grid;grid-template-columns:560px 1fr;gap:56px;padding:44px 72px 0}
+h1{font-size:50px;line-height:1.03;font-weight:800;letter-spacing:-.04em;color:#fff;margin:18px 0 16px}
+h1 em{font-style:normal;color:#3ecf8e}
+.lede{font-size:17px;line-height:1.6;color:#b0b0b0;margin-bottom:26px}
+.acts{border-left:2px solid #2a2a2a;padding-left:22px;display:flex;flex-direction:column;gap:22px}
+.a{position:relative}
+.a:before{content:"";position:absolute;left:-29px;top:6px;width:12px;height:12px;border-radius:50%;background:#2a2a2a}
+.a.on:before{background:#3ecf8e;box-shadow:0 0 0 5px #3ecf8e22}
+.a small{font:600 11px "JetBrains Mono";color:#3ecf8e;letter-spacing:.1em;text-transform:uppercase}
+.a h3{font-size:22px;font-weight:700;color:#fff;margin:4px 0 6px;letter-spacing:-.02em}
+.a p{font-size:15px;line-height:1.55;color:#9c9c9c}
+.a.off h3,.a.off p{color:#858585}
+.frame{background:#0f0f0f;border:1px solid #2a2a2a;border-radius:12px;overflow:hidden;height:700px;display:flex;flex-direction:column}
+.bar{display:flex;gap:6px;padding:12px 14px;border-bottom:1px solid #222;align-items:center;font:12px "JetBrains Mono";color:#969696}
+.bar i{width:10px;height:10px;border-radius:50%;background:#333}.bar span{margin-left:12px}
+.bar em{margin-left:auto;font-style:normal;color:#3ecf8e}
+.tabs{display:flex;border-bottom:1px solid #222;font:600 12px "JetBrains Mono"}
+.tabs div{padding:10px 16px;color:#8f8f8f;border-right:1px solid #222}.tabs .on{color:#ededed;background:#171717}
+.code{padding:20px 22px;font:14px/1.75 "JetBrains Mono";color:#cfcfcf;white-space:pre;flex:1}
+.k{color:#3ecf8e}.c{color:#8f8f8f}
+.out{border-top:1px solid #222;padding:16px 22px;font:13px/1.7 "JetBrains Mono";color:#9a9a9a;white-space:pre;background:#121212}
+.btns{display:flex;gap:12px;margin-top:26px}
+.btn{font:600 15px Inter;padding:13px 19px;border-radius:7px;border:1px solid #333}
+.btn.p{background:#3ecf8e;color:#0c2e1e;border-color:#3ecf8e}
+</style></head><body>
+<nav><b>pg<i>_</i>auth</b><span>Guide</span><span>Docs</span><span>GitHub</span><span class="tag">experimental</span></nav>
+<main>
+<section>
+<h1>Your app's permissions, <em>enforced by Postgres.</em> No backend.</h1>
+<p class="lede">Follow one app, a team document editor, from model to grant to "why can't I see it?", running live beside you.</p>
+<div class="acts">
+<div class="a on"><small>Act I · protect</small><h3>Write the model once. Protect a table in one line.</h3><p>OpenFGA, SpiceDB or Cerbos decide; every client sees only what they allow.</p></div>
+<div class="a off"><small>Act II · grant</small><h3>Share by inserting a row.</h3><p>A membership or a share is a row your app writes through PostgREST. Bob sees it 25 ms later.</p></div>
+<div class="a off"><small>Act III · explain</small><h3>Ask why a row is hidden.</h3><p>authz.why names the subject, the policy and the missing permission.</p></div>
+</div>
+<div class="btns"><span class="btn p">▶ Boot the live demo</span><span class="btn">No-backend guide</span></div>
+</section>
+<section class="frame">
+<div class="bar"><i></i><i></i><i></i><span>postgres · pg_auth · sidecar · openfga — in this tab</span><em>● running</em></div>
+<div class="tabs"><div class="on">psql · admin</div><div>psql · anne</div><div>psql · bob</div><div>sidecar</div></div>
+<div class="code"><span class="c">-- Act I: what a document is, and who may read and edit it</span>
+<span class="k">select</span> authz.protect(<span class="k">'documents'</span>,
+  type  => 'document',
+  id    => 'id',
+  read  => 'viewer',
+  write => 'editor');
+
+<span class="c">-- every client now reads through it</span>
+<span class="k">select</span> * <span class="k">from</span> authz.doctor() <span class="k">where</span> status <> 'ok';</div>
+<div class="out">NOTICE:  documents protected as document#viewer (write: editor)
+ check_name | status | detail
+------------+--------+--------
+(0 rows)        ← nothing to fix</div>
+</section>
+</main>
+</body></html>

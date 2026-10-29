@@ -1,0 +1,11 @@
+\set QUIET 1
+\pset pager off
+\pset null '∅'
+\pset format wrapped
+\set PROMPT1 '%n@%/%R%# '
+\set PROMPT2 '%n@%/%R%# '
+-- the demo's panes train their own session before the snapshot (train/*.sql)
+\if :{?train}
+\i :train
+\endif
+\unset QUIET

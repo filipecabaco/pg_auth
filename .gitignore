@@ -18,3 +18,11 @@ site/
 
 # brand font, downloaded to outline text (scripts/brand/logo.exs)
 scripts/brand/inter.ttf
+
+# the in-browser demo, built by `mise run demo` (docker/demo, via snowglobe)
+docs/demo/
+
+# impeccable: per-machine state and review captures (the surface brief, config and design.json are kept)
+.impeccable/hook.cache.json
+.impeccable/config.local.json
+.impeccable/review/

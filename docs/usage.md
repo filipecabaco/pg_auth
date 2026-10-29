@@ -124,6 +124,9 @@ select authz.protect('app.memberships', type => 'org', id => 'org_id', read => '
 select * from authz.doctor();         -- the setup checked, with the statement that fixes each problem
 select * from authz.why('app.documents', '42', as_subject => 'user:anne', as_role => 'authenticated');
 --  whether and why that row is visible: subject, row level security, privilege, each policy, verdict
+select * from authz.why('app.documents', '42', as_subject => 'user:anne', subject_roles => array['editor']);
+--  the same for an engine that decides on roles (Cerbos): the roles anne's token would carry.
+--  A policy the engine cannot decide shows as a failed step with the engine's error
 set local pg_auth.as_subject = 'user:anne';   -- see the data as anne does (superuser only)
 select * from authz.explain('select * from app.documents order by created_at limit 20');
 --  per protected table: mode (listed ids / batched check / ...), the reason, and advice

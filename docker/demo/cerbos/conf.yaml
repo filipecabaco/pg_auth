@@ -1,0 +1,10 @@
+server:
+  httpListenAddr: "127.0.0.1:3592"
+  grpcListenAddr: "127.0.0.1:3593"
+storage:
+  driver: disk
+  disk:
+    directory: /etc/demo/cerbos/policies
+    watchForChanges: false
+telemetry:
+  disabled: true

@@ -95,3 +95,33 @@ period, every query plans slower until the CPU caches are warm again. For whole-
 ```sh
 hyperfine --warmup 3 'psql -XAtc "select count(*) from app.documents" app'
 ```
+
+## The in-browser demo
+
+The home page boots a demo in the visitor's tab: Postgres 18 with pg_auth, and OpenFGA, SpiceDB
+and Cerbos each with its sidecar, on an emulated arm64 machine built by
+[snowglobe](https://github.com/filipecabaco/snowglobe). `mise run demo` builds it into
+`docs/demo/` (gitignored); the docs workflow builds it on an arm64 runner.
+
+- `docker/alpine/Dockerfile` builds the extension and the sidecar for Alpine (musl), which is the
+  only distro snowglobe boots: `pg_auth:alpine-arm64`.
+- `docker/demo/` adds the engines (static Go binaries copied from their images, data in memory),
+  a database per engine (`openfga`, `spicedb`, `cerbos`, each `pg_auth.sidecar_socket` pointing at
+  its sidecar), and tmux with four panes: admin (a superuser), anne and bob (login roles whose
+  `request.jwt.claims` are set as PostgREST would), and the sidecars' request log
+  (`REQUEST_LOG=1`).
+- Before the snapshot, every pane runs the demo's own statements in a rolled-back transaction
+  (`docker/demo/train/`), and `start.sh` does the same for each engine, so a visitor's first clicks
+  find warm code, catalogs, caches and connections: snowglobe drops the page cache at the snapshot
+  and warms only what was read while booting.
+- `docs/javascripts/demo.js` restores the snapshot and types each step into its pane (alt-1 to
+  alt-4 switch panes); the engine switcher reconnects the three psql panes to that engine's
+  database.
+
+To try a change to the demo without the browser, run the image and drive tmux:
+
+```sh
+docker build --platform linux/arm64 -t pg_auth-demo docker/demo
+docker run -d -t --name demo --network none pg_auth-demo
+docker exec demo tmux capture-pane -p -t demo:0.3   # the sidecar log pane
+```

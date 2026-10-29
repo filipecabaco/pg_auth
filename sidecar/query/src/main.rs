@@ -76,6 +76,8 @@ struct State {
     /// lists and plans being refreshed ahead of their expiry
     refreshing: Mutex<HashSet<Refresh>>,
     checks: Checks,
+    /// print one line per request (REQUEST_LOG=1): what Postgres asked and what it was told
+    log: bool,
 }
 
 /// What a background refresh asks the engine again.
@@ -254,6 +256,7 @@ async fn run() -> Result<(), String> {
         plans: Cache::new(ttl),
         refreshing: Mutex::new(HashSet::new()),
         checks: Checks::default(),
+        log: env("REQUEST_LOG").is_some_and(|v| v != "0"),
     });
     if !state.ttl.is_zero() && !state.active.is_zero() {
         tokio::spawn(refresher(state.clone()));
@@ -303,10 +306,17 @@ async fn serve(stream: UnixStream, state: Arc<State>) {
     let mut lines = BufReader::new(read).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let mut engine = Duration::ZERO;
+        let mut asked = None;
         let response = match protocol::parse(&line) {
-            Ok(request) => answer(&state, request, &mut engine).await,
+            Ok(request) => {
+                asked = (state.log && request != Request::Ping).then(|| asked_line(&request));
+                answer(&state, request, &mut engine).await
+            }
             Err(e) => Response::Error { error: e },
         };
+        if let Some(asked) = asked {
+            eprintln!("{asked} → {}", told_line(&response, state.engine.name(), engine));
+        }
         if write.write_all(protocol::encode(&response, engine).as_bytes()).await.is_err() {
             return;
         }
@@ -462,6 +472,83 @@ async fn refresher(state: Arc<State>) {
     }
 }
 
+/// What Postgres asked, for the request log: `list  user:bob document#viewer`.
+fn asked_line(request: &Request) -> String {
+    match request {
+        Request::Ping => "ping".into(),
+        Request::List { subject, permission, object_type } => format!("list   {subject} {object_type}#{permission}"),
+        Request::Check { subject, permission, object_type, ids, .. } => {
+            format!("check  {subject} {object_type}#{permission} [{}]", ids.join(", "))
+        }
+        Request::Plan { subject, permission, object_type, .. } => format!("plan   {subject} {object_type}#{permission}"),
+        Request::Fill { subject, permission, object_type, .. } => format!("fill   {subject} {object_type}#{permission}"),
+    }
+}
+
+/// What Postgres was told, and whether the engine was asked or the cache answered.
+fn told_line(response: &Response, engine: &str, waited: Duration) -> String {
+    let told = match response {
+        Response::Engine { engine } => engine.clone(),
+        Response::Ids { ids, .. } => format!("[{}]", ids.join(", ")),
+        Response::TooMany { .. } => "too many to list; rows are checked instead".into(),
+        Response::Allowed { allowed } => {
+            let answers: Vec<&str> = allowed.iter().map(|a| if *a { "yes" } else { "no" }).collect();
+            format!("[{}]", answers.join(", "))
+        }
+        Response::Plan { condition: Some(c), .. } => format!("where {}", filter_text(c)),
+        Response::Plan { plan, .. } => (*plan).to_string(),
+        Response::Queued { queued, .. } => format!("queued: {queued}"),
+        Response::Error { error } => return format!("error: {error}"),
+    };
+    if waited.is_zero() { format!("{told}  (cached)") } else { format!("{told}  ({engine} {:.1} ms)", waited.as_secs_f64() * 1000.0) }
+}
+
+/// A plan's condition as the filter it becomes: `owner = 'bob' or status = 'published'`.
+fn filter_text(condition: &serde_json::Value) -> String {
+    let op = condition.get("op").and_then(serde_json::Value::as_str);
+    let args: Vec<&serde_json::Value> =
+        condition.get("args").and_then(serde_json::Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
+    let term = |v: &serde_json::Value| {
+        if let Some(column) = v.get("column").and_then(serde_json::Value::as_str) {
+            column.to_owned()
+        } else if v.get("id").is_some() {
+            "id".to_owned()
+        } else if let Some(value) = v.get("value") {
+            value.as_str().map_or_else(|| value.to_string(), |s| format!("'{s}'"))
+        } else {
+            format!("({})", filter_text(v))
+        }
+    };
+    match (op, args.as_slice()) {
+        (Some(join @ ("and" | "or")), parts) if !parts.is_empty() => parts
+            .iter()
+            .map(|p| {
+                if p.get("op").and_then(serde_json::Value::as_str).is_some_and(|o| matches!(o, "and" | "or") && o != join) {
+                    format!("({})", filter_text(p))
+                } else {
+                    filter_text(p)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(&format!(" {join} ")),
+        (Some("not"), [inner]) => format!("not ({})", filter_text(inner)),
+        (Some(cmp), [left, right]) => {
+            let sign = match cmp {
+                "eq" => "=",
+                "ne" => "<>",
+                "lt" => "<",
+                "le" => "<=",
+                "gt" => ">",
+                "ge" => ">=",
+                "in" => "in",
+                _ => return condition.to_string(),
+            };
+            format!("{} {sign} {}", term(left), term(right))
+        }
+        _ => condition.to_string(),
+    }
+}
+
 fn to_list_response(listed: Listed, valid_ms: Option<u64>) -> Response {
     match listed {
         Listed::Ids(ids) => Response::Ids { ids, valid_ms },
@@ -472,6 +559,29 @@ fn to_list_response(listed: Listed, valid_ms: Option<u64>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_log_names_the_question_the_answer_and_who_gave_it() {
+        let list = protocol::Request::List { subject: "user:bob".into(), permission: "viewer".into(), object_type: "document".into() };
+        let ids = Response::Ids { ids: vec!["1".into(), "2".into()], valid_ms: None };
+        assert_eq!(
+            format!("{} → {}", asked_line(&list), told_line(&ids, "openfga", Duration::from_millis(3))),
+            "list   user:bob document#viewer → [1, 2]  (openfga 3.0 ms)"
+        );
+        let allowed = Response::Allowed { allowed: vec![true, false] };
+        assert_eq!(told_line(&allowed, "spicedb", Duration::ZERO), "[yes, no]  (cached)");
+        assert_eq!(told_line(&Response::Error { error: "down".into() }, "cerbos", Duration::ZERO), "error: down");
+    }
+
+    #[test]
+    fn request_log_shows_a_plan_as_the_filter_it_becomes() {
+        let plan = serde_json::json!({"op": "and", "args": [
+            {"op": "or", "args": [
+                {"op": "eq", "args": [{"column": "owner"}, {"value": "bob"}]},
+                {"op": "eq", "args": [{"column": "status"}, {"value": "published"}]}]},
+            {"op": "not", "args": [{"op": "ge", "args": [{"column": "size"}, {"value": 10}]}]}]});
+        assert_eq!(filter_text(&plan), "(owner = 'bob' or status = 'published') and not (size >= 10)");
+    }
 
     #[test]
     fn active_answers_are_due_for_refresh_and_idle_ones_expire() {
@@ -522,6 +632,7 @@ mod serving {
             plans: Cache::new(ttl),
             refreshing: Mutex::new(HashSet::new()),
             checks: Checks::default(),
+            log: false,
         })
     }
 

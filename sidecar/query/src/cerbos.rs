@@ -93,7 +93,9 @@ fn principal_of(subject: &str, principal: Option<&Value>) -> Result<Value, Strin
     let id = subject.split_once(':').map_or(subject, |(_, id)| id);
     let roles = principal.and_then(|p| p.get("roles")).and_then(Value::as_array).filter(|r| !r.is_empty());
     let Some(roles) = roles else {
-        return Err(format!("cerbos: no roles for {subject} (authz.configure roles_claim, pg_auth.subject_roles)"));
+        return Err(format!(
+            "cerbos: no roles for {subject}: Cerbos decides on roles (the token's roles_claim, pg_auth.subject_roles, or authz.why's subject_roles)"
+        ));
     };
     let attr = principal.and_then(|p| p.get("attr")).filter(|a| a.is_object()).cloned().unwrap_or_else(|| json!({}));
     Ok(json!({"id": id, "roles": roles, "attr": attr}))

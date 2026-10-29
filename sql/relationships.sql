@@ -125,8 +125,7 @@ begin
         relation_column = excluded.relation_column, subject_type = excluded.subject_type,
         subject_column = excluded.subject_column, subject_relation = excluded.subject_relation
     returning * into r;
-    execute format('drop trigger if exists %I on %s', 'pg_auth_relate_' || relate.name, relate.rel);
-    execute format('create trigger %I after insert or update or delete on %s for each row execute function authz.relationship_changed(%L)',
+    execute format('create or replace trigger %I after insert or update or delete on %s for each row execute function authz.relationship_changed(%L)',
                    'pg_auth_relate_' || relate.name, relate.rel, relate.name);
     -- the rows already there
     execute format('insert into authz.outbox (op, object, relation, subject)

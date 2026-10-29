@@ -1,558 +1,1006 @@
-/* Landing page (overrides/home.html). The hero is always dark, it is the
-   brand surface; the sections below follow Material's light/dark scheme. */
+/* Landing page (overrides/home.html): one app in three acts beside a live demo. The stage is
+   always dark, it is the brand surface; the sections below follow Material's light/dark scheme.
+   Material sets html to 125%, so 1rem is 20px here. */
 
 :root {
   --pa-green: #3ecf8e;
   --pa-green-hi: #4ae29e;
-  --pa-green-lo: #249361;
-  --pa-ink: #1f1f1f;
-  --pa-ink-2: #141414;
-  --pa-mono: var(--md-code-font-family, "JetBrains Mono", ui-monospace, monospace);
+  --pa-green-ink: #0c2e1e;
+  --pa-ink: #141414;
+  --pa-pane: #0f0f0f;
+  --pa-frame: #2a2a2a;
+  --pa-error: #f0777b;
+  --pa-mono: var(--md-code-font-family, "JetBrains Mono", ui-monospace, Menlo, monospace);
+  --pa-ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* These follow the colour scheme, which Material sets on <body>. Declared on
-   :root they would resolve against :root's tokens, the light ones, in both. */
+/* These follow the colour scheme, which Material sets on <body>. Declared on :root they would
+   resolve against :root's tokens, the light ones, in both. */
 [data-md-color-scheme] {
-  --pa-line: color-mix(in srgb, var(--md-default-fg-color) 12%, transparent);
+  --pa-line: color-mix(in srgb, var(--md-default-fg-color) 13%, transparent);
   --pa-muted: var(--md-default-fg-color--light);
 }
 
 .pa-wrap {
-  max-width: 61rem;
+  max-width: 76rem;
   margin-inline: auto;
   padding-inline: 1.2rem;
 }
 
-/* ── Hero ─────────────────────────────────────────────────────────────── */
-
-.pa-hero {
-  color: #ededed;
-  background:
-    radial-gradient(60rem 30rem at 15% -10%, #3ecf8e22, transparent 60%),
-    linear-gradient(180deg, var(--pa-ink) 0%, var(--pa-ink-2) 100%);
-  border-bottom: 1px solid #2e2e2e;
-  padding-block: 3.2rem 2rem;
-}
-
-.pa-hero__grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-  gap: 2.4rem;
-  align-items: center;
-}
-
-.pa-eyebrow {
-  font: 600 0.62rem/1 var(--pa-mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--pa-green);
-  margin: 0 0 1rem;
-}
-
-.pa-nowrap {
-  white-space: nowrap;
-}
-
-.pa-hero__title {
-  font-size: clamp(1.9rem, 3.8vw, 2.6rem);
-  line-height: 1.05;
-  font-weight: 800;
-  letter-spacing: -0.035em;
-  margin: 0 0 1rem;
-  color: #fff;
-}
-
-.pa-hero__lede {
-  font-size: 0.86rem;
-  line-height: 1.65;
-  color: #b8b8b8;
-  max-width: 34em;
-  margin: 0 0 1.6rem;
-}
-
-.pa-hero__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-}
-
-.pa-hero__note {
-  font-size: 0.66rem;
-  line-height: 1.6;
-  color: #b0b0b0;
-  max-width: 34em;
-  margin: 1rem 0 0;
-}
-
-.pa-hero__note code {
-  font: 0.95em var(--pa-mono);
-  color: #b8b8b8;
-}
-
-.pa-hero__note a {
-  color: var(--pa-green);
-  text-decoration: none;
-}
-
-.pa-hero__note a:hover {
-  color: var(--pa-green-hi);
-  text-decoration: underline;
-}
+/* ── Buttons ──────────────────────────────────────────────────────────── */
 
 .pa-btn {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
   padding: 0.62rem 1.05rem;
+  border: 1px solid transparent;
   border-radius: 0.4rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  line-height: 1;
+  font: 600 0.72rem/1 var(--md-text-font-family, Inter, system-ui, sans-serif);
   text-decoration: none;
-  transition: background-color 120ms, border-color 120ms, color 120ms;
+  cursor: pointer;
+  transition: background-color 160ms, border-color 160ms, color 160ms;
 }
 
 .pa-btn svg {
-  width: 0.95rem;
-  height: 0.95rem;
+  width: 0.8rem;
+  height: 0.8rem;
   fill: currentColor;
 }
 
 .md-typeset .pa-btn--primary,
 .pa-btn--primary {
   background: var(--pa-green);
-  color: #0d2b1d;
+  border-color: var(--pa-green);
+  color: var(--pa-green-ink);
 }
 
 .md-typeset .pa-btn--primary:hover,
 .pa-btn--primary:hover {
   background: var(--pa-green-hi);
-  color: #0d2b1d;
+  border-color: var(--pa-green-hi);
+  color: var(--pa-green-ink);
 }
 
-.pa-btn--ghost {
+.pa-btn--quiet {
   color: #ededed;
-  border: 1px solid #3a3a3a;
+  border-color: #3a3a3a;
 }
 
-.pa-btn--ghost:hover {
+.pa-btn--quiet:hover {
   color: #fff;
   border-color: var(--pa-green);
 }
 
-/* Terminal */
-
-.pa-term {
-  background: #101010;
-  border: 1px solid #2e2e2e;
-  border-radius: 0.6rem;
-  box-shadow: 0 1.5rem 3rem -1rem #000c, 0 0 0 1px #3ecf8e14;
-  overflow: hidden;
+.pa-home :focus-visible,
+.pa-section :focus-visible {
+  outline: 2px solid var(--pa-green);
+  outline-offset: 2px;
 }
 
-.pa-term__bar {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.55rem 0.75rem;
-  border-bottom: 1px solid #222;
-}
-
-.pa-term__bar span {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: #333;
-}
-
-.pa-term__bar em {
-  margin-left: auto;
-  font: 0.58rem var(--pa-mono);
-  font-style: normal;
-  color: #6a6a6a;
-}
-
-.pa-term__body,
-.pa-code {
-  margin: 0;
-  padding: 0.9rem 1rem 1rem;
-  overflow-x: auto;
-  font: 0.66rem/1.6 var(--pa-mono);
-  font-variant-ligatures: none;
-  color: #e6e6e6;
-  background: transparent;
-}
-
-.pa-term__body code,
-.pa-code code {
-  font: inherit;
-  background: none;
-  padding: 0;
+::selection {
+  background: #3ecf8e55;
   color: inherit;
 }
 
-.pa-term .c, .pa-code .c { color: #6a737d; }
-.pa-term .p { color: var(--pa-green); }
-.pa-term .o, .pa-code .o { color: #9a9a9a; }
+/* In the dark scheme the whole home page stands on the stage's ground, its code on the panes'
+   (the light scheme keeps Material's, for reading in daylight) */
+[data-md-color-scheme="slate"]:has(.pa-home) {
+  --md-default-bg-color: #141414;
+  --md-code-bg-color: #0f0f0f;
+  --md-footer-bg-color: #141414;
+  --md-footer-bg-color--dark: #141414;
+}
 
-/* Stats strip */
+/* ── The stage: story beside the demo ─────────────────────────────────── */
 
-.pa-stats {
+.pa-home {
+  background: var(--pa-ink);
+  color: #ededed;
+  border-bottom: 1px solid #262626;
+  padding-block: 2.2rem 3rem;
+}
+
+.pa-stage {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 2.6rem 0 0;
-  border-top: 1px solid #2e2e2e;
+  grid-template-columns: minmax(0, 26rem) minmax(0, 1fr);
+  gap: 2.6rem;
+  align-items: start;
 }
 
-.pa-stats > div {
-  padding: 1.1rem 0.2rem 0;
-}
-
-.pa-stats dt {
-  font-size: 1.3rem;
+.pa-title {
+  font-size: clamp(1.8rem, 3vw, 2.4rem);
+  line-height: 1.04;
   font-weight: 800;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.035em;
   color: #fff;
-  font-variant-numeric: tabular-nums;
+  margin: 0 0 0.7rem;
+  text-wrap: balance;
 }
 
-.pa-stats dt small {
-  font-size: 0.7em;
-  color: #6a6a6a;
-  font-weight: 600;
+.pa-title em {
+  font-style: normal;
+  color: var(--pa-green);
 }
 
-.pa-stats dd {
-  margin: 0.2rem 0 0;
-  font-size: 0.66rem;
+.pa-lede {
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: #b4b4b4;
+  margin: 0 0 1.1rem;
+  max-width: 34em;
+}
+
+.pa-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 1.8rem;
+}
+
+.pa-home code {
+  font-family: var(--pa-mono);
+  font-variant-ligatures: none;
+  font-size: 0.92em;
+  color: #d7f5e6;
+}
+
+/* The acts: a rail with a marker per act. The green fill travels down the rail to the lit act;
+   it is the page's one authored motion. */
+
+.pa-acts {
+  --fill: 0.6rem;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 2rem;
+  position: relative;
+}
+
+.pa-acts::before,
+.pa-acts::after {
+  content: "";
+  position: absolute;
+  left: 0.6rem;
+  top: 0.6rem;
+  width: 2px;
+}
+
+.pa-acts::before {
+  bottom: 0.6rem;
+  background: var(--pa-frame);
+}
+
+.pa-acts::after {
+  height: calc(var(--fill) - 0.6rem);
+  background: var(--pa-green);
+  transition: height 700ms var(--pa-ease);
+}
+
+.pa-act {
+  position: relative;
+  padding-bottom: 1.2rem;
+}
+
+.pa-act:last-child {
+  padding-bottom: 0;
+}
+
+.pa-act__mark {
+  position: absolute;
+  left: -2rem;
+  top: 0.05rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #262626;
+  color: #9a9a9a;
+  font: 600 0.5rem/1 var(--pa-mono);
+  z-index: 1;
+  transition: background-color 500ms var(--pa-ease) 200ms, color 500ms var(--pa-ease) 200ms;
+}
+
+.pa-act.is-on .pa-act__mark,
+.pa-act:has(~ .pa-act.is-on) .pa-act__mark {
+  background: var(--pa-green);
+  color: var(--pa-green-ink);
+}
+
+.pa-act h2 {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.pa-act__pick {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #cfcfcf;
+  font: 700 1rem/1.25 var(--md-text-font-family, Inter, system-ui, sans-serif);
+  letter-spacing: -0.02em;
+  text-align: left;
+  text-wrap: balance;
+  cursor: pointer;
+  transition: color 160ms;
+}
+
+.pa-act__pick:hover,
+.pa-act.is-on .pa-act__pick {
+  color: #fff;
+}
+
+.pa-act p {
+  font-size: 0.68rem;
+  line-height: 1.55;
+  color: #a3a3a3;
+  margin: 0;
+}
+
+/* OpenFGA and SpiceDB play the relationship steps; Cerbos the attribute ones */
+[data-family="relationships"] [data-for="attributes"],
+[data-family="attributes"] [data-for="relationships"] {
+  display: none !important;
+}
+
+/* ── The demo frame ───────────────────────────────────────────────────── */
+
+.pa-demo {
+  position: sticky;
+  top: 3.4rem;
+  height: min(42rem, calc(100vh - 4.4rem));
+  min-height: 30rem;
+  display: flex;
+  flex-direction: column;
+  background: var(--pa-pane);
+  border: 1px solid var(--pa-frame);
+  border-radius: 0.6rem;
+  overflow: hidden;
+}
+
+.pa-demo__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid #222;
+}
+
+.pa-engines {
+  display: inline-flex;
+  padding: 0.12rem;
+  border: 1px solid #2e2e2e;
+  border-radius: 0.4rem;
+  background: #151515;
+}
+
+.pa-engines button {
+  padding: 0.3rem 0.6rem;
+  border: 0;
+  border-radius: 0.28rem;
+  background: none;
+  color: #a8a8a8;
+  font: 600 0.58rem/1 var(--pa-mono);
+  cursor: pointer;
+  transition: background-color 160ms, color 160ms;
+}
+
+.pa-engines button:hover {
+  color: #fff;
+}
+
+.pa-engines button[aria-pressed="true"] {
+  background: #262626;
+  color: var(--pa-green);
+}
+
+.pa-demo__status {
+  margin-left: auto;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font: 0.56rem var(--pa-mono);
+  font-style: normal;
+  color: #9a9a9a;
+}
+
+.pa-demo__status::before {
+  content: "";
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: #4a4a4a;
+}
+
+[data-state="loading"] .pa-demo__status {
+  color: #d0d0d0;
+}
+
+[data-state="loading"] .pa-demo__status::before {
+  background: var(--pa-green);
+  animation: pa-pulse 1.1s ease-in-out infinite;
+}
+
+[data-state="ready"] .pa-demo__status {
+  color: var(--pa-green);
+}
+
+[data-state="ready"] .pa-demo__status::before {
+  background: var(--pa-green);
+}
+
+[data-state="error"] .pa-demo__status {
+  color: var(--pa-error);
+}
+
+[data-state="error"] .pa-demo__status::before {
+  background: var(--pa-error);
+}
+
+@keyframes pa-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Steps of the lit act, as a command strip above the panes: each types its statement into one */
+
+.pa-demo__steps {
+  padding: 0.45rem;
+  border-bottom: 1px solid #222;
+  background: #121212;
+}
+
+.pa-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.3rem;
+}
+
+.pa-steps > li {
+  display: grid;
+}
+
+.pa-steps[hidden] {
+  display: none;
+}
+
+.pa-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 0.7rem;
+  grid-template-areas: "who code done" "who note done";
+  column-gap: 0.5rem;
+  row-gap: 0.15rem;
+  align-items: center;
+  align-content: start;
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  background: #1a1a1a;
+  border: 1px solid #262626;
+  border-radius: 0.35rem;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 160ms, background-color 160ms;
+}
+
+.pa-step:hover {
+  border-color: #3ecf8e80;
+  background: #1d1d1d;
+}
+
+.pa-who {
+  grid-area: who;
+  align-self: start;
+  justify-self: start;
+  min-width: 2.6rem;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid #3a3a3a;
+  border-radius: 0.25rem;
+  font: 600 0.5rem/1.2 var(--pa-mono);
+  text-align: center;
+  color: #c8c8c8;
+}
+
+.pa-step code {
+  grid-area: code;
+  font-size: 0.56rem;
+  line-height: 1.45;
+  color: #d7f5e6;
+  overflow-wrap: anywhere;
+}
+
+.pa-step em {
+  grid-area: note;
+  font-style: normal;
+  font-size: 0.56rem;
+  color: #9a9a9a;
+}
+
+.pa-step::after {
+  content: "";
+  grid-area: done;
+  width: 0.7rem;
+  height: 0.7rem;
+  background: var(--pa-green);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8.5l3.2 3.2L13 5' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  opacity: 0;
+  transition: opacity 300ms var(--pa-ease);
+}
+
+.pa-step.is-done::after {
+  opacity: 1;
+}
+
+.pa-step.is-done .pa-who {
+  border-color: #3ecf8e80;
+  color: var(--pa-green);
+}
+
+.pa-demo__panes {
+  display: flex;
+  border-bottom: 1px solid #222;
+  overflow-x: auto;
+}
+
+.pa-demo__pane {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  border: 0;
+  border-right: 1px solid #222;
+  background: none;
+  color: #9a9a9a;
+  font: 600 0.56rem/1 var(--pa-mono);
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: inset 0 -2px 0 transparent;
+  transition: color 160ms, box-shadow 300ms var(--pa-ease);
+}
+
+.pa-demo__pane kbd {
+  font: 0.5rem/1 var(--pa-mono);
+  color: #7a7a7a;
+}
+
+.pa-demo__pane.is-on {
+  color: #ededed;
+  background: #151515;
+  box-shadow: inset 0 -2px 0 var(--pa-green);
+}
+
+.pa-demo__screen {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 0.3rem 0.35rem;
+}
+
+.pa-demo__screen .xterm {
+  height: 100%;
+}
+
+.pa-demo__screen .xterm-viewport {
+  scrollbar-color: #3a3a3a transparent;
+}
+
+/* Before boot: Act I as the demo printed it, in the panes' own layout, labelled as a recording */
+
+.pa-demo__poster {
+  position: absolute;
+  inset: 0.35rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 1px;
+  background: #262626;
+  border: 1px solid #262626;
+  overflow: hidden;
+}
+
+.pa-poster__label {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.35rem 0.6rem;
+  background: #151515;
+  font: 0.54rem var(--pa-mono);
+  color: #a3a3a3;
+}
+
+.pa-demo__poster > div {
+  background: var(--pa-pane);
+  padding: 0.4rem 0.6rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pa-demo__poster b {
+  display: block;
+  margin-bottom: 0.3rem;
+  font: 600 0.52rem var(--pa-mono);
   color: #8f8f8f;
 }
 
-/* ── Sections ─────────────────────────────────────────────────────────── */
-
-.md-typeset .pa-section {
-  margin-block: 0 3.4rem;
+.pa-demo__poster pre {
+  margin: 0;
+  font: 0.56rem/1.5 var(--pa-mono);
+  font-variant-ligatures: none;
+  color: #c4c4c4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.md-typeset .pa-section:first-child {
-  margin-top: 1.4rem;
+.pa-poster__admin,
+.pa-poster__log {
+  grid-column: 1 / -1;
+}
+
+.pa-home.is-running .pa-demo__poster,
+.pa-home.is-running .pa-demo__boot {
+  display: none;
+}
+
+/* The boot bar: under the recording, never over it */
+
+.pa-demo__boot {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.55rem 0.7rem;
+  border-top: 1px solid #222;
+}
+
+.pa-demo__boot .pa-btn {
+  flex: none;
+}
+
+.pa-demo__boot p {
+  margin: 0;
+  font-size: 0.58rem;
+  line-height: 1.5;
+  color: #b0b0b0;
+}
+
+[data-state="loading"] [data-boot] {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.pa-demo__note {
+  margin: 0;
+  padding: 0.4rem 0.7rem;
+  border-top: 1px solid #222;
+  font-size: 0.54rem;
+  color: #8f8f8f;
+}
+
+.pa-demo__note a {
+  color: #b0b0b0;
+  text-underline-offset: 0.15em;
+}
+
+/* ── Sections below the stage ─────────────────────────────────────────── */
+
+.pa-section {
+  margin-block: 3.6rem;
 }
 
 .md-typeset .pa-h2 {
-  font-size: 1.25rem;
+  font-size: 1.35rem;
   font-weight: 800;
-  letter-spacing: -0.025em;
-  margin: 0 0 0.35rem;
-  color: var(--md-default-fg-color);
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  margin: 0 0 0.6rem;
+  text-wrap: balance;
 }
 
 .md-typeset .pa-sub {
+  max-width: 40em;
   color: var(--pa-muted);
-  font-size: 0.74rem;
   margin: 0 0 1.4rem;
 }
 
-/* Paths */
-
-.pa-paths {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.8rem;
+.md-typeset .pa-proof {
+  max-width: 46em;
+  font-size: 0.68rem;
+  color: var(--pa-muted);
+  margin-top: 1.2rem;
 }
 
-.md-typeset .pa-path {
+.md-typeset .pa-proof a,
+.md-typeset .pa-strip figcaption a {
+  white-space: nowrap;
+  text-underline-offset: 0.15em;
+}
+
+/* One model instead of policies */
+
+.pa-compare {
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  gap: 0.6rem;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.pa-compare__with {
+  display: grid;
+  gap: 1rem;
+}
+
+/* Material centres figures as a flex column; these are files, read from the left */
+.md-typeset .pa-file {
+  display: block;
+  width: auto;
+  max-width: none;
+  text-align: left;
+  margin: 0;
   border: 1px solid var(--pa-line);
   border-radius: 0.6rem;
-  padding: 1rem 1rem 0.9rem;
-  background: var(--md-default-bg-color--light, transparent);
+  overflow: hidden;
+  background: var(--md-code-bg-color);
 }
 
-.md-typeset .pa-path--accent {
-  border-color: color-mix(in srgb, var(--pa-green) 45%, transparent);
-}
-
-.md-typeset .pa-path header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.md-typeset .pa-path header code {
-  font-size: 0.72rem;
-  font-weight: 600;
-  background: none;
-  padding: 0;
-  color: var(--md-default-fg-color);
-}
-
-.md-typeset .pa-path p {
-  margin: 0;
-  font-size: 0.66rem;
-  color: var(--pa-muted);
-}
-
-.md-typeset .pa-path dl {
-  margin: 0;
-  display: grid;
-  gap: 0.2rem;
-  border-top: 1px dashed var(--pa-line);
-  padding-top: 0.55rem;
-}
-
-.md-typeset .pa-path dl > div {
+.md-typeset .pa-file figcaption {
   display: flex;
   justify-content: space-between;
-  gap: 0.5rem;
-  font-size: 0.6rem;
-}
-
-.md-typeset .pa-path dt {
-  color: var(--pa-muted);
-  font-weight: 400;
-}
-
-.md-typeset .pa-path dd {
+  gap: 1rem;
   margin: 0;
-  font: 600 0.58rem/1.4 var(--pa-mono);
-  text-align: right;
+  max-width: none;
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid var(--pa-line);
+  font: 600 0.58rem var(--pa-mono);
+  color: var(--md-code-fg-color);
+  text-align: left;
 }
 
-.pa-path dd.yes { color: var(--pa-green-lo); }
-.pa-path dd.part { color: #b7791f; }
-[data-md-color-scheme="slate"] .pa-path dd.yes { color: var(--pa-green); }
-[data-md-color-scheme="slate"] .pa-path dd.part { color: #e3b341; }
-
-.pa-tag {
-  font: 600 0.52rem/1 var(--pa-mono);
-  color: var(--pa-green-lo);
-  background: color-mix(in srgb, var(--pa-green) 14%, transparent);
-  padding: 0.22rem 0.35rem;
-  border-radius: 0.25rem;
-}
-
-[data-md-color-scheme="slate"] .pa-tag { color: var(--pa-green); }
-
-.md-typeset .pa-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
-  gap: 2rem;
-  align-items: center;
-  margin-top: 1.6rem;
-}
-
-.md-typeset .pa-split h3 {
-  margin: 0 0 0.4rem;
-  font-size: 0.85rem;
-  font-weight: 700;
-}
-
-.md-typeset .pa-split p,
-.md-typeset .pa-split ul {
-  font-size: 0.72rem;
+.md-typeset .pa-file figcaption span {
+  font-weight: 400;
   color: var(--pa-muted);
 }
 
-.md-typeset .pa-engines .pa-sub {
-  font-size: 0.72rem;
-  margin-bottom: 0.6rem;
+.md-typeset .pa-file--one {
+  border-color: #3ecf8e80;
 }
 
-.md-typeset .pa-engines li {
-  margin-bottom: 0.3rem;
+.md-typeset .pa-file--one figcaption span {
+  color: var(--pa-green);
 }
 
-.pa-code .p { color: var(--pa-green); }
-
-/* Benchmark bars: a ratio per scenario, the line at 1x */
-
-.pa-bench {
-  --c-win: var(--pa-green);
-  --c-loss: #8a8f98;
-  border: 1px solid var(--pa-line);
-  border-radius: 0.6rem;
-  padding: 1rem 1.2rem 1.1rem;
+.md-typeset .pa-file pre,
+.md-typeset .pa-code {
+  margin: 0;
 }
 
-.pa-bench__legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1.1rem;
-  font-size: 0.62rem;
-  color: var(--pa-muted);
-  margin-bottom: 0.9rem;
-}
-
-.pa-bench__legend .k::before {
-  content: "";
-  display: inline-block;
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 2px;
-  margin-right: 0.35rem;
-  vertical-align: -0.05rem;
-  background: var(--c);
-}
-
-.k--win, .b--win { --c: var(--c-win); }
-
-.pa-bench__legend .k--even::before {
-  width: 0;
-  height: 0.7rem;
-  border-radius: 0;
-  border-left: 1px dashed var(--md-default-fg-color--light);
+.md-typeset .pa-file pre > code,
+.md-typeset .pa-code > code {
+  font-variant-ligatures: none;
+  font-size: 0.6rem;
+  line-height: 1.65;
+  padding: 0.8rem 0.9rem;
+  /* clear of Material's copy button */
+  padding-right: 2.1rem;
   background: none;
 }
-.k--loss, .b--loss { --c: var(--c-loss); }
 
-.pa-bench__row {
+.md-typeset .pa-file .c,
+.md-typeset .pa-code .c {
+  color: var(--md-code-hl-comment-color, #8f8f8f);
+}
+
+.md-typeset .pa-file b {
+  color: var(--pa-green);
+}
+
+/* Mistakes you cannot make: a ruled two-column list */
+
+.md-typeset .pa-mistakes dl {
   display: grid;
-  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
-  gap: 0.8rem;
-  align-items: center;
-  padding-block: 0.16rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 2.4rem;
+  margin: 1.2rem 0 0;
 }
 
-.pa-bench__name {
-  font: 500 0.58rem var(--pa-mono);
+.md-typeset .pa-mistakes dl > div {
+  padding-block: 0.8rem;
+  border-top: 1px solid var(--pa-line);
+}
+
+.md-typeset .pa-mistakes dt {
+  font-weight: 700;
+  margin: 0 0 0.2rem;
+}
+
+.md-typeset .pa-mistakes dd {
+  margin: 0;
   color: var(--pa-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 0.72rem;
+  line-height: 1.55;
 }
 
-/* the track runs 0x..2x, its labels in the padding; 1x is the line over the bars */
-.pa-bench__track {
-  position: relative;
-  padding-right: 3rem;
-}
+/* What to expect */
 
-.pa-bench__track::after {
-  content: "";
-  position: absolute;
-  top: -0.16rem;
-  bottom: -0.16rem;
-  left: calc(50% - 1.5rem);
-  border-left: 1px dashed var(--md-default-fg-color--light);
-  opacity: 0.6;
-}
-
-.pa-bench .b {
-  display: flex;
-  align-items: center;
-  height: 0.56rem;
-  width: calc(var(--v) * 100%);
-  min-width: 2px;
-  background: var(--c);
-  border-radius: 0 2px 2px 0;
-  font-style: normal;
-}
-
-.pa-bench .b b {
-  margin-left: calc(100% + 0.35rem);
-  white-space: nowrap;
-  font: 500 0.54rem/1 var(--pa-mono);
-  color: var(--pa-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* Features */
-
-.pa-features {
+.pa-expect__grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0;
-  border-top: 1px solid var(--pa-line);
-  border-left: 1px solid var(--pa-line);
+  gap: 0 2rem;
 }
 
-.md-typeset .pa-features > div {
-  padding: 1rem 1.1rem 0.2rem;
-  border-right: 1px solid var(--pa-line);
+.pa-expect__item {
+  padding-block: 1rem 0.6rem;
+  border-top: 1px solid var(--pa-line);
+}
+
+.pa-expect__item:first-child {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  grid-template-areas: "head strip" "text strip";
+  column-gap: 2.4rem;
+  align-items: start;
+}
+
+.pa-expect__item:first-child h3 {
+  grid-area: head;
+}
+
+.pa-expect__item:first-child p {
+  grid-area: text;
+}
+
+.md-typeset .pa-expect h3 {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.4rem;
+}
+
+.md-typeset .pa-expect p {
+  font-size: 0.7rem;
+  line-height: 1.6;
+  color: var(--pa-muted);
+  margin: 0;
+}
+
+/* The strip: one dot per scenario on a log scale from 0.2x to 2x */
+
+.md-typeset .pa-strip {
+  grid-area: strip;
+  display: block;
+  width: auto;
+  max-width: none;
+  margin: 0.2rem 0 0;
+}
+
+.pa-strip__plot {
+  position: relative;
+  height: 3.4rem;
+  margin-inline: 0.5rem;
   border-bottom: 1px solid var(--pa-line);
 }
 
-.md-typeset .pa-features h3 {
-  margin: 0 0 0.3rem;
-  font-size: 0.78rem;
-  font-weight: 700;
+.pa-strip__plot i,
+.pa-strip__even,
+.pa-strip__axis span {
+  --pos: calc((log(var(--v)) - log(0.2)) / (log(2) - log(0.2)) * 100%);
+  position: absolute;
+  left: var(--pos);
 }
 
-.md-typeset .pa-features p {
-  margin-top: 0;
-  font-size: 0.68rem;
+.pa-strip__even {
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed var(--pa-muted);
+}
+
+.pa-strip__even span {
+  position: absolute;
+  top: -0.2rem;
+  left: 0.3rem;
+  font: 0.52rem var(--pa-mono);
+  color: var(--pa-muted);
+  white-space: nowrap;
+}
+
+/* a hit target larger than the mark */
+.pa-strip__plot i {
+  bottom: calc(0.35rem + var(--row) * 0.75rem);
+  width: 0.9rem;
+  height: 0.9rem;
+  margin-left: -0.45rem;
+  display: grid;
+  place-items: center;
+  outline-offset: 0;
+  border-radius: 50%;
+}
+
+.pa-strip__plot i::before {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--pa-green);
+  box-shadow: 0 0 0 2px var(--md-default-bg-color);
+}
+
+.pa-strip__plot i:hover::before,
+.pa-strip__plot i:focus-visible::before {
+  background: var(--md-default-fg-color);
+}
+
+.pa-strip__plot i:hover::after,
+.pa-strip__plot i:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 1.2rem;
+  left: 50%;
+  translate: -50% 0;
+  padding: 0.3rem 0.45rem;
+  border-radius: 0.3rem;
+  background: var(--md-default-fg-color);
+  color: var(--md-default-bg-color);
+  font: 0.55rem var(--pa-mono);
+  white-space: nowrap;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.pa-strip__axis {
+  position: relative;
+  height: 1rem;
+  margin-inline: 0.5rem;
+}
+
+.pa-strip__axis span {
+  top: 0.25rem;
+  translate: -50% 0;
+  font: 0.52rem var(--pa-mono);
   color: var(--pa-muted);
 }
 
-.md-typeset .pa-proof {
+.md-typeset .pa-strip figcaption {
+  margin: 0.8rem 0 0;
+  font-style: normal;
+  max-width: none;
+  font-size: 0.62rem;
+  color: var(--pa-muted);
+  text-align: left;
+}
+
+/* Engines */
+
+.md-typeset .pa-enginelist table {
+  display: table;
+  width: 100%;
+  border: 0;
   font-size: 0.7rem;
+}
+
+.md-typeset .pa-enginelist th,
+.md-typeset .pa-enginelist td {
+  padding: 0.6rem 0.8rem 0.6rem 0;
+  border-top: 1px solid var(--pa-line);
+  background: none;
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-typeset .pa-enginelist thead th {
+  border-top: 0;
+  font: 600 0.58rem var(--pa-mono);
   color: var(--pa-muted);
-  margin-top: 1rem;
+}
+
+.md-typeset .pa-enginelist tbody tr:hover {
+  box-shadow: none;
+  background: none;
+}
+
+.md-typeset .pa-enginelist tbody th {
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 /* Install */
 
-.md-typeset .pa-install {
+.pa-install {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
-  gap: 2rem;
-  align-items: center;
+  gap: 2.4rem;
+  align-items: start;
 }
 
 .md-typeset .pa-code {
-  background: #101010;
-  border: 1px solid #2e2e2e;
+  border: 1px solid var(--pa-line);
   border-radius: 0.6rem;
-  color: #e6e6e6;
-}
-
-/* Limits */
-
-.md-typeset .pa-limits ul {
-  font-size: 0.72rem;
-  color: var(--pa-muted);
-}
-
-.md-typeset .pa-limits li {
-  margin-bottom: 0.4rem;
-}
-
-/* Material hides the header logo below its drawer breakpoint; with navigation hidden on this
-   page the header would be empty */
-@media (max-width: 76.2344em) {
-  .md-header__button.md-logo {
-    display: inline-block;
-  }
+  background: var(--md-code-bg-color);
 }
 
 /* ── Narrow screens ───────────────────────────────────────────────────── */
 
-@media (max-width: 52em) {
-  .pa-hero__grid,
-  .md-typeset .pa-install,
-  .md-typeset .pa-split {
+@media (max-width: 60em) {
+  .pa-stage {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .pa-features,
-  .pa-paths {
+  /* the frame carries the steps beside their output; the acts read above it */
+  .pa-demo {
+    position: relative;
+    top: 0;
+    height: auto;
+    min-height: 0;
+  }
+
+  .pa-demo__screen {
+    flex: none;
+    height: 24rem;
+  }
+
+  /* before boot the recording sets the height, its panes stacked */
+  .pa-home:not(.is-running) .pa-demo__screen {
+    height: auto;
+  }
+
+  .pa-demo__poster {
+    position: static;
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .pa-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .pa-compare,
+  .pa-install,
+  .pa-expect__item:first-child {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .pa-bench__row {
+  .pa-expect__item:first-child {
+    grid-template-areas: "head" "text" "strip";
+  }
+
+  .pa-expect__grid {
     grid-template-columns: minmax(0, 1fr);
-    gap: 0.15rem;
-    padding-block: 0.3rem;
+  }
+
+  .md-typeset .pa-mistakes dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 40em) {
+  /* alt-N means nothing on a phone: the four tabs fit without it */
+  .pa-demo__pane kbd {
+    display: none;
+  }
+
+  .pa-demo__pane {
+    flex: 1;
+    justify-content: center;
+    padding-inline: 0.4rem;
+  }
+
+  .pa-demo__boot {
+    flex-wrap: wrap;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pa-btn { transition: none; }
+  .pa-home *,
+  .pa-home *::after,
+  .pa-section * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Material wraps tables in an inline-block scroller; this one spans the column */
+.md-typeset .pa-enginelist .md-typeset__scrollwrap,
+.md-typeset .pa-enginelist .md-typeset__table {
+  display: block;
+  margin: 0;
+  padding: 0;
 }

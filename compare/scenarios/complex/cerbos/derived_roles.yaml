@@ -7,7 +7,7 @@ derivedRoles:
       parentRoles: ["user"]
       condition:
         match:
-          expr: request.resource.attr.owner == request.principal.id
+          expr: request.resource.attr.ownerId == request.principal.id
     - name: finance
       parentRoles: ["user"]
       condition:

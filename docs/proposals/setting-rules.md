@@ -155,8 +155,10 @@ teams that want their rules versioned with their schema. In order:
 2. **Grow the primitives** so every shape exists in SQL first, where B compiles to. Done: a `filter`
    and type columns on `relate` (one table, several types), constant ids (`'*'`, singletons),
    allowed relations that fail the write at once, and `on_update` / `on_delete` on `protect`; the
-   GitHub and Drive scenarios in `compare/complex.exs` use them. Still to do: attribute aliases and
-   joined or list attributes for Cerbos.
+   GitHub and Drive scenarios in `compare/complex.exs` use them; and `attribute_map` names a Cerbos
+   attribute otherwise than its column (`ownerId` from `owner`), which the expense scenario uses.
+   Still to do: attributes from a joined table or a list, which would put a subquery inside the
+   filter the planner hook builds after subqueries are planned, so they need their own design.
 3. **Add B**, `authz.setup(jsonb)`: apply a whole mapping in one transaction, validate it, keep it
    formatted with history, and have `authz.setup()` return what is applied.
 4. **Add C**, `authz.set_rules(engine, text)`: store the engine's rules and push them. OpenFGA

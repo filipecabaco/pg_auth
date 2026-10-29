@@ -79,6 +79,8 @@ too. Index the id column, as you would for RLS.
   `role`; `authz.configure(roles_claim => 'app_metadata.roles')`) or, with `subject => 'guc'`,
   from `pg_auth.subject_roles` (comma separated, superuser-only like `pg_auth.subject_id`); its
   attributes are the token's claims. See docs/proposals/cerbos.md.
+  An attribute named otherwise than its column (Cerbos's demos write `ownerId`) takes
+  `attribute_map => '{"ownerId": "owner_id"}'`, alongside or instead of `attributes`.
   **Scoped policies** (a tenant's overrides, `scope:` in the policy) need the request's scope:
   `authz.configure(scope_claim => 'tenant_id')` sends that claim as Cerbos's scope, on the
   principal and the resource (`pg_auth.subject_scope` for a session subject, superuser-only;

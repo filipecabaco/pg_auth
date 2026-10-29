@@ -33,6 +33,9 @@ create table authz.bindings (
     -- for an engine that decides on a resource's attributes (Cerbos): the columns sent as the
     -- row's attributes, by their names; the policy is then authz.permits_resource
     attributes       name[],
+    -- attributes under another name than their column (Cerbos policies in camelCase: ownerId from
+    -- owner_id), as {"name": "column"}
+    attribute_map    jsonb,
     force            boolean not null default true,
     primary key (rel, name),
     check ((insert_object_type is null) = (insert_column is null) and (insert_column is null) = (insert_permission is null))
@@ -100,13 +103,15 @@ begin
         execute format('drop policy %I on %s', pol, p_part);
     end loop;
 
-    -- the row's attributes, for an engine that decides on them
-    if b.attributes is not null then
-        if exists (select 1 from unnest(b.attributes) a where not exists (
-                   select 1 from pg_attribute where attrelid = p_part and attname = a and attnum > 0 and not attisdropped)) then
-            raise exception 'attributes names a column % does not have: %', p_part, b.attributes;
+    -- the row's attributes, for an engine that decides on them: each a column, under its own name or
+    -- the one attribute_map gives it
+    if b.attributes is not null or b.attribute_map is not null then
+        if exists (select 1 from (select unnest(b.attributes) union all select e.value from jsonb_each_text(b.attribute_map) e) c(col)
+                   where not exists (select 1 from pg_attribute where attrelid = p_part and attname = c.col and attnum > 0 and not attisdropped)) then
+            raise exception 'the attributes name a column % does not have: % %', p_part, b.attributes, b.attribute_map;
         end if;
-        attrs := format('jsonb_build_object(%s)', (select string_agg(format('%L, %I', a, a), ', ') from unnest(b.attributes) a));
+        attrs := format('jsonb_build_object(%s)', (select string_agg(format('%L, %I', k, c), ', ') from (
+                   select a, a from unnest(b.attributes) a union all select e.key, e.value from jsonb_each_text(b.attribute_map) e) p(k, c)));
     end if;
 
     -- The engine decides, through the sidecar. The planner hook turns this into an indexable
@@ -160,7 +165,8 @@ create function authz.bind(
     p_insert_permission text default null,
     p_attributes name[] default null,
     p_update_permission text default null,
-    p_delete_permission text default null
+    p_delete_permission text default null,
+    p_attribute_map jsonb default null
 ) returns void
 language plpgsql volatile as $$
 declare
@@ -169,10 +175,12 @@ declare
 begin
     insert into authz.bindings (rel, name, column_name, key_expr, object_type, permission, write_permission,
                                 insert_object_type, insert_column, insert_permission, force, attributes,
-                                update_permission, delete_permission)
+                                update_permission, delete_permission, attribute_map)
     values (p_rel, coalesce('pg_auth_' || p_name, 'pg_auth'), case when p_key is null then p_column end, p_key,
             p_object_type, p_permission, p_write_permission, p_insert_object_type, p_insert_column, p_insert_permission, p_force,
-            p_attributes, p_update_permission, p_delete_permission)
+            -- a map alone still makes the binding decided on attributes
+            case when p_attribute_map is not null then coalesce(p_attributes, '{}') else p_attributes end,
+            p_update_permission, p_delete_permission, p_attribute_map)
     on conflict (rel, name) do update
         set column_name = excluded.column_name,
             key_expr = excluded.key_expr,
@@ -184,6 +192,7 @@ begin
             write_permission = excluded.write_permission,
             update_permission = excluded.update_permission,
             delete_permission = excluded.delete_permission,
+            attribute_map = excluded.attribute_map,
             force = excluded.force,
             attributes = excluded.attributes
     returning * into b;
@@ -322,7 +331,7 @@ $$;
 
 revoke all on all tables in schema authz from public;
 grant usage on schema authz to public;
-revoke execute on function authz.bind(regclass, name, text, text, text, boolean, text, text, text, name, text, name[], text, text) from public;
+revoke execute on function authz.bind(regclass, name, text, text, text, boolean, text, text, text, name, text, name[], text, text, jsonb) from public;
 revoke execute on function authz.unbind(regclass) from public;
 revoke execute on function authz.drop_policies(regclass) from public;
 revoke execute on function authz.apply_policies(regclass, authz.bindings) from public;

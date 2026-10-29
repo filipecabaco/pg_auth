@@ -24,6 +24,9 @@
 -- attributes => array['owner_id', 'status'] sends those columns as the row's attributes, for an
 -- engine that decides on them (Cerbos).
 --
+-- attribute_map => '{"ownerId": "owner_id"}' sends a column under another attribute name (Cerbos
+-- policies written in camelCase).
+--
 -- on_update => ... and on_delete => ... check UPDATE and DELETE with their own permission (GitHub: push
 -- to update, delete to delete) instead of `write`, which still checks INSERT.
 create function authz.protect(
@@ -42,7 +45,8 @@ create function authz.protect(
     direct text default null,
     attributes name[] default null,
     on_update text default null,
-    on_delete text default null
+    on_delete text default null,
+    attribute_map jsonb default null
 ) returns void
 language plpgsql volatile as $$
 #variable_conflict use_column
@@ -67,7 +71,7 @@ begin
     end if;
     perform authz.bind(protect.rel, protect.id, protect.type, protect.read, protect.write, protect.force, protect.key, protect.name,
                        protect.insert_type, protect.insert_id, protect.insert_permission, protect.attributes,
-                       protect.on_update, protect.on_delete);
+                       protect.on_update, protect.on_delete, protect.attribute_map);
     raise notice '% is protected: a row is %:<%>; reading needs %; %', protect.rel, protect.type,
         coalesce(quote_ident(protect.id), protect.key), protect.read,
         (select authz.writes_of(b) from authz.bindings b where b.rel = protect.rel and b.name = coalesce('pg_auth_' || protect.name, 'pg_auth'))
@@ -399,7 +403,7 @@ begin
 end
 $$;
 
-revoke execute on function authz.protect(regclass, text, name, text, text, boolean, text, text, text, name, text, text, text, name[], text, text) from public;
+revoke execute on function authz.protect(regclass, text, name, text, text, boolean, text, text, text, name, text, text, text, name[], text, text, jsonb) from public;
 revoke execute on function authz.check(text, text, text) from public;
 revoke execute on function authz.status() from public;
 revoke execute on function authz.why(regclass, text, text, name, text[], text) from public;

@@ -2185,6 +2185,25 @@ mod tests {
     }
 
     #[pg_test]
+    fn attributes_can_carry_another_name_than_their_column() {
+        fake_sidecar();
+        Spi::run(
+            "create table public.claims (id int primary key, owner_id text, status text);
+             select authz.protect('public.claims', type => 'claim', id => 'id', read => 'view',
+                                  attributes => array['status'], attribute_map => '{\"ownerId\": \"owner_id\"}')",
+        )
+        .unwrap();
+        let policy = Spi::get_one::<String>("select qual from pg_policies where tablename = 'claims' and cmd = 'SELECT'")
+            .unwrap()
+            .unwrap_or_default();
+        assert!(policy.contains("'ownerId', owner_id") && policy.contains("'status', status"), "{policy}");
+        // a map naming a column the table lacks fails at once
+        assert!(fails(
+            "select authz.protect('public.claims', type => 'claim', id => 'id', read => 'view', attribute_map => '{\"x\": \"nope\"}')"
+        ));
+    }
+
+    #[pg_test]
     fn update_and_delete_can_need_their_own_permission() {
         fixture();
         // dana may edit org 1 but has no 'remove' on it: she updates, she does not delete

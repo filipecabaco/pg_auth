@@ -8,7 +8,7 @@
 #           ban (but not), push needed to update                          OpenFGA, SpiceDB
 #   drive   nested groups, viewers inherited down a folder tree, a public link (user:*)
 #                                                                         OpenFGA, SpiceDB
-#   expense derived roles (owner, finance), an amount limit on approval, a tenant's scoped deny
+#   expense derived roles (owner, finance), an amount limit on approval, a tenant's scoped deny, camelCase attributes
 #                                                                         Cerbos
 #
 #   elixir compare/complex.exs                    # openfga, spicedb, cerbos
@@ -227,7 +227,8 @@ defmodule Complex do
       "create index on app.expenses (owner)",
       "grant select, insert, update, delete on all tables in schema app to app_user",
       "insert into app.expenses values (1, 'ann', 500, 'open'), (2, 'ann', 5000, 'open'), (3, 'ben', 200, 'open'), (4, 'ann', 100, 'flagged')",
-      "select authz.protect('app.expenses', type => 'expense', id => 'id', read => 'view', write => 'approve', attributes => array['owner', 'amount', 'status'])"
+      # the policies say ownerId, as Cerbos's demos do; the column is owner
+      "select authz.protect('app.expenses', type => 'expense', id => 'id', read => 'view', write => 'approve', attributes => array['amount', 'status'], attribute_map => '{\"ownerId\": \"owner\"}')"
     ])
     ann = %{sub: "ann", role: "user", department: "sales", tenant: "acme"}
     ben = %{sub: "ben", role: "user", department: "sales", tenant: "acme"}

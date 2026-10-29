@@ -2218,12 +2218,12 @@ mod tests {
         // the same document again: nothing to deliver twice
         Spi::run("delete from authz.outbox").unwrap();
         Spi::get_one_with_args::<i64>("select authz.setup($1::jsonb)", &[document.into()]).unwrap();
-        assert!(outbox().is_empty());
+        assert_eq!(outbox(), Vec::<String>::new());
 
         // a document without the shares: they are no longer delivered, the notes no longer protected
         Spi::run(r#"select authz.setup('{"subject": {"source": "jwt"}}')"#).unwrap();
         Spi::run("insert into public.shares values (3, 'user', 'bob', 'viewer')").unwrap();
-        assert!(outbox().is_empty());
+        assert_eq!(outbox(), Vec::<String>::new());
         assert_eq!(Spi::get_one::<i64>("select count(*) from authz.bindings").unwrap(), Some(0));
         assert_eq!(Spi::get_one::<i64>("select count(*) from authz.setups").unwrap(), Some(3));
 

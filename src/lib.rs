@@ -13,10 +13,10 @@ mod ffi;
 mod jwt;
 mod lint;
 mod nodetree;
-mod rules;
 #[allow(unsafe_code)]
 mod pg;
 mod rewrite;
+mod rules;
 mod sidecar;
 mod subject;
 
@@ -861,19 +861,29 @@ mod tests {
             let error = error_at_commit(sql).unwrap_or_default();
             assert!(error.contains(expected), "{sql}\n  expected: {expected}\n  got: {error}");
         };
-        fails_with("select authz.protect('public.rdocs', type => 'document', id => 'id', read => 'vewer')",
-                   "public.rdocs: document has no vewer in the openfga model (it has: org, viewer)");
-        fails_with("select authz.protect('public.rdocs', type => 'doc', id => 'id', read => 'viewer')",
-                   "public.rdocs: the openfga model has no type doc (its types: document, org, user)");
-        fails_with("select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation_column => 'role',
+        fails_with(
+            "select authz.protect('public.rdocs', type => 'document', id => 'id', read => 'vewer')",
+            "public.rdocs: document has no vewer in the openfga model (it has: org, viewer)",
+        );
+        fails_with(
+            "select authz.protect('public.rdocs', type => 'doc', id => 'id', read => 'viewer')",
+            "public.rdocs: the openfga model has no type doc (its types: document, org, user)",
+        );
+        fails_with(
+            "select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation_column => 'role',
                                         relations => array['admin', 'owner'], subject_type => 'user', subject_column => 'user_id')",
-                   "org has no relation owner in the openfga model (it has: admin, member)");
-        fails_with("select authz.relate('public.rdocs', object_type => 'document', object_column => 'id', relation => 'viewer',
+            "org has no relation owner in the openfga model (it has: admin, member)",
+        );
+        fails_with(
+            "select authz.relate('public.rdocs', object_type => 'document', object_column => 'id', relation => 'viewer',
                                         subject_type => 'org', subject_column => 'org_id')",
-                   "document#viewer is computed in the openfga model: rows write the relations it assigns (org)");
-        fails_with("select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation => 'member',
+            "document#viewer is computed in the openfga model: rows write the relations it assigns (org)",
+        );
+        fails_with(
+            "select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation => 'member',
                                         subject_type => 'user', subject_id => '*')",
-                   "org#member does not take user:* in the openfga model (it takes: user)");
+            "org#member does not take user:* in the openfga model (it takes: user)",
+        );
         // what the model has commits
         let valid = "select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation_column => 'role',
                                          relations => array['admin', 'member'], subject_type => 'user', subject_column => 'user_id'),
@@ -884,7 +894,10 @@ mod tests {
         // a new model dropping what the setup uses fails; changed together with the setup it commits
         let without_viewer = "model\n  schema 1.1\ntype user\ntype org\n  relations\n    define admin: [user]\n    define member: [user]\n    \
                               define can_read: member or admin\ntype document\n  relations\n    define org: [org]\n    define reader: can_read from org\n";
-        fails_with(&format!("select authz.set_rules('openfga', 'model', {})", quote(without_viewer)), "document has no viewer in the openfga model");
+        fails_with(
+            &format!("select authz.set_rules('openfga', 'model', {})", quote(without_viewer)),
+            "document has no viewer in the openfga model",
+        );
         assert_eq!(
             error_at_commit(&format!(
                 "select authz.set_rules('openfga', 'model', {}), authz.protect('public.rdocs', type => 'document', id => 'id', read => 'reader')",
@@ -892,7 +905,8 @@ mod tests {
             )),
             None
         );
-        let doctor = Spi::get_one::<String>("select status || ': ' || detail from authz.doctor() where check_name = 'setup matches rules'").unwrap();
+        let doctor =
+            Spi::get_one::<String>("select status || ': ' || detail from authz.doctor() where check_name = 'setup matches rules'").unwrap();
         assert_eq!(doctor.as_deref(), Some("ok: every protected and relationship table names what the stored rules have"));
     }
 
@@ -905,13 +919,24 @@ mod tests {
         )
         .unwrap();
         // approve:* covers approve:big
-        assert_eq!(error_at_commit("select authz.protect('public.expenses', type => 'expense', id => 'id', read => 'view', write => 'approve:big')"), None);
-        assert!(error_at_commit("select authz.protect('public.expenses', type => 'expense', id => 'id', read => 'view', on_delete => 'delete')")
+        assert_eq!(
+            error_at_commit(
+                "select authz.protect('public.expenses', type => 'expense', id => 'id', read => 'view', write => 'approve:big')"
+            ),
+            None
+        );
+        assert!(
+            error_at_commit(
+                "select authz.protect('public.expenses', type => 'expense', id => 'id', read => 'view', on_delete => 'delete')"
+            )
             .unwrap_or_default()
-            .contains("the cerbos policies for expense have no action delete (they have: approve:*, view)"));
-        assert!(error_at_commit("select authz.protect('public.expenses', type => 'invoice', id => 'id', read => 'view')")
-            .unwrap_or_default()
-            .contains("the cerbos policies have no resource policy for invoice"));
+            .contains("the cerbos policies for expense have no action delete (they have: approve:*, view)")
+        );
+        assert!(
+            error_at_commit("select authz.protect('public.expenses', type => 'invoice', id => 'id', read => 'view')")
+                .unwrap_or_default()
+                .contains("the cerbos policies have no resource policy for invoice")
+        );
     }
 
     fn quote(text: &str) -> String {

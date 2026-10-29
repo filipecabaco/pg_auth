@@ -322,8 +322,7 @@ mod tests {
         e.push_rules(&[rule("model", "model\n  schema 1.1\ntype user\n")]).await.unwrap();
         e.list(&key("user:anne", "doc", "viewer"), 10).await.unwrap();
         // a model with a condition is refused for good, without asking OpenFGA
-        let refused =
-            e.push_rules(&[rule("model", "model\n  schema 1.1\ntype doc\n  relations\n    define v: [user with c]\n")]).await;
+        let refused = e.push_rules(&[rule("model", "model\n  schema 1.1\ntype doc\n  relations\n    define v: [user with c]\n")]).await;
         assert!(refused.as_ref().is_err_and(|e| e.permanent && e.message.contains("conditions")), "{:?}", refused.err().map(|e| e.message));
 
         // SpiceDB: the schema's text
@@ -400,11 +399,23 @@ mod tests {
         };
         let refused = e
             .push_rules(&[
-                Rule { name: "resource/doc".into(), body: policy("doc", "", "request.resource.attr.nope(1)"), previous: Some(policy("doc", "", "request.resource.attr.ok")) },
-                Rule { name: "resource/report.acme".into(), body: policy("report", "acme", "request.resource.attr.nope(1)"), previous: None },
+                Rule {
+                    name: "resource/doc".into(),
+                    body: policy("doc", "", "request.resource.attr.nope(1)"),
+                    previous: Some(policy("doc", "", "request.resource.attr.ok")),
+                },
+                Rule {
+                    name: "resource/report.acme".into(),
+                    body: policy("report", "acme", "request.resource.attr.nope(1)"),
+                    previous: None,
+                },
             ])
             .await;
-        assert!(refused.as_ref().is_err_and(|e| e.permanent && e.message.contains("does not compile resource/doc, resource/report.acme")), "{:?}", refused.err());
+        assert!(
+            refused.as_ref().is_err_and(|e| e.permanent && e.message.contains("does not compile resource/doc, resource/report.acme")),
+            "{:?}",
+            refused.err()
+        );
     }
 
     #[tokio::test]

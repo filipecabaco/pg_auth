@@ -235,13 +235,16 @@ mod tests {
         let dsl = "model\n  schema 1.1\ntype user\ntype doc # a comment\n  relations\n    define owner: [user]\n    \
                    define viewer: [user, user:*, team#member with in_hours] or owner\n    define can_read: viewer but not banned\n\
                    condition in_hours(x: int) {\n  x > 1\n}\n";
-        assert_eq!(summary(&openfga_dsl(dsl)), [
-            "type user",
-            "type doc",
-            "relation doc#owner [user]",
-            "relation doc#viewer [user, user:*, team#member]",
-            "permission doc#can_read"
-        ]);
+        assert_eq!(
+            summary(&openfga_dsl(dsl)),
+            [
+                "type user",
+                "type doc",
+                "relation doc#owner [user]",
+                "relation doc#viewer [user, user:*, team#member]",
+                "permission doc#can_read"
+            ]
+        );
     }
 
     #[test]
@@ -250,12 +253,10 @@ mod tests {
             "relations": {"viewer": {"this": {}}, "can_read": {"computedUserset": {"relation": "viewer"}}},
             "metadata": {"relations": {"viewer": {"directly_related_user_types": [{"type": "user"}, {"type": "user", "wildcard": {}},
                 {"type": "team", "relation": "member"}]}, "can_read": {}}}}]}"#;
-        assert_eq!(summary(&openfga_json(json).unwrap()), [
-            "type user",
-            "type doc",
-            "permission doc#can_read",
-            "relation doc#viewer [user, user:*, team#member]"
-        ]);
+        assert_eq!(
+            summary(&openfga_json(json).unwrap()),
+            ["type user", "type doc", "permission doc#can_read", "relation doc#viewer [user, user:*, team#member]"]
+        );
     }
 
     #[test]
@@ -263,13 +264,16 @@ mod tests {
         let schema = "/** a user */\ndefinition user {}\ncaveat in_hours(x int) {\n  x > 1\n}\n// the docs\n\
                       definition app/doc {\n  relation owner: user\n  relation viewer: user | user:* | team#member with in_hours\n  \
                       permission can_read = viewer + owner // either\n}\n";
-        assert_eq!(summary(&spicedb(schema)), [
-            "type user",
-            "type app/doc",
-            "relation app/doc#owner [user]",
-            "relation app/doc#viewer [user, user:*, team#member]",
-            "permission app/doc#can_read"
-        ]);
+        assert_eq!(
+            summary(&spicedb(schema)),
+            [
+                "type user",
+                "type app/doc",
+                "relation app/doc#owner [user]",
+                "relation app/doc#viewer [user, user:*, team#member]",
+                "permission app/doc#can_read"
+            ]
+        );
     }
 
     #[test]
@@ -277,7 +281,10 @@ mod tests {
         let resource = "apiVersion: api.cerbos.dev/v1\nresourcePolicy:\n  version: default\n  resource: expense\n  rules:\n    \
                         - actions: [\"view\", \"approve:*\"]\n      effect: EFFECT_ALLOW\n      roles: [\"user\"]\n    - actions:\n        - delete\n      \
                         effect: EFFECT_ALLOW\n      roles: [\"admin\"]\n";
-        assert_eq!(summary(&cerbos(resource).unwrap()), ["type expense", "action expense#view", "action expense#approve:*", "action expense#delete"]);
+        assert_eq!(
+            summary(&cerbos(resource).unwrap()),
+            ["type expense", "action expense#view", "action expense#approve:*", "action expense#delete"]
+        );
         let derived = "apiVersion: api.cerbos.dev/v1\nderivedRoles:\n  name: common\n  definitions: []\n";
         assert_eq!(cerbos(derived).unwrap(), Vec::<Entry>::new());
         assert!(cerbos("resourcePolicy: [unclosed").is_err());

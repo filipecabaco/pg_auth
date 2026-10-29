@@ -125,7 +125,8 @@ declare
     applied bigint;
     what text;
 begin
-    perform authz.setup_keys(document, array['subject', 'relationships', 'protect'], 'the document');
+    -- "source": who wrote the document ("rules": the notes in the engine's rules, authz.rules_apply)
+    perform authz.setup_keys(document, array['subject', 'relationships', 'protect', 'source'], 'the document');
 
     if s is not null then
         perform authz.setup_keys(s, array['source', 'type', 'claim', 'jwks', 'claims_setting', 'token_setting', 'token_header',

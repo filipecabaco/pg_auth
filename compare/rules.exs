@@ -1,8 +1,9 @@
 #!/usr/bin/env elixir
 # The engine's rules kept in Postgres (authz.set_rules), end to end: each engine starts without
-# them, the sidecar pushes what Postgres holds, rows show as those rules say, a new version
-# changes what they show, and rules the engine refuses are reported while it keeps the version
-# before. In each engine's own language: OpenFGA's DSL, a SpiceDB schema, Cerbos's YAML. See
+# them, and the rules' notes (`# pg_auth: protects ...`) are the whole setup: no table is protected
+# or related by hand. The sidecar pushes what Postgres holds, rows show as those rules say, a new
+# version changes what they show, and rules the engine refuses are reported while it keeps the
+# version before. In each engine's own language: OpenFGA's DSL, a SpiceDB schema, Cerbos's YAML. See
 # compare/README.md and docs/proposals/setting-rules.md.
 #
 #   elixir compare/rules.exs                       # openfga, spicedb, cerbos
@@ -28,11 +29,14 @@ defmodule Rules do
         schema 1.1
       type user
       type org
+        # pg_auth: rows of app.memberships (org_id, role, user_id)
         relations
           define admin: [user]
           define member: [user]
           define can_read: member or admin
       type document
+        # pg_auth: protects app.documents (id): read viewer
+        # pg_auth: org from app.documents.org_id
         relations
           define org: [org]
           define viewer: can_read from org
@@ -42,11 +46,14 @@ defmodule Rules do
         schema 1.1
       type user
       type org
+        # pg_auth: rows of app.memberships (org_id, role, user_id)
         relations
           define admin: [user]
           define member: [user]
           define can_read: admin
       type document
+        # pg_auth: protects app.documents (id): read viewer
+        # pg_auth: org from app.documents.org_id
         relations
           define org: [org]
           define viewer: can_read from org
@@ -57,11 +64,14 @@ defmodule Rules do
         schema 1.1
       type user
       type org
+        # pg_auth: rows of app.memberships (org_id, role, user_id)
         relations
           define admin: [user]
           define member: [user]
           define can_read: admin or ghost
       type document
+        # pg_auth: protects app.documents (id): read viewer
+        # pg_auth: org from app.documents.org_id
         relations
           define org: [org]
           define viewer: can_read from org
@@ -71,11 +81,14 @@ defmodule Rules do
       """
       definition user {}
       definition org {
+        // pg_auth: rows of app.memberships (org_id, role, user_id)
         relation admin: user
         relation member: user
         permission can_read = member + admin
       }
       definition document {
+        // pg_auth: protects app.documents (id): read viewer
+        // pg_auth: org from app.documents.org_id
         relation org: org
         permission viewer = org->can_read
       }
@@ -83,11 +96,14 @@ defmodule Rules do
       """
       definition user {}
       definition org {
+        // pg_auth: rows of app.memberships (org_id, role, user_id)
         relation admin: user
         relation member: user
         permission can_read = admin
       }
       definition document {
+        // pg_auth: protects app.documents (id): read viewer
+        // pg_auth: org from app.documents.org_id
         relation org: org
         permission viewer = org->can_read
       }
@@ -95,11 +111,14 @@ defmodule Rules do
       """
       definition user {}
       definition org {
+        // pg_auth: rows of app.memberships (org_id, role, user_id)
         relation admin: user
         relation member: user
         permission can_read = admin + ghost
       }
       definition document {
+        // pg_auth: protects app.documents (id): read viewer
+        // pg_auth: org from app.documents.org_id
         relation org: org
         permission viewer = org->can_read
       }
@@ -107,6 +126,7 @@ defmodule Rules do
     ],
     "cerbos" => [
       """
+      # pg_auth: protects app.documents (id): read view, attributes (owner, status)
       apiVersion: api.cerbos.dev/v1
       resourcePolicy:
         version: default
@@ -120,6 +140,7 @@ defmodule Rules do
                 expr: request.resource.attr.owner == request.principal.id
       """,
       """
+      # pg_auth: protects app.documents (id): read view, attributes (owner, status)
       apiVersion: api.cerbos.dev/v1
       resourcePolicy:
         version: default
@@ -137,6 +158,7 @@ defmodule Rules do
       """,
       # a condition that does not compile
       """
+      # pg_auth: protects app.documents (id): read view, attributes (owner, status)
       apiVersion: api.cerbos.dev/v1
       resourcePolicy:
         version: default
@@ -199,9 +221,10 @@ defmodule Rules do
     [v1, v2, refused] = @rules[engine]
     name = %{"openfga" => "model", "spicedb" => "schema", "cerbos" => "resource/document"}[engine]
     setup(conn, engine)
+    # the notes protect and relate the tables; their rows reach the engine once it has the rules
     first = set_rules(conn, engine, name, v1)
-    # the relationship tables are declared once the engine has the relations they write
-    if pushed?(conn, engine, 1), do: declare(conn, engine), else: raise("version 1 was not pushed")
+    pushed?(conn, engine, 1) || raise("version 1 was not pushed")
+    eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.outbox", []).rows == [[0]] end) || raise("relationships not delivered")
     seen = if engine == "cerbos", do: [1, 2], else: [1, 2, 3]
 
     [
@@ -218,9 +241,11 @@ defmodule Rules do
         after_v2 = if engine == "cerbos", do: [1, 2, 3], else: []
         eventually(fn -> refused?(conn, engine) end) and doctor_fails?(conn) and visible(conn, "anne") == after_v2
       end),
-      check("a setup naming what the rules lack fails at commit", fn ->
-        sql = "select authz.protect('app.documents', type => 'document', id => 'id', read => 'vewer')"
-        match?({:error, %Postgrex.Error{postgres: %{code: :check_violation, message: "the setup names what the rules" <> _}}}, Postgrex.query(conn, sql, []))
+      check("a note naming what the rules lack fails at commit", fn ->
+        typo = String.replace(v2, ~r/read (viewer|view)\b/, "read vewer")
+        sql = "select authz.set_rules($1, $2, $3)"
+        match?({:error, %Postgrex.Error{postgres: %{code: :check_violation, message: "the setup names what the rules" <> _}}},
+               Postgrex.query(conn, sql, [engine, name, typo]))
       end),
       check("every version is kept, the refused one with the engine's reason", fn ->
         Postgrex.query!(conn, "select count(*), count(error) from authz.rules where engine = $1", [engine]).rows == [[3, 1]]
@@ -234,8 +259,7 @@ defmodule Rules do
       "select authz.configure(subject => 'jwt')",
       "create table app.documents (id int primary key, owner text not null, status text not null)",
       "grant select on app.documents to app_user",
-      "insert into app.documents values (1, 'anne', 'draft'), (2, 'anne', 'draft'), (3, 'bob', 'published'), (4, 'bob', 'draft')",
-      "select authz.protect('app.documents', type => 'document', id => 'id', read => 'view', attributes => array['owner', 'status'])"
+      "insert into app.documents values (1, 'anne', 'draft'), (2, 'anne', 'draft'), (3, 'bob', 'published'), (4, 'bob', 'draft')"
     ])
   end
 
@@ -248,18 +272,6 @@ defmodule Rules do
       "insert into app.documents values (1, 1), (2, 1), (3, 1), (4, 2)",
       "insert into app.memberships values (1, 'anne', 'member'), (2, 'bob', 'admin')"
     ])
-  end
-
-  defp declare(conn, "cerbos"), do: conn
-
-  defp declare(conn, _relationships) do
-    run_all(conn, [
-      "select authz.relate('app.memberships', object_type => 'org', object_column => 'org_id', relation_column => 'role', subject_type => 'user', subject_column => 'user_id')",
-      "select authz.relate('app.documents', object_type => 'document', object_column => 'id', relation => 'org', subject_type => 'org', subject_column => 'org_id')",
-      "select authz.protect('app.documents', type => 'document', id => 'id', read => 'viewer')"
-    ])
-    eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.outbox", []).rows == [[0]] end) || raise("relationships not delivered")
-    conn
   end
 
   defp set_rules(conn, engine, name, body) do

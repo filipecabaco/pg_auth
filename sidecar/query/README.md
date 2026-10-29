@@ -112,7 +112,7 @@ extension then answers from Postgres instead of asking the engine per row.
       grant usage on schema authz to pg_auth_sidecar;
       grant execute on function authz.index_begin(text, text, text, text), authz.index_add(bigint, text[]),
           authz.index_finish(bigint), authz.index_abort(bigint), authz.index_invalidate(),
-          authz.outbox_claim(int), authz.outbox_done(bigint[]), authz.outbox_failed(bigint, text),
+          authz.outbox_claim(int, text), authz.outbox_done(bigint[]), authz.outbox_failed(bigint, text),
           authz.answers_changed(), authz.rules_pending(text), authz.rules_pushed(text, text, int, text, text), authz.rules_ref(text)
           to pg_auth_sidecar;
 

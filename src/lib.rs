@@ -13,6 +13,7 @@ mod ffi;
 mod jwt;
 mod lint;
 mod nodetree;
+mod notes;
 #[allow(unsafe_code)]
 mod pg;
 mod rewrite;
@@ -39,7 +40,11 @@ extension_sql_file!(
     ]
 );
 extension_sql_file!("../sql/setup.sql", name = "authz_setup", requires = ["authz_api"]);
-extension_sql_file!("../sql/rules.sql", name = "authz_rules", requires = ["authz_schema", "authz_relationships", rules::rules_names]);
+extension_sql_file!(
+    "../sql/rules.sql",
+    name = "authz_rules",
+    requires = ["authz_schema", "authz_relationships", rules::rules_names, notes::rules_document]
+);
 extension_sql_file!("../sql/lint.sql", name = "authz_lint", requires = ["authz_schema", lint::lint_policies]);
 extension_sql_file!("../sql/index.sql", name = "authz_index", requires = ["authz_schema", subject::subject_id, subject::subject_type]);
 extension_sql_file!("../sql/relationships.sql", name = "authz_relationships", requires = ["authz_schema"]);
@@ -1117,6 +1122,68 @@ mod tests {
         let claimed =
             Spi::get_one::<String>("select condition || ' ' || condition_context from authz.outbox_claim(10) where op = 'write'").unwrap();
         assert_eq!(claimed.as_deref(), Some(r#"in_region {"allowed": ["eu", "us"]}"#));
+    }
+
+    #[pg_test]
+    fn notes_in_the_rules_protect_and_relate_the_tables() {
+        // the outbox's claim takes its lock without waiting: wait for another test holding it
+        Spi::run("select pg_advisory_xact_lock(hashtext('pg_auth.outbox'))").unwrap();
+        Spi::run(
+            "create table public.ndocs (id int primary key, org_id int not null);
+             create table public.nmembers (org_id int, user_id text, role text, primary key (org_id, user_id));
+             insert into public.ndocs values (1, 1);
+             insert into public.nmembers values (1, 'anne', 'admin')",
+        )
+        .unwrap();
+        let model = |notes: &str| {
+            format!(
+                "model\n  schema 1.1\ntype user\ntype org\n  # pg_auth: rows of public.nmembers (org_id, role, user_id)\n  relations\n    \
+                 define admin: [user]\n    define member: [user]\n    define can_read: member or admin\n    define can_manage: admin\n\
+                 type document\n{notes}  relations\n    define org: [org]\n    define viewer: can_read from org\n    define editor: can_manage from org\n"
+            )
+        };
+        let both = "  # pg_auth: protects public.ndocs (id): read viewer, write editor\n  # pg_auth: org from public.ndocs.org_id\n";
+        Spi::get_one_with_args::<i32>("select authz.set_rules('openfga', 'model', $1)", &[model(both).into()]).unwrap();
+        let declared = || {
+            Spi::get_one::<String>(
+                "select concat_ws(' | ',
+                   (select string_agg(rel::text || ' ' || object_type || '#' || permission || coalesce('/' || write_permission, ''), ', ' order by rel::text) from authz.bindings),
+                   (select string_agg(concat_ws(' ', rel::text, name, coalesce(relation, '(' || relation_column || ')'), array_to_string(relations, '|')), ', ' order by name) from authz.relationships))",
+            )
+            .unwrap()
+            .unwrap_or_default()
+        };
+        assert_eq!(declared(), "ndocs document#viewer/editor | ndocs document_org org, nmembers org_rows (role) admin|member");
+        // the rows already there wait for the rules they need
+        let claimed = || Spi::get_one::<i64>("select count(*) from authz.outbox_claim(10, 'openfga')").unwrap();
+        assert_eq!(claimed(), Some(0));
+        Spi::run("select authz.rules_pushed('openfga', 'model', 1)").unwrap();
+        assert_eq!(claimed(), Some(2));
+        // the next version drops a note: what it declared goes
+        Spi::get_one_with_args::<i32>(
+            "select authz.set_rules('openfga', 'model', $1)",
+            &[model("  # pg_auth: protects public.ndocs (id): read viewer\n").into()],
+        )
+        .unwrap();
+        assert_eq!(declared(), "ndocs document#viewer | nmembers org_rows (role) admin|member");
+        // a note naming no object column for a table without a single-column key says so
+        let error = error_of(&format!(
+            "select authz.set_rules('openfga', 'model', {})",
+            quote(&model("  # pg_auth: org from public.nmembers.user_id\n"))
+        ))
+        .unwrap_or_default();
+        assert!(error.contains("has no single-column primary key"), "{error}");
+    }
+
+    #[pg_test]
+    fn rules_without_notes_leave_a_setup_written_by_hand() {
+        Spi::run(
+            "create table public.hdocs (id int primary key);
+             select authz.protect('public.hdocs', type => 'doc', id => 'id', read => 'viewer');
+             select authz.set_rules('spicedb', 'schema', 'definition user {}\ndefinition doc {\n  relation viewer: user\n}\n')",
+        )
+        .unwrap();
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz.bindings where rel = 'public.hdocs'::regclass").unwrap(), Some(1));
     }
 
     #[pg_test]
@@ -2591,7 +2658,8 @@ mod tests {
               {"table": "public.notes", "type": "doc", "column": "doc_id", "select": "viewer", "write": "editor", "delete": "owner"}]
         }"#;
         let version = Spi::get_one_with_args::<i64>("select authz.setup($1::jsonb)", &[document.into()]).unwrap();
-        assert_eq!(version, Some(1));
+        // versions come from a sequence other tests' setups take from too: only their order counts
+        assert!(version.is_some_and(|v| v > 0));
         let mut sent = outbox();
         sent.sort();
         assert_eq!(sent, ["write doc:1 viewer user:anne", "write doc:2 viewer user:*"]);

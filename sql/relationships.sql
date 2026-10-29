@@ -341,11 +341,16 @@ $$;
 
 -- For the sidecar: the oldest changes not delivered yet, in order, to the one sidecar delivering
 -- (an advisory lock held until the caller's transaction ends); nothing while another delivers.
-create function authz.outbox_claim(p_limit int)
+create function authz.outbox_claim(p_limit int, p_engine text default null)
 returns table (id bigint, op text, object text, relation text, subject text, expires_at text, condition text, condition_context text)
 language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
 begin
     if not pg_try_advisory_xact_lock(hashtext('pg_auth.outbox')) then
+        return;
+    end if;
+    -- relationships wait for the engine's rules stored with them: a relation the engine does not
+    -- have yet would be refused
+    if p_engine is not null and exists (select 1 from authz.rules(p_engine) r where r.pushed_at is null and r.error is null) then
         return;
     end if;
     -- what is due: changes, and expiries whose time came (expires_at in RFC 3339, as engines take it)
@@ -378,6 +383,6 @@ revoke all on authz.relationships, authz.outbox from public;
 revoke execute on function authz.relate(regclass, text, name, text, name, text, name, text, text, name, text, name, text, name, text, text[], name, text, jsonb) from public;
 revoke execute on function authz.outbox_record(text[], text[], timestamptz, text, jsonb, boolean) from public;
 revoke execute on function authz.unrelate(regclass, text) from public;
-revoke execute on function authz.outbox_claim(int) from public;
+revoke execute on function authz.outbox_claim(int, text) from public;
 revoke execute on function authz.outbox_done(bigint[]) from public;
 revoke execute on function authz.outbox_failed(bigint, text) from public;

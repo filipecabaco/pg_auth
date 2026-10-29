@@ -13,11 +13,11 @@ use pgrx::prelude::*;
 use serde_json::Value;
 
 #[derive(Debug, PartialEq)]
-struct Entry {
-    object_type: String,
-    name: Option<String>,
-    kind: &'static str,
-    subjects: Option<Vec<String>>,
+pub(crate) struct Entry {
+    pub(crate) object_type: String,
+    pub(crate) name: Option<String>,
+    pub(crate) kind: &'static str,
+    pub(crate) subjects: Option<Vec<String>>,
 }
 
 impl Entry {
@@ -51,15 +51,20 @@ fn rules_names(
     'static,
     (name!(object_type, String), name!(name, Option<String>), name!(kind, String), name!(subjects, Option<Vec<String>>)),
 > {
-    let names = match engine {
+    let names = entries(engine, body)
+        .unwrap_or_else(|e| vec![Entry { object_type: String::new(), name: Some(e), kind: "unreadable", subjects: None }]);
+    TableIterator::new(names.into_iter().map(|n| (n.object_type, n.name, n.kind.to_owned(), n.subjects)))
+}
+
+/// What these rules define, read from the engine's own language.
+pub(crate) fn entries(engine: &str, body: &str) -> Result<Vec<Entry>, String> {
+    match engine {
         "openfga" if body.trim_start().starts_with('{') => openfga_json(body),
         "openfga" => Ok(openfga_dsl(body)),
         "spicedb" => Ok(spicedb(body)),
         "cerbos" => cerbos(body),
         _ => Err(format!("no rules for {engine}")),
-    };
-    let names = names.unwrap_or_else(|e| vec![Entry { object_type: String::new(), name: Some(e), kind: "unreadable", subjects: None }]);
-    TableIterator::new(names.into_iter().map(|n| (n.object_type, n.name, n.kind.to_owned(), n.subjects)))
+    }
 }
 
 /// `type x` and `define y: expr`; a relation with `[...]` takes direct writes.

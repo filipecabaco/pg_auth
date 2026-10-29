@@ -50,8 +50,57 @@ begin
         return latest.version;
     end if;
     insert into authz.rules (engine, name, version, body) values (engine, name, coalesce(latest.version, 0) + 1, body);
+    -- the tables the rules' notes describe, protected and related in this transaction
+    perform authz.rules_apply(engine);
     perform pg_notify('pg_auth_rules', engine);
     return coalesce(latest.version, 0) + 1;
+end
+$$;
+
+-- What the notes in an engine's rules say (`# pg_auth: protects documents (id): read viewer`,
+-- src/notes.rs), applied as one setup document (authz.setup): tables protected and related, and
+-- what an earlier version's notes declared and this one's do not, removed. An object column a note
+-- leaves to the table is its primary key. Rules with no notes change nothing, unless notes set the
+-- setup before (then it is removed): a setup written by hand is not the rules' to undo.
+create function authz.rules_apply(p_engine text) returns void
+language plpgsql volatile as $$
+declare
+    document jsonb := '{"relationships": [], "protect": []}';
+    notes jsonb;
+    r record;
+begin
+    for r in select l.body from authz.rules(p_engine) l loop
+        notes := authz.rules_document(p_engine, r.body);
+        document := jsonb_build_object('relationships', (document -> 'relationships') || (notes -> 'relationships'),
+                                       'protect', (document -> 'protect') || (notes -> 'protect'));
+    end loop;
+    if jsonb_array_length(document -> 'relationships') + jsonb_array_length(document -> 'protect') = 0
+       and authz.setup() ->> 'source' is distinct from 'rules' then
+        return;
+    end if;
+    document := document || jsonb_build_object('source', 'rules', 'relationships', coalesce((
+        select jsonb_agg(case when e -> 'object' ? 'column' then e
+                              else jsonb_set(e, '{object,column}', to_jsonb(authz.rules_key(e ->> 'table'))) end)
+        from jsonb_array_elements(document -> 'relationships') e), '[]'));
+    perform authz.setup(document);
+end
+$$;
+
+-- A relationship table's object column when a note names none: its single-column primary key.
+create function authz.rules_key(p_table text) returns name
+language plpgsql stable as $$
+declare
+    key name;
+    rel regclass := p_table::regclass;
+begin
+    select a.attname into key
+    from pg_index i join pg_attribute a on a.attrelid = i.indrelid and a.attnum = i.indkey[0]
+    where i.indrelid = rel and i.indisprimary and i.indnatts = 1;
+    if key is null then
+        raise exception '% has no single-column primary key: name the object column in the note (<relation> from %(<column>).<subject column>)',
+            rel, p_table;
+    end if;
+    return key;
 end
 $$;
 
@@ -102,6 +151,8 @@ $$;
 revoke all on authz.rules from public;
 revoke execute on function authz.set_rules(text, text, text) from public;
 revoke execute on function authz.rules(text) from public;
+revoke execute on function authz.rules_apply(text) from public;
+revoke execute on function authz.rules_key(text) from public;
 revoke execute on function authz.rules_pending(text) from public;
 revoke execute on function authz.rules_pushed(text, text, int, text, text) from public;
 revoke execute on function authz.rules_ref(text) from public;

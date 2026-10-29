@@ -81,7 +81,10 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
     let tx = client.transaction().await.map_err(pg)?;
     let rows = tx
-        .query("select id, op, object, relation, subject, expires_at, condition, condition_context from authz.outbox_claim($1)", &[&CLAIM])
+        .query(
+            "select id, op, object, relation, subject, expires_at, condition, condition_context from authz.outbox_claim($1, $2)",
+            &[&CLAIM, &engine.name()],
+        )
         .await
         .map_err(pg)?;
     if rows.is_empty() {

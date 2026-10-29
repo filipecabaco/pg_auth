@@ -45,6 +45,7 @@ defmodule Complex do
       define banned: [user]
       define can_read: (reader or writer or admin or can_read_all from organization) but not banned
       define can_push: (writer or admin or can_read_all from organization) but not banned
+      define can_delete: (admin or can_read_all from organization) but not banned
   type group
     relations
       define member: [user, group#member]
@@ -131,24 +132,26 @@ defmodule Complex do
       "create table app.org_members (org_id int, user_id text, role text, primary key (org_id, user_id))",
       "create table app.team_members (team text, user_id text, child_team text)",
       "create table app.repos (id int primary key, org_id int not null, name text not null)",
-      # access goes to a user or to a team's members: one nullable column each
-      "create table app.repo_access (repo_id int not null, user_id text, team text, role text not null)",
+      # access goes to a user or to a team's members: one table, the kind in a column
+      "create table app.repo_access (repo_id int not null, grantee_kind text not null, grantee_id text not null, role text not null)",
       "create table app.repo_bans (repo_id int not null, user_id text not null)",
       "grant select, insert, update, delete on all tables in schema app to app_user",
       "insert into app.org_members values (1, 'olivia', 'owner')",
       # core's members are alice; platform's are core's members (a team inside a team)
       "insert into app.team_members values ('core', 'alice', null), ('platform', null, 'core')",
       "insert into app.repos select i, case when i = 5 then 2 else 1 end, 'repo ' || i from generate_series(1, 5) i",
-      "insert into app.repo_access values (1, null, 'platform', 'reader'), (2, 'bob', null, 'writer'), (3, null, 'core', 'admin'), (5, 'alice', null, 'reader')",
+      "insert into app.repo_access values (1, 'team', 'platform', 'reader'), (2, 'user', 'bob', 'writer'), (3, 'team', 'core', 'admin'), (5, 'user', 'alice', 'reader')",
       "insert into app.repo_bans values (3, 'alice')",
       "select authz.relate('app.org_members', object_type => 'organization', object_column => 'org_id', relation_column => 'role', subject_type => 'user', subject_column => 'user_id')",
       "select authz.relate('app.team_members', name => 'user', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'user', subject_column => 'user_id')",
       "select authz.relate('app.team_members', name => 'team', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'team', subject_column => 'child_team', subject_relation => 'member')",
       "select authz.relate('app.repos', object_type => 'repo', object_column => 'id', relation => 'organization', subject_type => 'organization', subject_column => 'org_id')",
-      "select authz.relate('app.repo_access', name => 'user', object_type => 'repo', object_column => 'repo_id', relation_column => 'role', subject_type => 'user', subject_column => 'user_id')",
-      "select authz.relate('app.repo_access', name => 'team', object_type => 'repo', object_column => 'repo_id', relation_column => 'role', subject_type => 'team', subject_column => 'team', subject_relation => 'member')",
+      # a declaration per kind of grantee, and only the roles the model has
+      "select authz.relate('app.repo_access', name => 'user', filter => 'grantee_kind = ''user''', object_type => 'repo', object_column => 'repo_id', relation_column => 'role', subject_type => 'user', subject_column => 'grantee_id', relations => array['reader', 'writer', 'admin'])",
+      "select authz.relate('app.repo_access', name => 'team', filter => 'grantee_kind = ''team''', object_type => 'repo', object_column => 'repo_id', relation_column => 'role', subject_type => 'team', subject_column => 'grantee_id', subject_relation => 'member', relations => array['reader', 'writer', 'admin'])",
       "select authz.relate('app.repo_bans', object_type => 'repo', object_column => 'repo_id', relation => 'banned', subject_type => 'user', subject_column => 'user_id')",
-      "select authz.protect('app.repos', type => 'repo', id => 'id', read => 'can_read', write => 'can_push')"
+      # pushing updates a repo; deleting one takes more
+      "select authz.protect('app.repos', type => 'repo', id => 'id', read => 'can_read', write => 'can_push', on_delete => 'can_delete')"
     ])
     delivered!(conn)
     repos = &visible(conn, %{sub: &1}, "select id from app.repos order by id")
@@ -160,7 +163,12 @@ defmodule Complex do
       check("github: bob may push to his repo", fn -> updated(conn, %{sub: "bob"}, "update app.repos set name = 'x' where id = 2") == 1 end),
       check("github: alice, a reader, may not push", fn -> updated(conn, %{sub: "alice"}, "update app.repos set name = 'x' where id = 1") == 0 end),
       check("github: the owner may push anywhere in the org", fn -> updated(conn, %{sub: "olivia"}, "update app.repos set name = 'x' where id = 4") == 1 end),
-      timed(conn, "github: carol given read on repo 4 sees it", fn -> query(conn, "insert into app.repo_access values (4, 'carol', null, 'reader')") end,
+      check("github: bob, a writer, may not delete his repo", fn -> updated(conn, %{sub: "bob"}, "delete from app.repos where id = 2") == 0 end),
+      check("github: the owner may delete a repo", fn -> updated(conn, %{sub: "olivia"}, "delete from app.repos where id = 4") == 1 end),
+      check("github: a role the model lacks fails the write itself", fn ->
+        match?({:error, %Postgrex.Error{postgres: %{code: :check_violation}}}, query(conn, "insert into app.repo_access values (4, 'user', 'carol', 'owner')"))
+      end),
+      timed(conn, "github: carol given read on repo 4 sees it", fn -> query(conn, "insert into app.repo_access values (4, 'user', 'carol', 'reader')") end,
             fn -> repos.("carol") == [4] end),
       timed(conn, "github: alice's ban lifted, she sees repo 3", fn -> query(conn, "delete from app.repo_bans where user_id = 'alice'") end,
             fn -> repos.("alice") == [1, 3, 5] end)
@@ -175,23 +183,23 @@ defmodule Complex do
       "create table app.folders (id int primary key, parent_id int)",
       "create table app.docs (id int primary key, folder_id int not null, title text not null)",
       "create table app.folder_shares (folder_id int not null, user_id text, group_id text)",
-      # a public link is a share with everyone: '*' becomes user:*
-      "create table app.doc_shares (doc_id int not null, user_id text, everyone text)",
+      # a public link is a share with everyone (user:*): its own kind, no grantee
+      "create table app.doc_shares (doc_id int not null, grantee_kind text not null, grantee_id text)",
       "grant select, insert, update, delete on all tables in schema app to app_user",
       # staff's members (eve) are also engineers (a group inside a group)
       "insert into app.group_members values ('staff', 'eve', null), ('engineers', 'frank', null), ('engineers', null, 'staff')",
       "insert into app.folders values (1, null), (2, 1), (3, 2)",
       "insert into app.docs values (1, 1, 'handbook'), (2, 2, 'design'), (3, 3, 'secrets'), (4, 1, 'press kit')",
       "insert into app.folder_shares values (2, null, 'engineers'), (3, 'frank', null)",
-      "insert into app.doc_shares values (4, null, '*')",
+      "insert into app.doc_shares values (4, 'public', null)",
       "select authz.relate('app.group_members', name => 'user', object_type => 'group', object_column => 'group_id', relation => 'member', subject_type => 'user', subject_column => 'user_id')",
       "select authz.relate('app.group_members', name => 'group', object_type => 'group', object_column => 'group_id', relation => 'member', subject_type => 'group', subject_column => 'child_group', subject_relation => 'member')",
       "select authz.relate('app.folders', object_type => 'folder', object_column => 'id', relation => 'parent', subject_type => 'folder', subject_column => 'parent_id')",
       "select authz.relate('app.docs', object_type => 'doc', object_column => 'id', relation => 'folder', subject_type => 'folder', subject_column => 'folder_id')",
       "select authz.relate('app.folder_shares', name => 'user', object_type => 'folder', object_column => 'folder_id', relation => 'viewer_grant', subject_type => 'user', subject_column => 'user_id')",
       "select authz.relate('app.folder_shares', name => 'group', object_type => 'folder', object_column => 'folder_id', relation => 'viewer_grant', subject_type => 'group', subject_column => 'group_id', subject_relation => 'member')",
-      "select authz.relate('app.doc_shares', name => 'user', object_type => 'doc', object_column => 'doc_id', relation => 'viewer_grant', subject_type => 'user', subject_column => 'user_id')",
-      "select authz.relate('app.doc_shares', name => 'public', object_type => 'doc', object_column => 'doc_id', relation => 'viewer_grant', subject_type => 'user', subject_column => 'everyone')",
+      "select authz.relate('app.doc_shares', name => 'user', filter => 'grantee_kind = ''user''', object_type => 'doc', object_column => 'doc_id', relation => 'viewer_grant', subject_type => 'user', subject_column => 'grantee_id')",
+      "select authz.relate('app.doc_shares', name => 'public', filter => 'grantee_kind = ''public''', object_type => 'doc', object_column => 'doc_id', relation => 'viewer_grant', subject_type => 'user', subject_id => '*')",
       "select authz.protect('app.docs', type => 'doc', id => 'id', read => 'viewer')",
       "select authz.protect('app.folders', type => 'folder', id => 'id', read => 'viewer')"
     ])
@@ -204,7 +212,7 @@ defmodule Complex do
       check("drive: folders follow the same tree", fn -> visible(conn, %{sub: "eve"}, "select id from app.folders order by id") == [2, 3] end),
       timed(conn, "drive: eve leaves staff, keeps the public doc", fn -> query(conn, "delete from app.group_members where user_id = 'eve'") end,
             fn -> docs.("eve") == [4] end),
-      timed(conn, "drive: the public link removed, zed sees nothing", fn -> query(conn, "delete from app.doc_shares where everyone = '*'") end,
+      timed(conn, "drive: the public link removed, zed sees nothing", fn -> query(conn, "delete from app.doc_shares where grantee_kind = 'public'") end,
             fn -> docs.("zed") == [] end)
     ]
   end

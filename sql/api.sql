@@ -23,6 +23,9 @@
 --
 -- attributes => array['owner_id', 'status'] sends those columns as the row's attributes, for an
 -- engine that decides on them (Cerbos).
+--
+-- on_update => ... and on_delete => ... check UPDATE and DELETE with their own permission (GitHub: push
+-- to update, delete to delete) instead of `write`, which still checks INSERT.
 create function authz.protect(
     rel regclass,
     type text,
@@ -37,7 +40,9 @@ create function authz.protect(
     insert_permission text default null,
     hierarchy text default null,
     direct text default null,
-    attributes name[] default null
+    attributes name[] default null,
+    on_update text default null,
+    on_delete text default null
 ) returns void
 language plpgsql volatile as $$
 #variable_conflict use_column
@@ -61,10 +66,11 @@ begin
         raise exception 'checking inserts against another object needs insert_type, insert_id and insert_permission';
     end if;
     perform authz.bind(protect.rel, protect.id, protect.type, protect.read, protect.write, protect.force, protect.key, protect.name,
-                       protect.insert_type, protect.insert_id, protect.insert_permission, protect.attributes);
-    raise notice '% is protected: a row is %:<%>; reading needs %, writing %', protect.rel, protect.type,
+                       protect.insert_type, protect.insert_id, protect.insert_permission, protect.attributes,
+                       protect.on_update, protect.on_delete);
+    raise notice '% is protected: a row is %:<%>; reading needs %; %', protect.rel, protect.type,
         coalesce(quote_ident(protect.id), protect.key), protect.read,
-        coalesce('needs ' || protect.write, 'is denied (no write permission)')
+        (select authz.writes_of(b) from authz.bindings b where b.rel = protect.rel and b.name = coalesce('pg_auth_' || protect.name, 'pg_auth'))
         || coalesce('; decided on the row''s ' || array_to_string(protect.attributes, ', '), '');
 
     if protect.key is not null then
@@ -82,6 +88,22 @@ begin
 end
 $$;
 
+-- How a binding's writes are checked, for status, why and doctor: 'writes need document#editor', or
+-- each command's own permission when they differ.
+create function authz.writes_of(b authz.bindings) returns text
+language sql immutable as $$
+    select case
+        when b.update_permission is null and b.delete_permission is null then
+            coalesce('writes need ' || b.object_type || '#' || b.write_permission, 'writes are denied (no write permission)')
+        else concat_ws(', ',
+            'insert ' || coalesce('needs ' || b.insert_object_type || '#' || b.insert_permission || ' on its ' || b.insert_column,
+                                  'needs ' || b.object_type || '#' || b.write_permission, 'is denied'),
+            'update ' || coalesce('needs ' || b.object_type || '#' || coalesce(b.update_permission, b.write_permission), 'is denied'),
+            'delete ' || coalesce('needs ' || b.object_type || '#' || coalesce(b.delete_permission, b.write_permission), 'is denied'))
+    end
+$$;
+
+
 -- What pg_auth is enforcing, and whether the engine answers.
 create function authz.status() returns table (item text, value text)
 language sql stable as $$
@@ -92,6 +114,7 @@ language sql stable as $$
     select 'protected ' || b.rel::text || case when b.name = 'pg_auth' then '' else ' (' || b.name || ')' end,
            b.object_type || '#' || b.permission
            || coalesce(' / write ' || b.write_permission, '')
+           || coalesce(' / update ' || b.update_permission, '') || coalesce(' / delete ' || b.delete_permission, '')
            || ' via ' || coalesce(quote_ident(b.column_name), '(' || b.key_expr || ')')
            || coalesce(' / insert ' || b.insert_object_type || '#' || b.insert_permission || ' via ' || quote_ident(b.insert_column), '')
            || case when b.force then '' else ' (owner not forced)' end
@@ -205,8 +228,7 @@ begin
                                 array_to_string(b.attributes, ', '), case when ok then 'allowed' else 'denied by the engine''s rules' end)
                            else format('%s %s %s on %s', coalesce(who.subject_type || ':' || who.subject_id, 'no subject'),
                                 case when ok then 'has' else 'lacks' end, b.object_type || '#' || b.permission, object) end
-                      || case when b.write_permission is null then '; writes are denied (no write permission)'
-                              else '; writes need ' || b.object_type || '#' || b.write_permission end;
+                      || '; ' || (select authz.writes_of(bb) from authz.bindings bb where bb.rel = b.rel and bb.name = b.name);
             visible := visible or ok;
             return next;
         end loop;
@@ -335,7 +357,7 @@ begin
             readers := (select string_agg(r, ', ') from unnest(api_roles) r where has_table_privilege(r, b.rel, 'SELECT'));
             status := 'ok'; fix := null;
             detail := format('%s#%s via %s', b.object_type, b.permission, coalesce(quote_ident(b.column_name), '(' || b.key_expr || ')'))
-                      || coalesce('; writes need ' || b.write_permission, '; writes denied')
+                      || '; ' || (select authz.writes_of(bb) from authz.bindings bb where bb.rel = b.rel and bb.name = b.name)
                       || coalesce('; readable by ' || readers, '');
         end if;
         return next;
@@ -377,7 +399,7 @@ begin
 end
 $$;
 
-revoke execute on function authz.protect(regclass, text, name, text, text, boolean, text, text, text, name, text, text, text, name[]) from public;
+revoke execute on function authz.protect(regclass, text, name, text, text, boolean, text, text, text, name, text, text, text, name[], text, text) from public;
 revoke execute on function authz.check(text, text, text) from public;
 revoke execute on function authz.status() from public;
 revoke execute on function authz.why(regclass, text, text, name, text[], text) from public;

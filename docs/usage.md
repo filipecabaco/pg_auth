@@ -87,6 +87,9 @@ too. Index the id column, as you would for RLS.
   says so.
 - **Row state** (`not deleted`, `published`) stays plain SQL: add an ordinary restrictive policy
   next to pg_auth's; it joins the scan's filter.
+- **Updates and deletes needing their own permission** (GitHub: push to update, delete to delete):
+  `on_update => 'can_push', on_delete => 'can_delete'`. `write` still checks inserts; without it, inserts
+  are denied unless checked on the parent.
 - `force => false` lets the table owner bypass the policies (default: forced).
 
 `authz.unbind(table)` removes pg_auth's policies from a table.
@@ -109,6 +112,24 @@ select authz.relate('app.shares', object_type => 'document', object_column => 'd
 select authz.protect('app.memberships', type => 'org', id => 'org_id', read => 'can_read', write => 'can_manage');
 ```
 
+- **One table, several kinds.** Apps keep one `shares` table for users, teams and the public.
+  Declare it once per kind with a `filter` on the row, and read any part from a column or fix it:
+  `object_type` or `object_type_column`, `object_column` or `object_id`, `subject_type` or
+  `subject_type_column`, `subject_column` or `subject_id`, `subject_relation` or
+  `subject_relation_column`. `subject_id => '*'` is everyone (`user:*`), `object_id => 'main'` a
+  singleton object.
+
+  ```sql
+  select authz.relate('app.shares', name => 'team', filter => 'grantee_kind = ''team''',
+                      object_type => 'doc', object_column => 'doc_id', relation_column => 'role',
+                      subject_type => 'team', subject_column => 'grantee_id', subject_relation => 'member',
+                      relations => array['viewer', 'editor']);
+  select authz.relate('app.shares', name => 'public', filter => 'grantee_kind = ''public''',
+                      object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+                      subject_type => 'user', subject_id => '*');
+  ```
+- **Relations a row may name.** `relations => array[...]` makes a write naming another one fail at once
+  (`check_violation`), where the app sees it, instead of the engine refusing it after the commit.
 - **Write to relations, read permissions.** The rows write plain relations (`admin`, `member`,
   `shared_with`); tables are protected by permissions computed from them (`viewer: shared_with or
   can_read from org`). SpiceDB only takes writes to relations, and the model reads the same in

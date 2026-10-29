@@ -15,16 +15,31 @@ create table authz.relationships (
     rel              regclass not null,
     -- a table may describe several relationships (a share row: its user and its team)
     name             name not null default 'pg_auth',
-    object_type      text collate "C" not null,
-    object_column    name not null,
-    -- the relation: fixed, or read from a column (a membership's role)
-    relation         text collate "C",
-    relation_column  name,
+    -- each part is fixed, or read from a column of the row: the object's type and id, the relation,
+    -- the subject's type and id, and the subject's relation (a set of subjects: group:eng#member)
+    object_type             text collate "C",
+    object_type_column      name,
+    object_id               text collate "C",
+    object_column           name,
+    relation                text collate "C",
+    relation_column         name,
+    subject_type            text collate "C",
+    subject_type_column     name,
+    -- a fixed subject id: '*' is everyone (user:*), a singleton (platform:main)
+    subject_id              text collate "C",
+    subject_column          name,
+    subject_relation        text collate "C",
+    subject_relation_column name,
+    -- only rows this boolean SQL expression holds for (one shares table feeding a declaration per kind)
+    filter                  text,
+    -- the relations a row may name; another one fails the write, at once
+    relations               text[],
+    check ((object_type is null) <> (object_type_column is null)),
+    check ((object_id is null) <> (object_column is null)),
     check ((relation is null) <> (relation_column is null)),
-    subject_type     text collate "C" not null,
-    subject_column   name not null,
-    -- a set of subjects rather than one (group:eng#member)
-    subject_relation text collate "C",
+    check ((subject_type is null) <> (subject_type_column is null)),
+    check ((subject_id is null) <> (subject_column is null)),
+    check (subject_relation is null or subject_relation_column is null),
     primary key (rel, name)
 );
 
@@ -41,15 +56,32 @@ create table authz.outbox (
 );
 
 -- The relationship a row of `r`'s table describes (object, relation, subject), or null when one
--- of its columns is null.
+-- of its parts is null.
 create function authz.relationship_of(r authz.relationships, row_ jsonb) returns text[]
 language sql immutable as $$
-    select case when row_ ->> r.object_column is null or row_ ->> r.subject_column is null
-                     or coalesce(r.relation, row_ ->> r.relation_column) is null then null
-                else array[r.object_type || ':' || (row_ ->> r.object_column),
-                           coalesce(r.relation, row_ ->> r.relation_column),
-                           r.subject_type || ':' || (row_ ->> r.subject_column) || coalesce('#' || r.subject_relation, '')]
+    select case when p.ot is null or p.oid is null or p.rel is null or p.st is null or p.sid is null then null
+                else array[p.ot || ':' || p.oid, p.rel, p.st || ':' || p.sid || coalesce('#' || p.sr, '')]
            end
+    from (select coalesce(r.object_type, row_ ->> r.object_type_column) as ot,
+                 coalesce(r.object_id, row_ ->> r.object_column) as oid,
+                 coalesce(r.relation, row_ ->> r.relation_column) as rel,
+                 coalesce(r.subject_type, row_ ->> r.subject_type_column) as st,
+                 coalesce(r.subject_id, row_ ->> r.subject_column) as sid,
+                 coalesce(r.subject_relation, row_ ->> r.subject_relation_column) as sr) p
+$$;
+
+-- Whether a row passes the declaration's filter (no filter: every row).
+create function authz.relationship_applies(r authz.relationships, row_ anyelement) returns boolean
+language plpgsql stable as $$
+declare
+    ok boolean;
+begin
+    if r.filter is null then
+        return true;
+    end if;
+    execute format('select (%s) from (select ($1).*) as _', r.filter) into ok using row_;
+    return coalesce(ok, false);
+end
 $$;
 
 -- The row trigger of a relationship table (its argument: the declaration's name).
@@ -64,11 +96,18 @@ begin
     if r is null then
         return null;
     end if;
-    if tg_op in ('UPDATE', 'DELETE') then
+    if tg_op in ('UPDATE', 'DELETE') and authz.relationship_applies(r, old) then
         before := authz.relationship_of(r, to_jsonb(old));
     end if;
-    if tg_op in ('UPDATE', 'INSERT') then
+    if tg_op in ('UPDATE', 'INSERT') and authz.relationship_applies(r, new) then
         after := authz.relationship_of(r, to_jsonb(new));
+        -- a relation the model does not have fails here, where the app sees it, rather than when
+        -- the engine refuses it after the commit
+        if after is not null and r.relations is not null and not after[2] = any (r.relations) then
+            raise exception 'relation % is not one of %', after[2], array_to_string(r.relations, ', ')
+                using errcode = 'check_violation',
+                      hint = format('%s declares the relations its rows may name (authz.relate relations => ...)', tg_relid::regclass);
+        end if;
     end if;
     if before is not distinct from after then
         return null;
@@ -84,24 +123,43 @@ begin
 end
 $$;
 
--- Declare that `rel`'s rows are relationships: each row says `subject_type:<subject_column>` has
--- `relation` (or the row's `relation_column`) on `object_type:<object_column>`, e.g.
+-- Declare that `rel`'s rows are relationships. Each part of a row's relationship is fixed or read
+-- from a column: the object (object_type or object_type_column, object_column or object_id), the
+-- relation (relation or relation_column), the subject (subject_type or subject_type_column,
+-- subject_column or subject_id) and the subject's relation (subject_relation or
+-- subject_relation_column, optional). For example:
 --
+--   -- org:<org_id>#<role>@user:<user_id>, the role a member of a fixed set
 --   select authz.relate('app.memberships', object_type => 'org', object_column => 'org_id',
---                       relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
+--                       relation_column => 'role', subject_type => 'user', subject_column => 'user_id',
+--                       relations => array['admin', 'member']);
+--   -- one shares table, a declaration per kind of grantee; everyone is user:*
+--   select authz.relate('app.shares', name => 'team', filter => 'grantee_kind = ''team''',
+--                       object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+--                       subject_type => 'team', subject_column => 'grantee_id', subject_relation => 'member');
+--   select authz.relate('app.shares', name => 'public', filter => 'grantee_kind = ''public''',
+--                       object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+--                       subject_type => 'user', subject_id => '*');
 --
 -- Rows already there are delivered too. Give the table a unique key over these columns: two rows
 -- that are one relationship would race each other's deletes.
 create function authz.relate(
     rel regclass,
-    object_type text,
-    object_column name,
-    subject_type text,
-    subject_column name,
+    object_type text default null,
+    object_column name default null,
+    subject_type text default null,
+    subject_column name default null,
     relation text default null,
     relation_column name default null,
     subject_relation text default null,
-    name text default 'pg_auth'
+    name text default 'pg_auth',
+    object_type_column name default null,
+    object_id text default null,
+    subject_type_column name default null,
+    subject_id text default null,
+    subject_relation_column name default null,
+    filter text default null,
+    relations text[] default null
 ) returns bigint
 language plpgsql volatile as $$
 #variable_conflict use_column
@@ -109,28 +167,62 @@ declare
     r authz.relationships;
     col name;
     queued bigint;
+    bad text;
 begin
-    if (relate.relation is null) = (relate.relation_column is null) then
-        raise exception 'a relationship has a fixed relation (relation => ...) or reads it from a column (relation_column => ...), not both or neither';
-    end if;
-    foreach col in array array[relate.object_column, relate.subject_column, relate.relation_column] loop
+    foreach bad in array array[
+        case when (relate.object_type is null) = (relate.object_type_column is null)
+             then 'the object''s type: object_type => ... or object_type_column => ...' end,
+        case when (relate.object_column is null) = (relate.object_id is null)
+             then 'the object''s id: object_column => ... or object_id => ...' end,
+        case when (relate.relation is null) = (relate.relation_column is null)
+             then 'the relation: relation => ... or relation_column => ...' end,
+        case when (relate.subject_type is null) = (relate.subject_type_column is null)
+             then 'the subject''s type: subject_type => ... or subject_type_column => ...' end,
+        case when (relate.subject_column is null) = (relate.subject_id is null)
+             then 'the subject''s id: subject_column => ... or subject_id => ...' end,
+        case when relate.subject_relation is not null and relate.subject_relation_column is not null
+             then 'the subject''s relation: subject_relation => ... or subject_relation_column => ..., not both' end
+    ] loop
+        if bad is not null then
+            raise exception 'a relationship needs exactly one of each part; %', bad;
+        end if;
+    end loop;
+    foreach col in array array[relate.object_type_column, relate.object_column, relate.relation_column, relate.subject_type_column,
+                               relate.subject_column, relate.subject_relation_column] loop
         if col is not null and not exists (select 1 from pg_attribute where attrelid = relate.rel and attname = col and attnum > 0 and not attisdropped) then
             raise exception 'column % does not exist on %', col, relate.rel;
         end if;
     end loop;
-    insert into authz.relationships values (relate.rel, relate.name, relate.object_type, relate.object_column, relate.relation,
-                                            relate.relation_column, relate.subject_type, relate.subject_column, relate.subject_relation)
+    if relate.filter is not null then
+        -- a filter that does not parse, or names a missing column, fails here rather than on a write
+        execute format('select 1 from %s where %s limit 0', relate.rel, relate.filter);
+    end if;
+    insert into authz.relationships (rel, name, object_type, object_type_column, object_id, object_column, relation, relation_column,
+                                     subject_type, subject_type_column, subject_id, subject_column, subject_relation,
+                                     subject_relation_column, filter, relations)
+    values (relate.rel, relate.name, relate.object_type, relate.object_type_column, relate.object_id, relate.object_column,
+            relate.relation, relate.relation_column, relate.subject_type, relate.subject_type_column, relate.subject_id,
+            relate.subject_column, relate.subject_relation, relate.subject_relation_column, relate.filter, relate.relations)
     on conflict on constraint relationships_pkey do update set
-        object_type = excluded.object_type, object_column = excluded.object_column, relation = excluded.relation,
-        relation_column = excluded.relation_column, subject_type = excluded.subject_type,
-        subject_column = excluded.subject_column, subject_relation = excluded.subject_relation
+        object_type = excluded.object_type, object_type_column = excluded.object_type_column, object_id = excluded.object_id,
+        object_column = excluded.object_column, relation = excluded.relation, relation_column = excluded.relation_column,
+        subject_type = excluded.subject_type, subject_type_column = excluded.subject_type_column, subject_id = excluded.subject_id,
+        subject_column = excluded.subject_column, subject_relation = excluded.subject_relation,
+        subject_relation_column = excluded.subject_relation_column, filter = excluded.filter, relations = excluded.relations
     returning * into r;
     execute format('create or replace trigger %I after insert or update or delete on %s for each row execute function authz.relationship_changed(%L)',
                    'pg_auth_relate_' || relate.name, relate.rel, relate.name);
-    -- the rows already there
+    -- the rows already there, which must name allowed relations too
+    execute format('select t[2] from (select authz.relationship_of($1, to_jsonb(x)) t from %s x where %s) s
+                    where t is not null and ($1).relations is not null and not t[2] = any (($1).relations) limit 1',
+                   relate.rel, coalesce(relate.filter, 'true')) into bad using r;
+    if bad is not null then
+        raise exception 'a row of % names relation %, not one of %', relate.rel, bad, array_to_string(relate.relations, ', ')
+            using errcode = 'check_violation';
+    end if;
     execute format('insert into authz.outbox (op, object, relation, subject)
-                    select ''write'', t[1], t[2], t[3] from (select authz.relationship_of($1, to_jsonb(x)) t from %s x) s where t is not null',
-                   relate.rel) using r;
+                    select ''write'', t[1], t[2], t[3] from (select authz.relationship_of($1, to_jsonb(x)) t from %s x where %s) s where t is not null',
+                   relate.rel, coalesce(relate.filter, 'true')) using r;
     get diagnostics queued = row_count;
     perform pg_notify('pg_auth_outbox', '');
     return queued;
@@ -176,7 +268,7 @@ language sql volatile security definer set search_path = pg_catalog, pg_temp as 
 $$;
 
 revoke all on authz.relationships, authz.outbox from public;
-revoke execute on function authz.relate(regclass, text, name, text, name, text, name, text, text) from public;
+revoke execute on function authz.relate(regclass, text, name, text, name, text, name, text, text, name, text, name, text, name, text, text[]) from public;
 revoke execute on function authz.unrelate(regclass, text) from public;
 revoke execute on function authz.outbox_claim(int) from public;
 revoke execute on function authz.outbox_done(bigint[]) from public;

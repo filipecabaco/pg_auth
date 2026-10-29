@@ -738,6 +738,68 @@ mod tests {
     }
 
     #[pg_test]
+    fn one_shares_table_feeds_a_declaration_per_kind_with_constants_and_allowed_relations() {
+        // one table for every kind of grantee, as apps keep it; rows already there are delivered
+        Spi::run(
+            "create table public.shares (doc_id int, grantee_kind text, grantee_id text, role text);
+             insert into public.shares values (1, 'user', 'anne', 'viewer'), (1, 'team', 'eng', 'editor'), (2, 'public', null, 'viewer');
+             select authz.relate('public.shares', name => 'user', filter => 'grantee_kind = ''user''',
+                                 object_type => 'doc', object_column => 'doc_id', relation_column => 'role',
+                                 subject_type => 'user', subject_column => 'grantee_id', relations => array['viewer', 'editor']);
+             select authz.relate('public.shares', name => 'team', filter => 'grantee_kind = ''team''',
+                                 object_type => 'doc', object_column => 'doc_id', relation_column => 'role',
+                                 subject_type => 'team', subject_column => 'grantee_id', subject_relation => 'member',
+                                 relations => array['viewer', 'editor']);
+             select authz.relate('public.shares', name => 'public', filter => 'grantee_kind = ''public''',
+                                 object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+                                 subject_type => 'user', subject_id => '*');",
+        )
+        .unwrap();
+        let mut sent = outbox();
+        sent.sort();
+        assert_eq!(sent, ["write doc:1 editor team:eng#member", "write doc:1 viewer user:anne", "write doc:2 viewer user:*"]);
+        Spi::run("delete from authz.outbox").unwrap();
+
+        // a relation outside the declared ones fails the write itself
+        assert!(
+            error_of("insert into public.shares values (3, 'user', 'bob', 'owner')")
+                .unwrap_or_default()
+                .contains("not one of viewer, editor")
+        );
+        // a row changing kind moves from one declaration to the other
+        Spi::run("update public.shares set grantee_kind = 'public', grantee_id = null where doc_id = 1 and grantee_kind = 'user'").unwrap();
+        // (each declaration has its own trigger: they fire in name order, and touch different tuples)
+        let mut moved = outbox();
+        moved.sort();
+        assert_eq!(moved, ["delete doc:1 viewer user:anne", "write doc:1 viewer user:*"]);
+        Spi::run("delete from authz.outbox").unwrap();
+
+        // the type and the subject's relation read from columns, the object fixed (a singleton)
+        Spi::run(
+            "create table public.platform_admins (kind text, id text, via text);
+             select authz.relate('public.platform_admins', object_type => 'platform', object_id => 'main', relation => 'admin',
+                                 subject_type_column => 'kind', subject_column => 'id', subject_relation_column => 'via');
+             insert into public.platform_admins values ('user', 'root', null), ('group', 'ops', 'member')",
+        )
+        .unwrap();
+        assert_eq!(outbox(), ["write platform:main admin user:root", "write platform:main admin group:ops#member"]);
+
+        // each part needs exactly one source, and a filter must parse
+        assert!(
+            error_of(
+                "select authz.relate('public.shares', name => 'x', object_type => 'doc', object_id => '1', object_column => 'doc_id',
+                                 relation => 'viewer', subject_type => 'user', subject_column => 'grantee_id')"
+            )
+            .unwrap_or_default()
+            .contains("the object's id")
+        );
+        assert!(fails(
+            "select authz.relate('public.shares', name => 'x', filter => 'no_such_column = 1', object_type => 'doc',
+                                 object_column => 'doc_id', relation => 'viewer', subject_type => 'user', subject_column => 'grantee_id')"
+        ));
+    }
+
+    #[pg_test]
     fn the_outbox_is_delivered_in_order_by_one_sidecar_and_removed_by_id() {
         Spi::run(
             "insert into authz.outbox (op, object, relation, subject) values
@@ -2119,6 +2181,28 @@ mod tests {
              end $$",
         )
         .unwrap();
+        reset_role();
+    }
+
+    #[pg_test]
+    fn update_and_delete_can_need_their_own_permission() {
+        fixture();
+        // dana may edit org 1 but has no 'remove' on it: she updates, she does not delete
+        Spi::run(
+            "select authz.protect('public.docs', type => 'org', id => 'org_id', read => 'view', write => 'edit', on_delete => 'remove')",
+        )
+        .unwrap();
+        let status =
+            Spi::get_one::<String>("select value from authz.status() where item like 'protected %docs'").unwrap().unwrap_or_default();
+        assert!(status.contains("/ write edit / delete remove"), "{status}");
+        assert_eq!(error_of("select 1"), None);
+        as_subject("dana");
+        assert_eq!(count("with u as (update public.docs set title = 'x' where org_id = 1 returning 1) select count(*) from u"), 5);
+        assert_eq!(count("with d as (delete from public.docs where org_id = 1 returning 1) select count(*) from d"), 0);
+        reset_role();
+        // alice may only view: neither
+        as_subject("alice");
+        assert_eq!(count("with u as (update public.docs set title = 'y' where org_id = 1 returning 1) select count(*) from u"), 0);
         reset_role();
     }
 

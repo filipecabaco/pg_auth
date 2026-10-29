@@ -152,10 +152,11 @@ Keep A as the primitive layer, add B as the way people write and review a setup,
 teams that want their rules versioned with their schema. In order:
 
 1. **Fix Cerbos scopes** (the security issue above): done.
-2. **Grow the primitives** so every shape exists in SQL first, where B compiles to: a `where` row
-   filter and a type column on `relate` (one table, several types); constant ids (`'*'`, singletons);
-   per-operation permissions on `protect` (`select`, `insert`, `update`, `delete`); attribute aliases
-   and joined or list attributes for Cerbos; allowed values for relation columns.
+2. **Grow the primitives** so every shape exists in SQL first, where B compiles to. Done: a `filter`
+   and type columns on `relate` (one table, several types), constant ids (`'*'`, singletons),
+   allowed relations that fail the write at once, and `on_update` / `on_delete` on `protect`; the
+   GitHub and Drive scenarios in `compare/complex.exs` use them. Still to do: attribute aliases and
+   joined or list attributes for Cerbos.
 3. **Add B**, `authz.setup(jsonb)`: apply a whole mapping in one transaction, validate it, keep it
    formatted with history, and have `authz.setup()` return what is applied.
 4. **Add C**, `authz.set_rules(engine, text)`: store the engine's rules and push them. OpenFGA

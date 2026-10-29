@@ -21,6 +21,10 @@ create table authz.bindings (
     object_type      text collate "C" not null,
     permission       text collate "C" not null,
     write_permission text collate "C",
+    -- an UPDATE or a DELETE needing another permission than other writes (GitHub: push to update,
+    -- delete to delete); null: the write permission
+    update_permission text collate "C",
+    delete_permission text collate "C",
     -- INSERT checked against another object than the row's own (its parent: "may create in this
     -- project"), since a row's own object does not exist in the engine before the row does
     insert_object_type text collate "C",
@@ -109,12 +113,16 @@ begin
     -- filter when the subject's allowed set is small (src/rewrite/guard.rs).
     execute format('create policy %I on %s for select using (%s)', b.name || '_select', p_part, authz.predicate(b.object_type, b.permission, key, attrs));
 
-    if b.write_permission is not null then
+    if b.write_permission is not null and b.insert_object_type is null then
         pred := authz.predicate(b.object_type, b.write_permission, key, attrs);
-        if b.insert_object_type is null then
-            execute format('create policy %I on %s for insert with check (%s)', b.name || '_insert', p_part, pred);
-        end if;
+        execute format('create policy %I on %s for insert with check (%s)', b.name || '_insert', p_part, pred);
+    end if;
+    if coalesce(b.update_permission, b.write_permission) is not null then
+        pred := authz.predicate(b.object_type, coalesce(b.update_permission, b.write_permission), key, attrs);
         execute format('create policy %I on %s for update using (%s) with check (%s)', b.name || '_update', p_part, pred, pred);
+    end if;
+    if coalesce(b.delete_permission, b.write_permission) is not null then
+        pred := authz.predicate(b.object_type, coalesce(b.delete_permission, b.write_permission), key, attrs);
         execute format('create policy %I on %s for delete using (%s)', b.name || '_delete', p_part, pred);
     end if;
     if b.insert_object_type is not null then
@@ -150,7 +158,9 @@ create function authz.bind(
     p_insert_object_type text default null,
     p_insert_column name default null,
     p_insert_permission text default null,
-    p_attributes name[] default null
+    p_attributes name[] default null,
+    p_update_permission text default null,
+    p_delete_permission text default null
 ) returns void
 language plpgsql volatile as $$
 declare
@@ -158,10 +168,11 @@ declare
     part regclass;
 begin
     insert into authz.bindings (rel, name, column_name, key_expr, object_type, permission, write_permission,
-                                insert_object_type, insert_column, insert_permission, force, attributes)
+                                insert_object_type, insert_column, insert_permission, force, attributes,
+                                update_permission, delete_permission)
     values (p_rel, coalesce('pg_auth_' || p_name, 'pg_auth'), case when p_key is null then p_column end, p_key,
             p_object_type, p_permission, p_write_permission, p_insert_object_type, p_insert_column, p_insert_permission, p_force,
-            p_attributes)
+            p_attributes, p_update_permission, p_delete_permission)
     on conflict (rel, name) do update
         set column_name = excluded.column_name,
             key_expr = excluded.key_expr,
@@ -171,6 +182,8 @@ begin
             object_type = excluded.object_type,
             permission = excluded.permission,
             write_permission = excluded.write_permission,
+            update_permission = excluded.update_permission,
+            delete_permission = excluded.delete_permission,
             force = excluded.force,
             attributes = excluded.attributes
     returning * into b;
@@ -309,7 +322,7 @@ $$;
 
 revoke all on all tables in schema authz from public;
 grant usage on schema authz to public;
-revoke execute on function authz.bind(regclass, name, text, text, text, boolean, text, text, text, name, text, name[]) from public;
+revoke execute on function authz.bind(regclass, name, text, text, text, boolean, text, text, text, name, text, name[], text, text) from public;
 revoke execute on function authz.unbind(regclass) from public;
 revoke execute on function authz.drop_policies(regclass) from public;
 revoke execute on function authz.apply_policies(regclass, authz.bindings) from public;

@@ -107,19 +107,21 @@ $$;
 -- Why a row is, or is not, visible: who pg_auth sees, the table's row level security, the row, and
 -- each of pg_auth's policies on it evaluated for that subject, with the table's other policies
 -- listed. `as_subject` acts as another subject ('user:anne') for the call, whatever the subject
--- source (pg_auth.as_subject), with `subject_roles` its roles for an engine that decides on them
--- (Cerbos); `as_role` also checks that Postgres role's privilege to read the table.
+-- source (pg_auth.as_subject), with `subject_roles` its roles and `subject_scope` its scope for an
+-- engine that decides on them (Cerbos); `as_role` also checks that Postgres role's privilege to
+-- read the table.
 -- It reads rows the subject may not see, so it is for administrators.
 --
 --   select * from authz.why('app.documents', '42', as_subject => 'user:anne', as_role => 'authenticated');
 create function authz.why(rel regclass, id text, as_subject text default null, as_role name default null,
-                          subject_roles text[] default null)
+                          subject_roles text[] default null, subject_scope text default null)
 returns table (step text, ok boolean, detail text)
 language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
 #variable_conflict use_column
 declare
     previous text := current_setting('pg_auth.as_subject', true);
     previous_roles text := current_setting('pg_auth.subject_roles', true);
+    previous_scope text := current_setting('pg_auth.subject_scope', true);
     who record;
     pk name;
     pktype regtype;
@@ -139,6 +141,9 @@ begin
     end if;
     if why.subject_roles is not null then
         perform set_config('pg_auth.subject_roles', array_to_string(why.subject_roles, ','), true);
+    end if;
+    if why.subject_scope is not null then
+        perform set_config('pg_auth.subject_scope', why.subject_scope, true);
     end if;
     select * into who from authz.current_subject();
     step := 'subject'; ok := who.subject_id is not null;
@@ -168,6 +173,7 @@ begin
         return next;
         perform set_config('pg_auth.as_subject', coalesce(previous, ''), true);
         perform set_config('pg_auth.subject_roles', coalesce(previous_roles, ''), true);
+        perform set_config('pg_auth.subject_scope', coalesce(previous_scope, ''), true);
         return;
     end if;
     execute format('select exists (select 1 from %s where %I = $1::%s)', why.rel, pk, pktype) using why.id into found;
@@ -231,6 +237,7 @@ begin
     return next;
     perform set_config('pg_auth.as_subject', coalesce(previous, ''), true);
     perform set_config('pg_auth.subject_roles', coalesce(previous_roles, ''), true);
+    perform set_config('pg_auth.subject_scope', coalesce(previous_scope, ''), true);
 end
 $$;
 
@@ -272,6 +279,21 @@ begin
         end if;
     end if;
     return next;
+
+    -- Cerbos picks scoped policies by the request's scope: without one, the base policy answers and
+    -- a scoped override, deny rules included, never applies
+    if engine = 'cerbos' then
+        check_name := 'cerbos scope';
+        if coalesce((select value from authz.settings where key = 'scope_claim'), '') <> '' then
+            status := 'ok'; fix := null;
+            detail := 'the scope comes from the claim ' || (select value from authz.settings where key = 'scope_claim');
+        else
+            status := 'info';
+            detail := 'no scope is sent (pg_auth.subject_scope aside): Cerbos policies with a scope: are not applied, so a scoped deny does not hide rows';
+            fix := 'if your policies use scopes: select authz.configure(scope_claim => ''tenant_id'');';
+        end if;
+        return next;
+    end if;
 
     check_name := 'subject source';
     status := 'ok'; fix := null;
@@ -358,6 +380,6 @@ $$;
 revoke execute on function authz.protect(regclass, text, name, text, text, boolean, text, text, text, name, text, text, text, name[]) from public;
 revoke execute on function authz.check(text, text, text) from public;
 revoke execute on function authz.status() from public;
-revoke execute on function authz.why(regclass, text, text, name, text[]) from public;
+revoke execute on function authz.why(regclass, text, text, name, text[], text) from public;
 revoke execute on function authz.doctor() from public;
 revoke execute on function authz.answers_changed() from public;

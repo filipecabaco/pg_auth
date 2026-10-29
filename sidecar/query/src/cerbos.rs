@@ -37,7 +37,7 @@ impl Cerbos {
             "requestId": "pg_auth",
             "action": permission,
             "principal": principal_of(subject, principal)?,
-            "resource": {"kind": object_type},
+            "resource": resource_of(object_type, principal),
         });
         let v = send_json(self.client.post(format!("{}/api/plan/resources", self.base)).json(&body), "cerbos plan resources").await?;
         let filter = v.get("filter").ok_or("cerbos plan resources: no filter")?;
@@ -67,7 +67,10 @@ impl Cerbos {
             .iter()
             .zip(attrs)
             .map(|(id, attr)| {
-                json!({"actions": [permission], "resource": {"kind": object_type, "id": id, "attr": attr.cloned().unwrap_or_else(|| json!({}))}})
+                let mut resource = resource_of(object_type, principal);
+                resource["id"] = json!(id);
+                resource["attr"] = attr.cloned().unwrap_or_else(|| json!({}));
+                json!({"actions": [permission], "resource": resource})
             })
             .collect();
         let body = json!({"requestId": "pg_auth", "principal": principal_of(subject, principal)?, "resources": resources});
@@ -98,7 +101,29 @@ fn principal_of(subject: &str, principal: Option<&Value>) -> Result<Value, Strin
         ));
     };
     let attr = principal.and_then(|p| p.get("attr")).filter(|a| a.is_object()).cloned().unwrap_or_else(|| json!({}));
-    Ok(json!({"id": id, "roles": roles, "attr": attr}))
+    let mut out = json!({"id": id, "roles": roles, "attr": attr});
+    scoped(&mut out, principal);
+    Ok(out)
+}
+
+/// A resource of `kind` as Cerbos takes it, in the request's scope and policy version: Cerbos picks
+/// scoped resource policies by the resource's scope, so without it a scoped override (a deny
+/// included) never applies.
+fn resource_of(kind: &str, principal: Option<&Value>) -> Value {
+    let mut resource = json!({"kind": kind});
+    scoped(&mut resource, principal);
+    resource
+}
+
+/// Copy the request's scope and policy version (from the extension's principal) onto a Cerbos
+/// principal or resource.
+fn scoped(target: &mut Value, principal: Option<&Value>) {
+    if let Some(scope) = principal.and_then(|p| p.get("scope")).and_then(Value::as_str) {
+        target["scope"] = json!(scope);
+    }
+    if let Some(version) = principal.and_then(|p| p.get("policy_version")).and_then(Value::as_str) {
+        target["policyVersion"] = json!(version);
+    }
 }
 
 /// A Cerbos plan operand in the protocol's expression language, or None when it is outside it.

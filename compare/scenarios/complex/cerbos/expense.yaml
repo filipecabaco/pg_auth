@@ -1,0 +1,19 @@
+# compare/complex.exs: owners and finance see expenses; finance approves small ones it did not file
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: expense
+  importDerivedRoles: ["expense_roles"]
+  rules:
+    - actions: ["view"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["owner", "finance"]
+    - actions: ["approve"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["finance"]
+      condition:
+        match:
+          all:
+            of:
+              - expr: request.resource.attr.amount < 1000.0
+              - expr: request.resource.attr.owner != request.principal.id

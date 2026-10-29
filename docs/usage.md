@@ -79,6 +79,12 @@ too. Index the id column, as you would for RLS.
   `role`; `authz.configure(roles_claim => 'app_metadata.roles')`) or, with `subject => 'guc'`,
   from `pg_auth.subject_roles` (comma separated, superuser-only like `pg_auth.subject_id`); its
   attributes are the token's claims. See docs/proposals/cerbos.md.
+  **Scoped policies** (a tenant's overrides, `scope:` in the policy) need the request's scope:
+  `authz.configure(scope_claim => 'tenant_id')` sends that claim as Cerbos's scope, on the
+  principal and the resource (`pg_auth.subject_scope` for a session subject, superuser-only;
+  `policy_version` for a policy version other than `default`). Without one, Cerbos answers from
+  the base policy and a scoped override, deny rules included, does not apply; `authz.doctor()`
+  says so.
 - **Row state** (`not deleted`, `published`) stays plain SQL: add an ordinary restrictive policy
   next to pg_auth's; it joins the scan's filter.
 - `force => false` lets the table owner bypass the policies (default: forced).

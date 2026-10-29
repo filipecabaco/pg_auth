@@ -44,11 +44,12 @@ Where it strains:
 7. **Volume.** The GitHub, Google IAM and Google Drive setups take 8 to 10 `relate` calls plus
    several `protect` calls, spread over a migration, with no single place to review them.
 
-**A security issue, separate from usability: Cerbos scoped policies are skipped.** pg_auth sends no
-`scope` and no `policyVersion` to PlanResources, so Cerbos answers from the base policy and any
-scoped override, deny rules included, never applies. For anyone using scopes this can show rows a
-scoped policy denies. It should be fixed before anything below: send the scope from a claim or a
-setting, and until then `authz.doctor()` should say that scopes are not sent.
+**A security issue, separate from usability, now fixed: Cerbos scoped policies were skipped.** pg_auth
+sent no `scope` and no `policyVersion`, so Cerbos answered from the base policy and a scoped
+override, deny rules included, never applied: confirmed against a real Cerbos, where a draft a
+scoped policy denies came back allowed. The scope now comes from the token (`scope_claim`) or
+`pg_auth.subject_scope`, and goes on the principal and the resource; `authz.doctor()` says when
+none is configured. `compare/complex.exs` checks a tenant's scoped deny end to end.
 
 ## Three ways to set rules
 
@@ -150,7 +151,7 @@ rather than after a refused write, and `select * from authz.rules` shows what th
 Keep A as the primitive layer, add B as the way people write and review a setup, and offer C for
 teams that want their rules versioned with their schema. In order:
 
-1. **Fix Cerbos scopes** (the security issue above).
+1. **Fix Cerbos scopes** (the security issue above): done.
 2. **Grow the primitives** so every shape exists in SQL first, where B compiles to: a `where` row
    filter and a type column on `relate` (one table, several types); constant ids (`'*'`, singletons);
    per-operation permissions on `protect` (`select`, `insert`, `update`, `delete`); attribute aliases

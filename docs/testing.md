@@ -13,6 +13,7 @@ goes wrong. Four layers do that, and a coverage measurement shows what they reac
 | parity | `compare/parity.exs` | a random model, tuples and data loaded into a real OpenFGA or SpiceDB, then every subject's rows through each enforcement path compared with what the engine lists, on images with Postgres assertions on; also writes, revocation, read-only transactions, hierarchies and the permission index | before merging planner or executor changes |
 | attribute parity | `compare/attributes.exs` | random rows and principals against a real Cerbos: the compiled filter, a cached plan reused by every principal, and the per-row policy, each compared with Cerbos's CheckResources | the same |
 | relationship tables | `compare/relationships.exs` | an app with no backend granting and revoking by writing rows through RLS, on a real OpenFGA and SpiceDB: members, shares, teams, a non-admin refused, the engine down (changes wait, then arrive; an invalid one is set aside), and how long each change takes to show | the same |
+| complex setups | `compare/complex.exs` | the engines' published shapes as a backend-less app sets them up, checked through what each user sees and may write: GitHub (teams inside teams, access to a user or a team, the org owner, a ban with `but not`, push to update) and Drive (nested groups, a folder tree, a public `user:*` link) on OpenFGA and SpiceDB; expense approval on Cerbos (derived roles, an amount limit, a tenant's scoped deny) | the same |
 | security scenarios | `bench/docker/scenarios` | the correctness scenarios of the [RLS issues catalogue](research/rls-issues.md) (leaking views, recursion, partitions, leaky functions, pooled identity, bypass paths), each with pg_auth's verdict in its README | with the benchmarks |
 
 The extension's tests run on pgrx's Postgres, built without assertions: they do not catch a
@@ -26,6 +27,7 @@ elixir compare/parity.exs --seed 1                        # OpenFGA
 elixir compare/parity.exs --engine spicedb --seed 1
 elixir compare/attributes.exs --seed 7 --rows 2000 --principals 200
 elixir compare/relationships.exs                          # OpenFGA, then SpiceDB
+elixir compare/complex.exs                                # OpenFGA, SpiceDB, then Cerbos
 ```
 
 

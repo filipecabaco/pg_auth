@@ -250,6 +250,9 @@ insert into authz.settings values
     ('claim', 'sub'),
     -- the principal's roles, for an engine that decides on them (Cerbos): Supabase sets role
     ('roles_claim', 'role'),
+    -- Cerbos's scope (a tenant claim) and policy version: none by default, so scoped policies need one
+    ('scope_claim', ''),
+    ('policy_version', ''),
     ('claims_setting', 'request.jwt.claims'),
     ('token_setting', 'request.headers'),
     ('token_header', 'authorization'),
@@ -265,7 +268,9 @@ create function authz.configure(
     token_setting text default null,
     token_header text default null,
     clock_skew_seconds int default null,
-    roles_claim text default null
+    roles_claim text default null,
+    scope_claim text default null,
+    policy_version text default null
 ) returns void
 language plpgsql volatile as $$
 begin
@@ -290,7 +295,9 @@ begin
         ('token_setting', token_setting),
         ('token_header', token_header),
         ('clock_skew_seconds', clock_skew_seconds::text),
-        ('roles_claim', roles_claim)
+        ('roles_claim', roles_claim),
+        ('scope_claim', scope_claim),
+        ('policy_version', policy_version)
     ) as s (k, v)
     where v is not null
     on conflict (key) do update set value = excluded.value;
@@ -306,4 +313,4 @@ revoke execute on function authz.bind(regclass, name, text, text, text, boolean,
 revoke execute on function authz.unbind(regclass) from public;
 revoke execute on function authz.drop_policies(regclass) from public;
 revoke execute on function authz.apply_policies(regclass, authz.bindings) from public;
-revoke execute on function authz.configure(text, text, text, jsonb, text, text, text, int, text) from public;
+revoke execute on function authz.configure(text, text, text, jsonb, text, text, text, int, text, text, text) from public;

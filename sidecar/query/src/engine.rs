@@ -441,6 +441,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cerbos_is_asked_in_the_requests_scope_and_policy_version() {
+        // Cerbos picks scoped policies by these: without them a scoped deny never applies
+        let server = MockServer::start().await;
+        let scoped = json!({"scope": "acme", "policyVersion": "v2"});
+        Mock::given(path("/api/plan/resources"))
+            .and(body_partial_json(json!({"principal": scoped, "resource": {"kind": "expense", "scope": "acme", "policyVersion": "v2"}})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"filter": {"kind": "KIND_ALWAYS_DENIED"}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/api/check/resources"))
+            .and(body_partial_json(json!({"principal": scoped,
+                "resources": [{"resource": {"kind": "expense", "id": "1", "scope": "acme", "policyVersion": "v2"}}]})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"results": [{"resource": {"id": "1"}, "actions": {"view": "EFFECT_DENY"}}]})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let principal = json!({"roles": ["user"], "scope": "acme", "policy_version": "v2"});
+        let e = cerbos(&server);
+        assert_eq!(e.plan(&key("user:anne", "expense", "view"), Some(&principal)).await.unwrap(), Plan::Never);
+        let context = Context { principal: Some(&principal), attrs: None };
+        assert_eq!(e.check(&key("user:anne", "expense", "view"), &["1".to_owned()], &context, 1).await.unwrap(), vec![false]);
+    }
+
+    #[tokio::test]
     async fn cerbos_checks_resources_with_their_attributes_in_batches() {
         let server = MockServer::start().await;
         // allows resources whose owner is anne; answers the ids it was sent, except id 3, which

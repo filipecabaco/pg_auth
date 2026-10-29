@@ -360,6 +360,31 @@ mod tests {
     }
 
     #[pg_test]
+    fn the_principal_carries_the_requests_scope_and_policy_version() {
+        fixture();
+        // from the token's scope claim, with the configured policy version
+        Spi::run(
+            "select authz.configure(subject => 'jwt', scope_claim => 'tenant_id', policy_version => 'v2');
+             select set_config('request.jwt.claims', '{\"sub\": \"anne\", \"role\": \"user\", \"tenant_id\": \"acme\"}', true)",
+        )
+        .unwrap();
+        let principal = crate::subject::principal().unwrap();
+        assert_eq!(principal["scope"], "acme", "{principal}");
+        assert_eq!(principal["policy_version"], "v2", "{principal}");
+        // a session subject: pg_auth.subject_scope, as for its roles
+        Spi::run(
+            "select authz.configure(subject => 'guc', scope_claim => '');
+             set local pg_auth.subject_id = 'bob'; set local pg_auth.subject_roles = 'user';
+             set local pg_auth.subject_scope = 'globex'",
+        )
+        .unwrap();
+        assert_eq!(crate::subject::principal().unwrap()["scope"], "globex");
+        // none configured: no scope is sent
+        Spi::run("set local pg_auth.subject_scope = ''").unwrap();
+        assert!(crate::subject::principal().unwrap().get("scope").is_none());
+    }
+
+    #[pg_test]
     fn why_explains_a_policy_the_engine_cannot_decide_instead_of_failing() {
         fixture();
         let refused = why("2", Some("user:refused"));

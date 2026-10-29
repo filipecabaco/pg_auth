@@ -12,6 +12,7 @@ use std::ffi::CString;
 pub static SUBJECT_ID: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static SUBJECT_TYPE: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static SUBJECT_ROLES: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
+pub static SUBJECT_SCOPE: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static AS_SUBJECT: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 
 pub fn init() {
@@ -41,6 +42,16 @@ pub fn init() {
         c"The current request's roles, comma separated, for an engine that decides on them (authz.configure(subject => 'guc')).",
         c"Only superusers and roles granted SET ON PARAMETER pg_auth.subject_roles can change it.",
         &SUBJECT_ROLES,
+        GucContext::Suset,
+        GucFlags::default(),
+    );
+    // Cerbos picks scoped policies by the request's scope (a tenant): without it, the base policy
+    // answers and a scoped override, deny rules included, never applies
+    GucRegistry::define_string_guc(
+        c"pg_auth.subject_scope",
+        c"The current request's scope, for an engine with scoped policies (Cerbos), when no scope_claim is configured.",
+        c"Only superusers and roles granted SET ON PARAMETER pg_auth.subject_scope can change it.",
+        &SUBJECT_SCOPE,
         GucContext::Suset,
         GucFlags::default(),
     );
@@ -294,6 +305,15 @@ fn resolve_from(inputs: &mut Inputs) -> Subject {
     let default_type = get("subject_type");
 
     let roles_claim = get("roles_claim");
+    // Cerbos's scope (a tenant) and policy version, sent with the principal when configured: the
+    // token's scope_claim, else pg_auth.subject_scope
+    let scope_claim = get("scope_claim");
+    let scope_setting = read(inputs, "pg_auth.subject_scope").filter(|s| !s.is_empty());
+    let policy_version = get("policy_version");
+    let complete = |principal: Value, claims: Option<&Value>| {
+        let scope = claims.filter(|_| !scope_claim.is_empty()).and_then(|c| claim(c, &scope_claim)).or_else(|| scope_setting.clone());
+        with_scope(principal, scope, &policy_version)
+    };
     let found = |subject_type: String, id: Option<String>, detail: String, principal: Option<Value>| Subject {
         source: source.clone(),
         kind: subject_type,
@@ -317,7 +337,7 @@ fn resolve_from(inputs: &mut Inputs) -> Subject {
             kind: ty,
             id: Some(id),
             detail: "pg_auth.as_subject: an administrator acting as this subject".into(),
-            principal: Some(serde_json::json!({"roles": roles, "attr": {}})),
+            principal: Some(complete(serde_json::json!({"roles": roles, "attr": {}}), None)),
         };
     }
     match source.as_str() {
@@ -332,7 +352,7 @@ fn resolve_from(inputs: &mut Inputs) -> Subject {
                 .filter(|r| !r.is_empty())
                 .map(str::to_owned)
                 .collect();
-            found(ty, id, detail.into(), Some(serde_json::json!({"roles": roles, "attr": {}})))
+            found(ty, id, detail.into(), Some(complete(serde_json::json!({"roles": roles, "attr": {}}), None)))
         }
         "jwt" => {
             let claims_setting = get("claims_setting");
@@ -344,7 +364,7 @@ fn resolve_from(inputs: &mut Inputs) -> Subject {
                         Some(_) => format!("claim {} of {claims_setting} (not signature-checked)", get("claim")),
                         None => format!("claim {} missing from {claims_setting}", get("claim")),
                     };
-                    found(default_type, id, detail, Some(principal_of(&claims, &roles_claim)))
+                    found(default_type, id, detail, Some(complete(principal_of(&claims, &roles_claim), Some(&claims))))
                 }
             }
         }
@@ -362,13 +382,26 @@ fn resolve_from(inputs: &mut Inputs) -> Subject {
                             Some(_) => format!("claim {} of a verified token", get("claim")),
                             None => format!("verified token has no claim {}", get("claim")),
                         };
-                        found(default_type, id, detail, Some(principal_of(&claims, &roles_claim)))
+                        found(default_type, id, detail, Some(complete(principal_of(&claims, &roles_claim), Some(&claims))))
                     }
                 }
             }
         },
         other => found(default_type, None, format!("unknown subject source {other:?}"), None),
     }
+}
+
+/// The principal with its scope and policy version (Cerbos), when there are any.
+fn with_scope(mut principal: Value, scope: Option<String>, policy_version: &str) -> Value {
+    if let Some(p) = principal.as_object_mut() {
+        if let Some(scope) = scope {
+            p.insert("scope".into(), Value::String(scope));
+        }
+        if !policy_version.is_empty() {
+            p.insert("policy_version".into(), Value::String(policy_version.to_owned()));
+        }
+    }
+    principal
 }
 
 /// A principal from a token's claims: its roles from the claim at `roles_claim` (a string or an

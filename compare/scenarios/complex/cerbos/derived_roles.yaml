@@ -1,0 +1,15 @@
+# compare/complex.exs: who someone is to an expense, from the row and the token
+apiVersion: api.cerbos.dev/v1
+derivedRoles:
+  name: expense_roles
+  definitions:
+    - name: owner
+      parentRoles: ["user"]
+      condition:
+        match:
+          expr: request.resource.attr.owner == request.principal.id
+    - name: finance
+      parentRoles: ["user"]
+      condition:
+        match:
+          expr: request.principal.attr.department == "finance"

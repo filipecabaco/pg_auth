@@ -335,8 +335,9 @@ conditional is denied. Subjects may be usersets (`group:eng#member`).
    1.3x in the previous run and 0.90x in this one, and an A/B of `update-select-coupling` against
    the build before request context (`59e6f54`, alternating, fresh containers) read 1.49x/1.40x
    old and 1.86x/1.47x new, the best-practice policy's own times varying as much.
-3. SpiceDB's gRPC API instead of its HTTP gateway (one JSON translation less per call), and
-   ZedTokens to read at least as fresh as a write the application just made.
+3. SpiceDB's gRPC API instead of its HTTP gateway (one JSON translation less per call). Reads
+   are already at least as fresh as the sidecar's last write (its ZedToken); a write made outside
+   pg_auth, straight to SpiceDB, is not tracked.
 4. Phase C of the permission index proposal: attribute rules compiled to SQL conditions.
 5. Attribute rules from Cerbos (built, docs/proposals/cerbos.md): planning per protected table
    stays above RLS's on sub-millisecond statements.

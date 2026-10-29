@@ -32,6 +32,7 @@
 .pa-btn {
   display: inline-flex;
   align-items: center;
+  min-height: 2.2rem;
   gap: 0.45rem;
   padding: 0.62rem 1.05rem;
   border: 1px solid transparent;
@@ -355,7 +356,7 @@
 .pa-demo__poster b {
   display: block;
   margin-bottom: 0.35rem;
-  font: 600 0.54rem var(--pa-mono);
+  font: 600 0.6rem var(--pa-mono);
   color: #8f8f8f;
 }
 
@@ -444,7 +445,7 @@
 
 .pa-step code {
   grid-area: code;
-  font-size: 0.54rem;
+  font-size: 0.6rem;
   line-height: 1.45;
   color: #d7f5e6;
   overflow-wrap: anywhere;
@@ -453,7 +454,7 @@
 .pa-step em {
   grid-area: note;
   font-style: normal;
-  font-size: 0.54rem;
+  font-size: 0.6rem;
   color: #9a9a9a;
 }
 
@@ -512,7 +513,7 @@
 
 .pa-demo__foot p {
   margin: 0;
-  font-size: 0.54rem;
+  font-size: 0.6rem;
   color: #8f8f8f;
 }
 
@@ -544,7 +545,7 @@
   align-self: center;
   white-space: nowrap;
   padding: 0 0.4rem 0 0.3rem;
-  font: 0.54rem var(--pa-mono);
+  font: 0.6rem var(--pa-mono);
   color: #8f8f8f;
 }
 
@@ -748,6 +749,7 @@
 
 .pa-strip__plot i,
 .pa-strip__even,
+.pa-strip__overall,
 .pa-strip__axis span {
   --pos: calc((log(var(--v)) - log(0.2)) / (log(2) - log(0.2)) * 100%);
   position: absolute;
@@ -764,8 +766,24 @@
   position: absolute;
   top: -0.2rem;
   left: 0.3rem;
-  font: 0.52rem var(--pa-mono);
+  font: 0.6rem var(--pa-mono);
   color: var(--pa-muted);
+  white-space: nowrap;
+}
+
+/* the overall figure: a solid green line, its label to the left (the even line's is to the right) */
+.pa-strip__overall {
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--pa-green);
+}
+
+.pa-strip__overall span {
+  position: absolute;
+  top: -0.2rem;
+  right: 0.3rem;
+  font: 600 0.6rem var(--pa-mono);
+  color: var(--pa-green);
   white-space: nowrap;
 }
 
@@ -821,7 +839,7 @@
 .pa-strip__axis span {
   top: 0.25rem;
   translate: -50% 0;
-  font: 0.52rem var(--pa-mono);
+  font: 0.6rem var(--pa-mono);
   color: var(--pa-muted);
 }
 
@@ -1123,7 +1141,7 @@
 }
 
 .pa-arch__link span {
-  font-size: 0.54rem;
+  font-size: 0.6rem;
   line-height: 1.35;
   color: var(--pa-muted);
 }
@@ -1374,5 +1392,13 @@
   .md-typeset .pa-enginelist table tr > td:last-child {
     grid-column: 1 / -1;
     padding-top: 0.35rem;
+  }
+}
+
+/* Touch: the demo's view tabs and engine buttons reach 44px where a finger, not a cursor, picks */
+@media (pointer: coarse) {
+  .pa-views button,
+  .pa-engines button {
+    min-height: 2.2rem;
   }
 }

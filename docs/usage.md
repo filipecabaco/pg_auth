@@ -340,8 +340,9 @@ select engine, name, version, pushed_at, error from authz.rules();   -- the vers
 
   The check runs at commit, so a migration can change the rules and the tables using them
   together. A table whose relationships end needs, on SpiceDB, a relation that takes them with an
-  expiration (and as they are, when the column may be null). Subjects that need an OpenFGA
-  condition or a SpiceDB caveat are not ones pg_auth writes. Cerbos policies are checked for their resource and actions (`approve:*` covers
+  expiration (and as they are, when the column may be null). A table written with a condition
+  (`condition =>`) needs a relation that takes `user with <condition>`, a condition the rules
+  have, and parameters it takes. Cerbos policies are checked for their resource and actions (`approve:*` covers
   `approve:big`). What the stored rules do not show, the engine still checks when they are pushed
   (a relation computed from one that does not exist, a condition that does not compile).
 - **Refused.** Rules the engine refuses (an undefined relation, a policy that does not compile) are

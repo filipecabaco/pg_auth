@@ -142,7 +142,9 @@
       preloadWarmPack().catch(() => {});
     } catch (error) {
       started = false;
-      setStatus("error", error.message === "demo not built" ? "demo not built (mise run demo)" : `failed: ${error.message}`);
+      // a visitor reads that it could not load; a developer finds why in the console
+      console.warn("pg_auth demo:", error.message === "demo not built" ? "not built (mise run demo)" : error);
+      setStatus("error", "could not load: reload to try again");
     }
   }
 
@@ -212,6 +214,13 @@
     for (const pane of panes) type(pane, step.dataset.cmd);
     step.classList.add("is-done");
     markNext();
+    // the answer lands in the terminal, above the steps: bring it into view if it is not
+    const screen = root.querySelector(".pa-demo__screen");
+    const box = screen.getBoundingClientRect();
+    if (box.top < 0 || box.bottom > innerHeight) {
+      const smooth = !matchMedia("(prefers-reduced-motion: reduce)").matches;
+      screen.scrollIntoView({ block: "nearest", behavior: smooth ? "smooth" : "auto" });
+    }
   }
 
   // the hero's boot button is above the demo on a phone: bring the demo into view as it boots

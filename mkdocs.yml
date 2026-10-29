@@ -49,6 +49,7 @@ extra:
       link: https://supabase.com
 
 markdown_extensions:
+  - attr_list
   - tables
   - admonition
   - pymdownx.highlight:

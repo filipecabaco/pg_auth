@@ -63,8 +63,8 @@ to GitHub Pages from `filipecabaco/pg_auth`.
 
 - Live, in-browser demo to be built with snowglobe (as `../pg_redis` does), running Postgres with
   pg_auth, the sidecar and all three engines; the larger download is accepted.
-- `bench/docker` results (35 scenarios, 489 pairs, 2026-10-29): 0.75x of best-practice RLS time
-  overall; per-scenario figures in `docs/benchmarks.md`.
+- `bench/docker` results (35 scenarios, 489 pairs, 2026-10-29): 0.80x of best-practice RLS time
+  overall (measured with OpenFGA); per-scenario figures in `docs/benchmarks.md`.
 - Correctness: parity against each engine (`compare/`), 96.8% combined line coverage, CI on
   Postgres 15 to 18; the RLS issues catalogue with a verdict per scenario.
 - Relationship tables: grants and revocations visible 4 to 34 ms after commit (`compare/relationships.exs`).

@@ -41,9 +41,10 @@
         <a class="pa-btn pa-btn--quiet" href="{{ 'usage/#2-who-is-asking' | url }}">How it works with no backend</a>
       </div>
       <p class="pa-where">
-        Runs on Postgres you run yourself, with the extension preloaded and the engine beside it.
-        Hosted Supabase does not allow that yet. Experimental, pre-release, no license yet. The demo
-        downloads about 150 MB.
+        Runs where you control Postgres: the extension loads when Postgres starts, and a small
+        service (the sidecar) runs on the same host. Hosted Supabase and most managed Postgres do not
+        allow either yet. Experimental, pre-release, no license yet. The demo downloads about 150 MB
+        once.
       </p>
     </div>
 
@@ -141,14 +142,14 @@ resourcePolicy:
         match:
           expr: request.resource.attr.owner == request.principal.id</code></pre>
           </div>
-          <p class="pa-demo__setup-note">pg_auth does not translate the rules: rules you already have work as
-            they are, apart from OpenFGA conditions and SpiceDB caveats, which need context it does not
-            send yet (they deny).</p>
+          <p class="pa-demo__setup-note">pg_auth does not translate the rules: the engine reads them in its own
+            format, conditions and caveats included. Keep them in the engine, or in Postgres with
+            <code>authz.set_rules</code>.</p>
         </div>
         {#- Before boot: step 1 as the demo printed it (OpenFGA), recorded from docker/demo; the rest
             is the visitor's to run -#}
         <div class="pa-demo__poster">
-          <p class="pa-poster__label">Step 1, recorded: the same query, two users. Boot the demo to share and see what changes.</p>
+          <p class="pa-poster__label">Step 1, recorded: the same query, two users. Boot the demo to run the rest yourself.</p>
 <div><b>anne</b><pre>anne=&gt; select * from documents;
  id | org_id |    title
 ----+--------+-------------
@@ -303,11 +304,10 @@ resourcePolicy:
     </div>
   </div>
   <p class="pa-proof">
-    Sharing with a team or adding a role is a change to the model, or a row in a table. There is no
-    policy to edit. The model can live in Postgres with your migrations: <code>authz.set_rules</code>
-    pushes it to the engine, and a table naming a permission it lacks fails when you commit.
-    <a href="{{ 'usage/#3-protect-tables' | url }}">Protecting tables</a> ·
-    <a href="{{ 'usage/#the-engines-rules-kept-in-postgres' | url }}">Rules kept in Postgres</a>
+    Sharing with a team or adding a role is a change to the model, or a row in a table: there is no
+    policy to edit. The model can live with your migrations: <code>authz.set_rules</code> sends it to
+    the engine, and a migration naming a permission the model does not define fails to commit.
+    <a href="{{ 'usage/#3-protect-tables' | url }}">Protecting tables</a>&nbsp;·&nbsp;<a href="{{ 'usage/#the-engines-rules-kept-in-postgres' | url }}">Rules kept in Postgres</a>
   </p>
 </section>
 
@@ -342,9 +342,9 @@ resourcePolicy:
     <div><dt>A view that leaks</dt><dd>Policies are forced on the table's owner, and the subject comes from the request, not the role running the query.</dd></div>
     <div><dt>Policy recursion (<code>42P17</code>)</dt><dd>pg_auth's policy reads only the row, so it cannot recurse into another table's policies.</dd></div>
     <div><dt>A partition queried directly</dt><dd>Every partition gets the policy, including ones created later.</dd></div>
-    <div><dt>A writer who cannot find their own rows</dt><dd>By hand, an update with no matching read policy changes 0 rows without a word. Read and write permissions are installed together, so whoever may write a row can find it.</dd></div>
+    <div><dt>A writer who cannot find their own rows</dt><dd>By hand, an update with no matching read policy silently changes 0 rows. Read and write permissions are installed together, so whoever may write a row can find it.</dd></div>
     <div><dt>A spoofed identity</dt><dd>The request cannot set its own subject, and with no subject there are no rows.</dd></div>
-    <div><dt>An engine that is down</dt><dd>Queries fail rather than guess: no row is shown because nobody could answer.</dd></div>
+    <div><dt>An engine that is down</dt><dd>Queries fail: no row is shown when nobody can answer for it.</dd></div>
   </dl>
   <p class="pa-proof">
     What it shares with row level security, where Postgres sets the rules: superusers and
@@ -403,21 +403,23 @@ resourcePolicy:
     <div class="pa-expect__item">
       <h3>A protected query costs about what a well-written policy does</h3>
       <p>
-        Measured on {{ bench.scenarios }} scenarios taken from problems people hit with row level
-        security, each against its best-practice policy, over {{ bench.pairs }} query and subject
-        pairs: {{ '%.2f' | format(bench.ratio) }}x its planning and execution time overall. Statements
+        Overall, {{ '%.2f' | format(bench.ratio) }}x the time of a best-practice policy, planning and
+        execution together: {{ bench.scenarios }} scenarios taken from problems people hit with row
+        level security, {{ bench.pairs }} query and subject pairs, measured with OpenFGA. Statements
         that finish in well under a millisecond pay for pg_auth's planning work, so expect those to
-        take somewhat longer.
+        take somewhat longer. A rule on a row's own values (a report's level against a reader's
+        clearance) is checked row by row on OpenFGA: fine for reads by key, slow for scans.
       </p>
       <figure class="pa-strip">
         <div class="pa-strip__plot" role="img" aria-label="Each scenario's pg_auth time as a share of best-practice row level security: from {{ '%.2f' | format(rows[0][1]) }}x to {{ '%.2f' | format(rows[-1][1]) }}x, {{ '%.2f' | format(bench.ratio) }}x overall">
           <span class="pa-strip__even" style="--v: 1"><span>same time</span></span>
+          <span class="pa-strip__overall" style="--v: {{ bench.ratio }}"><span>{{ '%.2f' | format(bench.ratio) }}x overall</span></span>
           {%- for name, v in rows %}
           <i tabindex="0" style="--v: {{ v }}; --row: {{ loop.index0 % 3 }}" data-tip="{{ name }} · {{ '%.2f' | format(v) }}x"></i>
           {%- endfor %}
         </div>
         <div class="pa-strip__axis" aria-hidden="true">
-          {%- for t in [0.25, 0.5, 1.0, 2.0] %}<span style="--v: {{ t }}">{{ t }}x</span>{% endfor %}
+          {%- for t, label in [(0.25, '0.25x'), (0.5, '0.5x'), (1, '1x'), (2, '2x')] %}<span style="--v: {{ t }}">{{ label }}</span>{% endfor %}
         </div>
         <figcaption>One dot per scenario: pg_auth's time as a share of the best-practice policy's.
           Left of the dashed line, pg_auth was faster; right of it, slower.
@@ -425,22 +427,14 @@ resourcePolicy:
       </figure>
     </div>
     <div class="pa-expect__item">
-      <h3>A grant shows within tens of milliseconds</h3>
+      <h3>A grant written as a row shows within tens of milliseconds</h3>
       <p>
         A membership or a share written as a row showed to its subject 4 to 34 ms after the commit,
-        measured against OpenFGA and SpiceDB: pg_auth tells every session to ask again. A share
-        written with an end went 60 to 120 ms after it. A change made in the engine itself, outside
-        Postgres, shows within the sidecar's one-second cache.
-      </p>
-    </div>
-    <div class="pa-expect__item">
-      <h3>Rules on the row's own values cost what the engine allows</h3>
-      <p>
-        A condition on a value of the row being read (a report's level against a reader's
-        clearance): SpiceDB lists once and asks only about rows whose grant needs that value;
-        OpenFGA asks about every row read, which suits reads by key, not scans. Cerbos compiles its
-        rules into a filter on the row's columns.
-        <a href="{{ 'usage/#4-grant-access-by-writing-rows' | url }}">Conditions and caveats</a>
+        measured against OpenFGA and SpiceDB: pg_auth tells every session to ask again. A share with
+        an end date disappears 60 to 120 ms after it ends. A change made in the engine itself, outside
+        Postgres, shows once the engine's own reads see it (up to 5 s on SpiceDB's default
+        consistency, 10 s with OpenFGA's caches on) and the sidecar's one-second cache has passed.
+        <a href="{{ 'design/#5-security-and-correctness' | url }}">How fresh answers are</a>
       </p>
     </div>
     <div class="pa-expect__item">
@@ -474,9 +468,9 @@ resourcePolicy:
   <table>
     <thead><tr><th>Engine</th><th>Decides on</th><th>Good for</th></tr></thead>
     <tbody>
-      <tr><th><a href="https://openfga.dev">OpenFGA</a></th><td>relationships</td><td>sharing, teams, orgs, folders: who is related to what. Conditions on the request (a region, the time), and grants that end</td></tr>
-      <tr><th><a href="https://authzed.com/spicedb">SpiceDB</a></th><td>relationships</td><td>the same model, with SpiceDB's schema and consistency. Caveats, including on the row's own values, and grants SpiceDB itself ends</td></tr>
-      <tr><th><a href="https://cerbos.dev">Cerbos</a></th><td>the row's fields and the user's roles</td><td>owners, statuses, departments: rules over attributes. A tenant's own policies (scopes)</td></tr>
+      <tr><th><a href="https://openfga.dev">OpenFGA</a></th><td>relationships</td><td>Sharing, teams, orgs, folders: who is related to what. Conditions on the request (a region, the time) and grants that end.</td></tr>
+      <tr><th><a href="https://authzed.com/spicedb">SpiceDB</a></th><td>relationships</td><td>The same model, with SpiceDB's schema and consistency. Caveats, including on the row's own values, and grants that end.</td></tr>
+      <tr><th><a href="https://cerbos.dev">Cerbos</a></th><td>the row's fields and the user's roles</td><td>Owners, statuses, departments: rules over attributes. A tenant's own policies (scopes).</td></tr>
     </tbody>
   </table>
   <p class="pa-proof">

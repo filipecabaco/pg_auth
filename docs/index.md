@@ -6,8 +6,9 @@ hide:
   - toc
 ---
 
-<!-- Rendered by overrides/home.html. This body is not shown on the page but
-     still feeds the site search, so keep it accurate. -->
+<!-- Rendered by overrides/home.html. This body is not shown on the page but still feeds the site
+     search and the menu's table of contents on a phone, so keep it accurate, and keep each
+     heading's id the id of its section on the page. -->
 
 # pg_auth
 
@@ -17,32 +18,51 @@ for every client: your browser app through Supabase or PostgREST, an application
 
 The home page runs a live demo in the browser tab: Postgres 18 with pg_auth and the three engines.
 Anne and Bob use the same app; Bob sees nothing until Anne adds him to her organisation by inserting
-one row. It runs on Postgres you run yourself (the extension is preloaded and a sidecar runs beside
-it); hosted Supabase does not allow that yet.
+one row. It runs where you control Postgres: the extension loads when Postgres starts and a sidecar
+runs on the same host, which hosted Supabase and most managed Postgres do not allow yet.
 
-## Protect a table in one line
+## How it works {#how}
+
+Your app queries Postgres; pg_auth asks the sidecar, which asks the engine, and Postgres shows only
+the rows the engine allows. Grants written as rows reach the engine through an outbox.
+
+## Write each rule once, not in every table {#model}
 
 ```sql
 select authz.configure(subject => 'jwt');   -- the JWT's sub, as Supabase and PostgREST set it
 select authz.protect('documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
-```
-
-## Share by writing a row
-
-```sql
+-- share by writing a row: bob sees org 1's documents
 select authz.relate('memberships', object_type => 'org', object_column => 'org_id',
                     relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
-insert into memberships values (1, 'bob', 'member');   -- bob sees org 1's documents
+insert into memberships values (1, 'bob', 'member');
 ```
 
-## Ask why a row is hidden
+The engine's rules can be kept in Postgres with your migrations (`authz.set_rules`).
+
+## Ask why a row is hidden {#why}
 
 ```sql
 select * from authz.why('documents', '4', as_subject => 'user:bob');
 select * from authz.doctor();
 ```
 
-## Next steps
+## The row level security mistakes you cannot make {#mistakes}
+
+Forgotten policies, views that leak, recursion, leaky functions, identity left on a pooled
+connection: each checked in the RLS issues catalogue.
+
+## What to expect {#cost}
+
+About the time of a best-practice policy overall (the benchmarks); grants written as rows show
+within tens of milliseconds, and a share with an end date (`expires_column`) disappears when it
+ends; queries fail when the engine is down; a sidecar runs next to Postgres; experimental.
+
+## Pick the engine that fits your rules {#engines}
+
+OpenFGA and SpiceDB decide on relationships (with conditions and caveats); Cerbos on the row's
+fields and the user's roles.
+
+## Try it on your own Postgres {#install}
 
 - [Getting started](usage.md): install, subjects, protecting tables, granting by writing rows, debugging
 - [Performance](performance.md) and [benchmarks](benchmarks.md): what it costs

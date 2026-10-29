@@ -169,6 +169,64 @@ resourcePolicy:
 {% endblock %}
 
 {% block content %}
+<section class="pa-section" id="how">
+  <h2 class="pa-h2">How it works</h2>
+  <p class="pa-sub">
+    Four parts, two of them yours already. Your app sends ordinary SQL; pg_auth asks the engine who
+    may see what, through a sidecar on the same host, and turns the answer into a filter Postgres can
+    use an index for.
+  </p>
+  <div class="pa-arch" role="img" aria-label="Your app sends SQL to Postgres with pg_auth; pg_auth asks the sidecar over a Unix socket; the sidecar asks the engine over HTTP or gRPC. Reading: the engine's answer comes back as the ids the user may see, and Postgres filters on them. Granting: an inserted row goes to an outbox in the same transaction, and the sidecar delivers it to the engine.">
+    <div class="pa-arch__node">
+      <b>Your app</b>
+      <span>browser or phone, through PostgREST: no server of its own</span>
+    </div>
+    <div class="pa-arch__link pa-arch__link--read">
+      <i>select * from documents</i>
+      <span>as bob, from the request's token</span>
+    </div>
+    <div class="pa-arch__link pa-arch__link--grant">
+      <i>insert into memberships</i>
+      <span>as anne</span>
+    </div>
+    <div class="pa-arch__node pa-arch__node--pg">
+      <b>Postgres + pg_auth</b>
+      <span>row level security, planned by pg_auth</span>
+    </div>
+    <div class="pa-arch__link pa-arch__link--read">
+      <i>which documents may bob view?</i>
+      <span>Unix socket; answers cached, refreshed ahead</span>
+    </div>
+    <div class="pa-arch__link pa-arch__link--grant">
+      <i>outbox row</i>
+      <span>written in the same transaction</span>
+    </div>
+    <div class="pa-arch__node">
+      <b>Sidecar</b>
+      <span>next to Postgres: cache, delivery, the engine's credentials</span>
+    </div>
+    <div class="pa-arch__link pa-arch__link--read">
+      <i>ListObjects · LookupResources · PlanResources</i>
+      <span>HTTP or gRPC</span>
+    </div>
+    <div class="pa-arch__link pa-arch__link--grant">
+      <i>write the relationship</i>
+      <span>then every session asks again</span>
+    </div>
+    <div class="pa-arch__node">
+      <b>Engine</b>
+      <span>OpenFGA, SpiceDB or Cerbos, with your rules in its own language</span>
+    </div>
+  </div>
+  <ol class="pa-arch__legend">
+    <li class="is-read"><b>Reading.</b> The answer comes back as the ids bob may see (for Cerbos, a
+      condition on the row's fields), and pg_auth plans the query as <code>id = any('{1,2,3}')</code>
+      on the table's index. Every client gets the same rows: PostgREST, a script, psql.</li>
+    <li class="is-grant"><b>Granting.</b> A row in a relationship table is a grant. A rolled-back
+      write never reaches the engine; if the engine is down, grants wait and are delivered later.</li>
+  </ol>
+</section>
+
 <section class="pa-section" id="model">
   <h2 class="pa-h2">Write each rule once, not in every table</h2>
   <p class="pa-sub">

@@ -44,11 +44,18 @@ File.write!(f, Regex.replace(~r/<!-- results:start -->.*<!-- results:end -->/s, 
 
 # home.html: the expectations section's figures and its strip's rows, sorted
 [_, pairs, ratio] = Regex.run(~r/Over all (\d+) pairs pg_auth is at ([0-9.]+)x/, summary)
-rows =
+# each dot on the lowest row where it clears the last one by 3% of the strip's width (its log
+# scale, 0.2x to 2x): dots at nearly the same ratio stack instead of overlapping
+at = fn v -> (:math.log(v) - :math.log(0.2)) / (:math.log(2) - :math.log(0.2)) end
+{placed, _} =
   geo
   |> Enum.map(fn {id, g} -> {id, g |> String.trim_trailing("x") |> String.to_float()} end)
   |> Enum.sort_by(fn {id, v} -> {v, id} end)
-  |> Enum.map_join("\n", fn {id, v} -> "  (\"#{id}\", #{:erlang.float_to_binary(v, decimals: 2)})," end)
+  |> Enum.map_reduce(%{}, fn {id, v}, last ->
+    row = Enum.find(Stream.iterate(0, &(&1 + 1)), fn r -> not Map.has_key?(last, r) or at.(v) - last[r] >= 0.03 end)
+    {{id, v, row}, Map.put(last, row, at.(v))}
+  end)
+rows = Enum.map_join(placed, "\n", fn {id, v, row} -> "  (\"#{id}\", #{:erlang.float_to_binary(v, decimals: 2)}, #{row}),"  end)
 stats = ~s({% set bench = {"ratio": #{ratio}, "pairs": #{pairs}, "scenarios": #{map_size(geo)}} %})
 f = "overrides/home.html"
 s = File.read!(f)

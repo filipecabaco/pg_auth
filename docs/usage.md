@@ -414,6 +414,12 @@ Per scenario numbers against RLS written the way Supabase recommends are in
 [`compare/parity.exs`](https://github.com/filipecabaco/pg_auth/blob/main/compare/README.md). Writes and very broad subjects cost more than
 narrow reads; `authz.explain` and `authz.last_statement_advice()` say when and why.
 
+Relationship tables cost engine writes: every insert, delete and relationship-changing update of
+a declared table becomes one write to the engine, batched by the sidecar (up to 100 tuples a call
+on OpenFGA, 1000 on SpiceDB), and the answers every backend kept are dropped after each batch.
+A table that changes thousands of rows a second puts that load on the engine; declare the tables
+that grant access, not every table that has an owner column.
+
 A backend's first request also pays one-time work: reading the configuration and hierarchy
 declarations, preparing pg_auth's own queries, connecting to the sidecar. `authz.warm()` does
 it ahead of time, and when the session already has a subject it also fetches that subject's
@@ -428,3 +434,29 @@ select * from authz.warm();
 --  sidecar       | connected: openfga
 --  subject       | user:anne: 4 of 4 lists and plans fetched   (only with a subject)
 ```
+
+## 8. How fresh answers are
+
+An answer can come from five places. Each keeps it for a bounded time, and a grant or revocation
+written through a relationship table clears every one of them:
+
+| where | kept | cleared by | worst case for a change made in the engine itself |
+|---|---|---|---|
+| the statement and its transaction | one answer per subject, type and permission | the transaction's end; a change of the request's context | the transaction |
+| the backend, across transactions | until the sidecar's cached answer reaches half its TTL (0.5 s) | a delivered relationship change, pushed rules | 0.5 s |
+| the sidecar | `CACHE_TTL_MS` (1 s); answers used within `REFRESH_ACTIVE_MS` (30 s) are refreshed ahead | a delivered relationship change, pushed rules | 1 s |
+| the permission index (broad subjects only) | until the engine's change feed reports any change | the change feed: OpenFGA's ReadChanges every `INDEX_POLL_MS` (0.5 s), SpiceDB's Watch | the feed's delay (0.2 to 0.4 s measured), then the engine's own reads |
+| the engine | OpenFGA's check and list caches (10 s when on); SpiceDB's `minimize_latency` reads (a revision up to 5 s old) | after a write through pg_auth, reads skip them: OpenFGA asks with `HIGHER_CONSISTENCY` for 10 s, SpiceDB at least as fresh as the write's ZedToken | 10 s (OpenFGA), 5 s (SpiceDB, or `SPICEDB_CONSISTENCY=fully_consistent` for the latest) |
+
+- **Written through pg_auth** (a relationship table, `authz.set_rules`): visible 4 to 34 ms after
+  the commit in the measurements (`compare/relationships.exs`), on both engines.
+- **Written in the engine directly** (its API, another service): up to the engine's own window
+  plus the sidecar's second: about 11 s on OpenFGA with caches, 6 s on SpiceDB by default.
+- **A grant with an end** (`expires_column`): gone 60 to 120 ms after its end through the outbox;
+  on SpiceDB the engine also ends it itself, within its revision window.
+- **A request context with the time** (`"now"`): answers are kept up to the sidecar's 1 s, so a
+  condition on the time holds up to a second past its boundary.
+- **The engine down:** answers already kept are used for at most the times above, then statements
+  fail. Subjects answered from the permission index keep their last fresh set, read from
+  Postgres; a change the engine makes meanwhile reaches it when the feed is read again.
+

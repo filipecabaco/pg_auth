@@ -21,10 +21,12 @@
   --pa-muted: var(--md-default-fg-color--light);
 }
 
+/* the stage on the sections' grid: Material's content width (61rem) and gutter (0.8rem), so the
+   headline starts where the logo and every section do */
 .pa-wrap {
-  max-width: 76rem;
+  max-width: 61rem;
   margin-inline: auto;
-  padding-inline: 1.2rem;
+  padding-inline: 0.8rem;
 }
 
 /* ── Buttons ──────────────────────────────────────────────────────────── */
@@ -104,8 +106,8 @@
 
 .pa-stage {
   display: grid;
-  grid-template-columns: minmax(0, 26rem) minmax(0, 1fr);
-  gap: 2.6rem;
+  grid-template-columns: minmax(0, 24rem) minmax(0, 1fr);
+  gap: 2.2rem;
   align-items: start;
 }
 
@@ -742,7 +744,8 @@
 
 .pa-strip__plot {
   position: relative;
-  height: 3.4rem;
+  /* as many rows as the densest ratio needs (bench/docker/apply_zero.exs stacks the dots) */
+  height: calc(1.3rem + var(--rows, 3) * 0.75rem);
   margin-inline: 0.5rem;
   border-bottom: 1px solid var(--pa-line);
 }

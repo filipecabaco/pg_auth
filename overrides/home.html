@@ -360,41 +360,41 @@ resourcePolicy:
 {# bench:stats:end #}
 {# bench:rows:start #}
 {% set rows = [
-  ("hierarchical-permissions", 0.21),
-  ("nested-rls-chain", 0.22),
-  ("order-by-limit-selective-policy", 0.24),
-  ("supabase-storage-paths", 0.34),
-  ("secdef-helper-oracle", 0.38),
-  ("large-membership-array-overhead", 0.39),
-  ("supabase-owner-or-role", 0.46),
-  ("saas-project-hierarchy", 0.54),
-  ("marketplace-two-party-orders", 0.59),
-  ("large-events-timeseries", 0.71),
-  ("larger-than-memory", 0.79),
-  ("rls-write-path", 0.85),
-  ("membership-subplan-no-pullup", 0.87),
-  ("jwt-claims-parsed-per-row", 0.90),
-  ("drive-nested-group-sharing", 0.92),
-  ("supabase-chat-rooms", 0.93),
-  ("partitioned-rls-no-pruning", 0.94),
-  ("prepared-plan-role-revalidation", 0.97),
-  ("large-fulltext-search", 0.98),
-  ("update-delete-bulk-rls-cost", 1.04),
-  ("non-leakproof-operators-lose-index", 1.05),
-  ("per-row-function-in-policy", 1.06),
-  ("policy-recursion-42p17", 1.06),
-  ("rls-bypass-paths", 1.06),
-  ("org-membership", 1.07),
-  ("leaky-function-and-leakproof-marking", 1.17),
-  ("join-two-rls-tables", 1.23),
-  ("supabase-claims-rbac", 1.32),
-  ("view-owner-bypass", 1.33),
-  ("rls-best-case-tenant-column", 1.38),
-  ("pool-session-state-leak", 1.56),
-  ("update-select-coupling", 1.60),
-  ("partition-direct-access", 1.64),
-  ("tenant-skew-bad-estimates", 1.68),
-  ("missing-policy-index", 1.70),
+  ("hierarchical-permissions", 0.21, 0),
+  ("nested-rls-chain", 0.22, 1),
+  ("order-by-limit-selective-policy", 0.24, 0),
+  ("supabase-storage-paths", 0.34, 0),
+  ("secdef-helper-oracle", 0.38, 0),
+  ("large-membership-array-overhead", 0.39, 1),
+  ("supabase-owner-or-role", 0.46, 0),
+  ("saas-project-hierarchy", 0.54, 0),
+  ("marketplace-two-party-orders", 0.59, 0),
+  ("large-events-timeseries", 0.71, 0),
+  ("larger-than-memory", 0.79, 0),
+  ("rls-write-path", 0.85, 0),
+  ("membership-subplan-no-pullup", 0.87, 1),
+  ("jwt-claims-parsed-per-row", 0.90, 2),
+  ("drive-nested-group-sharing", 0.92, 0),
+  ("supabase-chat-rooms", 0.93, 3),
+  ("partitioned-rls-no-pruning", 0.94, 1),
+  ("prepared-plan-role-revalidation", 0.97, 2),
+  ("large-fulltext-search", 0.98, 4),
+  ("update-delete-bulk-rls-cost", 1.04, 0),
+  ("non-leakproof-operators-lose-index", 1.05, 1),
+  ("per-row-function-in-policy", 1.06, 2),
+  ("policy-recursion-42p17", 1.06, 3),
+  ("rls-bypass-paths", 1.06, 4),
+  ("org-membership", 1.07, 5),
+  ("leaky-function-and-leakproof-marking", 1.17, 0),
+  ("join-two-rls-tables", 1.23, 1),
+  ("supabase-claims-rbac", 1.32, 0),
+  ("view-owner-bypass", 1.33, 1),
+  ("rls-best-case-tenant-column", 1.38, 2),
+  ("pool-session-state-leak", 1.56, 0),
+  ("update-select-coupling", 1.60, 1),
+  ("partition-direct-access", 1.64, 2),
+  ("tenant-skew-bad-estimates", 1.68, 0),
+  ("missing-policy-index", 1.70, 3),
 ] %}
 {# bench:rows:end #}
 <section class="pa-section pa-expect" id="cost">
@@ -411,11 +411,11 @@ resourcePolicy:
         clearance) is checked row by row on OpenFGA: fine for reads by key, slow for scans.
       </p>
       <figure class="pa-strip">
-        <div class="pa-strip__plot" role="img" aria-label="Each scenario's pg_auth time as a share of best-practice row level security: from {{ '%.2f' | format(rows[0][1]) }}x to {{ '%.2f' | format(rows[-1][1]) }}x, {{ '%.2f' | format(bench.ratio) }}x overall">
+        <div class="pa-strip__plot" style="--rows: {{ rows | map(attribute='2') | max + 1 }}" role="img" aria-label="Each scenario's pg_auth time as a share of best-practice row level security: from {{ '%.2f' | format(rows[0][1]) }}x to {{ '%.2f' | format(rows[-1][1]) }}x, {{ '%.2f' | format(bench.ratio) }}x overall">
           <span class="pa-strip__even" style="--v: 1"><span>same time</span></span>
           <span class="pa-strip__overall" style="--v: {{ bench.ratio }}"><span>{{ '%.2f' | format(bench.ratio) }}x overall</span></span>
-          {%- for name, v in rows %}
-          <i tabindex="0" style="--v: {{ v }}; --row: {{ loop.index0 % 3 }}" data-tip="{{ name }} · {{ '%.2f' | format(v) }}x"></i>
+          {%- for name, v, row in rows %}
+          <i tabindex="0" style="--v: {{ v }}; --row: {{ row }}" data-tip="{{ name }} · {{ '%.2f' | format(v) }}x"></i>
           {%- endfor %}
         </div>
         <div class="pa-strip__axis" aria-hidden="true">
@@ -434,15 +434,16 @@ resourcePolicy:
         an end date disappears 60 to 120 ms after it ends. A change made in the engine itself, outside
         Postgres, shows once the engine's own reads see it (up to 5 s on SpiceDB's default
         consistency, 10 s with OpenFGA's caches on) and the sidecar's one-second cache has passed.
-        <a href="{{ 'design/#5-security-and-correctness' | url }}">How fresh answers are</a>
+        <a href="{{ 'usage/#8-how-fresh-answers-are' | url }}">How fresh answers are</a>
       </p>
     </div>
     <div class="pa-expect__item">
       <h3>When the engine is down, queries fail</h3>
       <p>
         Statements on protected tables fail rather than guess: at once if the engine refuses the
-        connection, after 4 seconds (configurable) if it hangs. Answers cached in the last second still serve.
-        Grants written as rows wait and are delivered when it is back.
+        connection, after 4 seconds (configurable) if it hangs. Answers cached in the last second still
+        serve, and subjects too broad to list keep their last set in the permission index. Grants
+        written as rows wait and are delivered when it is back.
       </p>
     </div>
     <div class="pa-expect__item">

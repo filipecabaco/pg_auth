@@ -29,6 +29,7 @@ extension_sql_file!(
         "authz_schema",
         "authz_hierarchy",
         "authz_relationships",
+        "authz_rules",
         access::permits,
         access::check,
         access::engine,
@@ -37,6 +38,7 @@ extension_sql_file!(
     ]
 );
 extension_sql_file!("../sql/setup.sql", name = "authz_setup", requires = ["authz_api"]);
+extension_sql_file!("../sql/rules.sql", name = "authz_rules", requires = ["authz_schema"]);
 extension_sql_file!("../sql/lint.sql", name = "authz_lint", requires = ["authz_schema", lint::lint_policies]);
 extension_sql_file!("../sql/index.sql", name = "authz_index", requires = ["authz_schema", subject::subject_id, subject::subject_type]);
 extension_sql_file!("../sql/relationships.sql", name = "authz_relationships", requires = ["authz_schema"]);
@@ -798,6 +800,37 @@ mod tests {
             "select authz.relate('public.shares', name => 'x', filter => 'no_such_column = 1', object_type => 'doc',
                                  object_column => 'doc_id', relation => 'viewer', subject_type => 'user', subject_column => 'grantee_id')"
         ));
+    }
+
+    #[pg_test]
+    fn rules_are_kept_by_version_and_pushed_by_the_sidecar() {
+        let model = "model\n  schema 1.1\ntype user";
+        let set = |name: &str, body: &str| {
+            Spi::get_one_with_args::<i32>("select authz.set_rules('openfga', $1, $2)", &[name.into(), body.into()]).unwrap()
+        };
+        assert_eq!(set("model", model), Some(1));
+        // the same text again: no new version
+        assert_eq!(set("model", model), Some(1));
+        assert_eq!(set("model", "model\n  schema 1.1\ntype user\ntype doc"), Some(2));
+        // OpenFGA has one model
+        assert!(error_of("select authz.set_rules('openfga', 'other', 'model')").unwrap_or_default().contains("openfga has one model"));
+        // what the sidecar is to push: the latest version only
+        let pending = Spi::get_one::<String>("select string_agg(name || ' ' || version, ',') from authz.rules_pending('openfga')").unwrap();
+        assert_eq!(pending.as_deref(), Some("model 2"));
+        Spi::run("select authz.rules_pushed('openfga', 'model', 2)").unwrap();
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz.rules_pending('openfga')").unwrap(), Some(0));
+        // Cerbos keeps a policy per name; one the engine refuses is reported
+        Spi::run(
+            "select authz.set_rules('cerbos', 'resource/doc', 'apiVersion: api.cerbos.dev/v1');
+             select authz.set_rules('cerbos', 'derived/common', 'apiVersion: api.cerbos.dev/v1');
+             select authz.rules_pushed('cerbos', 'resource/doc', 1, 'invalid policy')",
+        )
+        .unwrap();
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz.rules('cerbos')").unwrap(), Some(2));
+        let doctor = Spi::get_one::<String>("select status || ': ' || detail from authz.doctor() where check_name = 'rules'")
+            .unwrap()
+            .unwrap_or_default();
+        assert!(doctor.starts_with("fail") && doctor.contains("cerbos resource/doc version 1 (invalid policy)"), "{doctor}");
     }
 
     #[pg_test]

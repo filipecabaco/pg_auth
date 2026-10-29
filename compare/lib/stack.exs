@@ -86,7 +86,7 @@ defmodule Compare.Stack do
   end
 
   defp setup("cerbos", stack, opts) do
-    {:ok, cerbos} = Compare.Engines.Cerbos.setup(network: stack.net, policies: opts[:policies])
+    {:ok, cerbos} = Compare.Engines.Cerbos.setup(network: stack.net, policies: opts[:policies], server_args: opts[:cerbos_args])
     {Compare.Engines.Cerbos, cerbos, []}
   end
 

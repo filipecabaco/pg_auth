@@ -243,6 +243,12 @@ impl SpiceDb {
         Ok(())
     }
 
+    /// Replace the schema (the text kept in Postgres).
+    pub async fn write_schema(&self, schema: &str) -> Result<(), CallError> {
+        let request = self.client.post(format!("{}/v1/schema/write", self.base)).json(&json!({"schema": schema}));
+        send_classified(request, "spicedb write schema").await.map(|_| ())
+    }
+
     async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
         send_json(self.client.post(format!("{}{path}", self.base)).json(&body), &format!("spicedb {path}")).await
     }

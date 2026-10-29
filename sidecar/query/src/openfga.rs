@@ -18,7 +18,8 @@ const FRESH_AFTER_WRITE: Duration = Duration::from_secs(10);
 pub struct OpenFga {
     client: reqwest::Client,
     base: String,
-    model_id: Option<String>,
+    /// the model asked; replaced when the sidecar writes a new one (authz.set_rules); none: the latest
+    model_id: Mutex<Option<String>>,
     consistency: Option<String>,
     list_deadline: Duration,
     /// until when reads skip the caches (relationships were just written)
@@ -51,11 +52,30 @@ impl OpenFga {
         Ok(Self {
             client,
             base: format!("{}/stores/{store}", url.trim_end_matches('/')),
-            model_id,
+            model_id: Mutex::new(model_id),
             consistency,
             list_deadline,
             fresh_until: Mutex::new(None),
         })
+    }
+
+    /// The model asked: the one pinned or last written, or none (the store's latest).
+    fn model(&self) -> Option<String> {
+        self.model_id.lock().ok().and_then(|m| m.clone())
+    }
+
+    /// Write a model (its JSON, converted from the DSL kept in Postgres) and ask it from now on.
+    pub async fn write_model(&self, model: &Value) -> Result<(), CallError> {
+        let body =
+            send_classified(self.client.post(format!("{}/authorization-models", self.base)).json(model), "openfga write model").await?;
+        let id = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| v.get("authorization_model_id").and_then(Value::as_str).map(str::to_owned))
+            .ok_or_else(|| CallError { permanent: false, message: "openfga write model: no authorization_model_id".into() })?;
+        if let Ok(mut m) = self.model_id.lock() {
+            *m = Some(id);
+        }
+        Ok(())
     }
 
     /// Poll the change feed from `start` every `poll`, reading it until it has nothing new each
@@ -89,7 +109,7 @@ impl OpenFga {
 
     /// A request body with the pinned model, and the configured consistency unless given.
     fn body(&self, mut body: Value) -> Value {
-        if let Some(m) = &self.model_id {
+        if let Some(m) = self.model() {
             body["authorization_model_id"] = json!(m);
         }
         let fresh = self.fresh_until.lock().ok().and_then(|f| *f).is_some_and(|until| Instant::now() < until);
@@ -180,7 +200,7 @@ impl OpenFga {
         if !deletes.is_empty() {
             body["deletes"] = json!({"tuple_keys": deletes, "on_missing": "ignore"});
         }
-        if let Some(m) = &self.model_id {
+        if let Some(m) = self.model() {
             body["authorization_model_id"] = json!(m);
         }
         send_classified(self.client.post(format!("{}/write", self.base)).json(&body), "openfga write").await?;

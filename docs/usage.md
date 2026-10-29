@@ -185,6 +185,82 @@ select authz.setup($${
 - What the previous document declared and this one does not is removed. Unknown keys fail, naming
   what the place takes. A relationship table declared exactly as before is not delivered again.
 
+### The engine's rules, kept in Postgres
+
+The model, the schema or the policies can be kept in Postgres too, in the engine's own language,
+so a migration carries them with the tables they protect and they are reviewed as written.
+`authz.set_rules(engine, name, text)` stores a new version, and the sidecar pushes it to the engine:
+
+```sql
+-- OpenFGA: one model, in its DSL
+select authz.set_rules('openfga', 'model', $$
+model
+  schema 1.1
+type user
+type org
+  relations
+    define admin: [user]
+    define member: [user]
+    define can_read: member or admin
+type document
+  relations
+    define org: [org]
+    define viewer: can_read from org
+$$);
+
+-- SpiceDB: one schema
+select authz.set_rules('spicedb', 'schema', $$
+definition user {}
+definition org {
+  relation admin: user
+  relation member: user
+  permission can_read = member + admin
+}
+definition document {
+  relation org: org
+  permission viewer = org->can_read
+}
+$$);
+
+-- Cerbos: one row per policy, named as you would name its file
+select authz.set_rules('cerbos', 'resource/document', $$
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: document
+  rules:
+    - actions: ["view"]
+      effect: EFFECT_ALLOW
+      roles: ["user"]
+      condition:
+        match:
+          expr: request.resource.attr.owner == request.principal.id
+$$);
+
+select engine, name, version, pushed_at, error from authz.rules();   -- the versions in force
+```
+
+- **Versions.** Every change is a new version in `authz.rules`, with who stored it and when; the
+  same text again is not one. `authz.rules()` shows the latest of each, `body` included.
+- **Pushed.** The sidecar pushes the latest version within milliseconds (OpenFGA: a new
+  authorization model, which it then reads with; SpiceDB: WriteSchema; Cerbos: its Admin API), and
+  every backend asks again, since new rules may change any answer. Each push is recorded in
+  `pushed_at`.
+- **Refused.** Rules the engine refuses (an undefined relation, a policy that does not parse) are
+  kept with its reason in `error`, `authz.doctor()` fails its `rules` check, and the engine keeps
+  the version before. Store a corrected version to replace it.
+- **OpenFGA's DSL** is converted to the API's JSON by the sidecar (schema 1.1: types, relations,
+  `[user, user:*, team#member]`, `or`, `and`, `but not`, `from`); conditions and modules are refused,
+  as pg_auth sends no context for them. JSON is taken as is.
+- **Cerbos** must store policies in a database with its Admin API on
+  (`storage.driver: sqlite3` or `postgres`, `server.adminAPI.enabled: true`), and the sidecar needs
+  its credentials (`CERBOS_ADMIN_USER`, `CERBOS_ADMIN_PASSWORD`). A policy directory or git store
+  is read-only: keep those rules where they are.
+- **Optional.** Rules managed in the engine itself stay there: pg_auth pushes only what
+  `authz.set_rules` stored. Once it is used, Postgres is the source of truth for that engine.
+- **Order.** Store the rules before `authz.relate` declares tables that write their relations: the
+  engine refuses a relationship whose relation its model does not have yet.
+
 ## 5. Inspect and debug
 
 ```sql

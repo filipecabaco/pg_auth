@@ -21,11 +21,18 @@ defmodule Compare.Engines.Cerbos do
   def capabilities(_), do: []
 
   @impl true
-  # Options: :policies (a directory of policies), :network (a Docker network to join)
+  # Options: :policies (a directory of policies), :network (a Docker network to join), :server_args
+  # (the server's command line instead of its defaults: compare/rules.exs stores policies through
+  # the Admin API, in a database rather than the directory)
   def setup(opts) do
-    policies = opts[:policies] || raise("cerbos needs a directory of policies (:policies)")
-    args = []
-    env = ["--network", opts[:network] || raise("cerbos joins a stack's network (:network)"), "-v", "#{Path.expand(policies)}:/policies:ro"]
+    args = opts[:server_args] || []
+    network = ["--network", opts[:network] || raise("cerbos joins a stack's network (:network)")]
+    env =
+      case opts[:policies] do
+        nil when args != [] -> network
+        nil -> raise("cerbos needs a directory of policies (:policies) or :server_args")
+        policies -> network ++ ["-v", "#{Path.expand(policies)}:/policies:ro"]
+      end
     {name, port} = Docker.run(Docker.unique("compare-cerbos"), @image, 3592, args, env)
     state = %{container: name, db: nil, req: Req.new(base_url: "http://127.0.0.1:#{port}", retry: false), server: {args, env}}
 

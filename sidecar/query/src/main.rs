@@ -41,8 +41,10 @@ mod cerbos;
 mod engine;
 mod index;
 mod openfga;
+mod openfga_dsl;
 mod outbox;
 mod protocol;
+mod rules;
 mod spicedb;
 
 use cerbos::{Cerbos, Plan};
@@ -217,7 +219,10 @@ async fn run() -> Result<(), String> {
     let concurrency = usize::try_from(env_num("CHECK_CONCURRENCY", 8)).unwrap_or(usize::MAX);
     let poll = Duration::from_millis(env_num("INDEX_POLL_MS", 500));
     let (engine, describe) = match (env("CERBOS_URL"), env("SPICEDB_URL")) {
-        (Some(url), _) => (Engine::Cerbos(Cerbos::new(&url, timeout)?), format!("cerbos {url}")),
+        (Some(url), _) => {
+            let admin = env("CERBOS_ADMIN_USER").zip(env("CERBOS_ADMIN_PASSWORD"));
+            (Engine::Cerbos(Cerbos::new(&url, timeout, admin)?), format!("cerbos {url}"))
+        }
         (None, Some(url)) => {
             let token = env("SPICEDB_TOKEN").ok_or("SPICEDB_TOKEN is required")?;
             let engine = SpiceDb::new(&url, &token, env("SPICEDB_CONSISTENCY").as_deref(), timeout)?;
@@ -265,9 +270,17 @@ async fn run() -> Result<(), String> {
     // cached here are forgotten after each batch, so a grant or a revocation shows at once
     if let Some(url) = env("PG_AUTH_DATABASE_URL") {
         let answers = state.clone();
-        outbox::start(url, state.engine.clone(), poll, move || {
+        outbox::start(url.clone(), state.engine.clone(), poll, move || {
             answers.lists.clear();
             answers.checks.clear();
+        });
+        // the engine's rules kept in Postgres (authz.set_rules): new rules may change any answer, plans
+        // included
+        let answers = state.clone();
+        rules::start(url, state.engine.clone(), poll, move || {
+            answers.lists.clear();
+            answers.checks.clear();
+            answers.plans.clear();
         });
     }
 
@@ -641,7 +654,7 @@ mod serving {
     }
 
     fn cerbos(server: &MockServer) -> Engine {
-        Engine::Cerbos(Cerbos::new(&server.uri(), Duration::from_secs(5)).unwrap())
+        Engine::Cerbos(Cerbos::new(&server.uri(), Duration::from_secs(5), None).unwrap())
     }
 
     /// A connection to a sidecar serving `state`: send a request, read its answer.

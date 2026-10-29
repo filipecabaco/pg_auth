@@ -4,7 +4,7 @@
 //! CheckResources answers for resources given with their attributes. Cerbos keeps no data: it
 //! cannot list a subject's objects, fill the permission index, or report changes.
 
-use crate::engine::send_json;
+use crate::engine::{CallError, send_classified, send_json};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 
@@ -14,6 +14,8 @@ pub const MAX_RESOURCES: usize = 50;
 pub struct Cerbos {
     client: reqwest::Client,
     base: String,
+    /// the Admin API's user and password, to store policies kept in Postgres (authz.set_rules)
+    admin: Option<(String, String)>,
 }
 
 /// What a plan says about a resource kind for a principal (protocol.rs, `plan`).
@@ -27,9 +29,26 @@ pub enum Plan {
 }
 
 impl Cerbos {
-    pub fn new(url: &str, timeout: Duration) -> Result<Self, String> {
+    pub fn new(url: &str, timeout: Duration, admin: Option<(String, String)>) -> Result<Self, String> {
         let client = reqwest::Client::builder().timeout(timeout).build().map_err(|e| e.to_string())?;
-        Ok(Self { client, base: url.trim_end_matches('/').to_string() })
+        Ok(Self { client, base: url.trim_end_matches('/').to_string(), admin })
+    }
+
+    /// Store policies (each a YAML document, as Cerbos's files are) through the Admin API, which
+    /// needs a mutable policy store (a database, not a directory) and the admin credentials.
+    pub async fn put_policies(&self, policies: &[&str]) -> Result<(), CallError> {
+        let permanent = |message: String| CallError { permanent: true, message };
+        let (user, password) = self
+            .admin
+            .as_ref()
+            .ok_or_else(|| permanent("cerbos: storing policies needs its Admin API (CERBOS_ADMIN_USER, CERBOS_ADMIN_PASSWORD)".into()))?;
+        let policies = policies
+            .iter()
+            .map(|p| serde_norway::from_str::<Value>(p).map_err(|e| permanent(format!("cerbos: a policy is not YAML: {e}"))))
+            .collect::<Result<Vec<_>, _>>()?;
+        let request =
+            self.client.put(format!("{}/admin/policy", self.base)).basic_auth(user, Some(password)).json(&json!({"policies": policies}));
+        send_classified(request, "cerbos add or update policy").await.map(|_| ())
     }
 
     pub async fn plan(&self, subject: &str, permission: &str, object_type: &str, principal: Option<&Value>) -> Result<Plan, String> {

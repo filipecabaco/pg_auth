@@ -102,7 +102,8 @@ extension then answers from Postgres instead of asking the engine per row.
       grant execute on function authz.index_begin(text, text, text, text), authz.index_add(bigint, text[]),
           authz.index_finish(bigint), authz.index_abort(bigint), authz.index_invalidate(),
           authz.outbox_claim(int), authz.outbox_done(bigint[]), authz.outbox_failed(bigint, text),
-          authz.answers_changed() to pg_auth_sidecar;
+          authz.answers_changed(), authz.rules_pending(text), authz.rules_pushed(text, text, int, text)
+          to pg_auth_sidecar;
 
 ## Relationship tables
 
@@ -116,6 +117,19 @@ A failure the engine may get over (unreachable, 5xx, 429) is retried every `INDE
 change it refuses for good (another 4xx) is set aside in the outbox with its reason, and the others
 go on. Afterwards reads skip the engine's caches: OpenFGA with `HIGHER_CONSISTENCY` for 10 s,
 SpiceDB at least as fresh as the write's ZedToken. A change shows within tens of milliseconds.
+
+## Engine rules
+
+With `PG_AUTH_DATABASE_URL` set, the sidecar also pushes the rules kept in Postgres
+(`authz.set_rules`, sql/rules.sql) to its engine (`src/rules.rs`). It listens for `NOTIFY
+pg_auth_rules`, takes the latest version of each not yet pushed (one sidecar at a time, an
+advisory lock), and writes them: OpenFGA's WriteAuthorizationModel (the DSL converted to its JSON
+by `src/openfga_dsl.rs`; later requests name the new model), SpiceDB's WriteSchema, Cerbos's Admin
+API (`PUT /admin/policy`, the YAML sent as JSON, with `CERBOS_ADMIN_USER` and
+`CERBOS_ADMIN_PASSWORD`). The result is recorded beside each version in the same transaction,
+which calls `authz.answers_changed()` and clears the sidecar's own caches when the engine took
+them. Rules the engine refuses are recorded with its reason and not retried; an unreachable engine
+is retried every `INDEX_POLL_MS`.
 
 ## Run
 
@@ -142,6 +156,7 @@ the socket.
 | `SPICEDB_URL`, `SPICEDB_TOKEN` | required for SpiceDB | its HTTP gateway and preshared key |
 | `SPICEDB_CONSISTENCY` | `minimize_latency` | or `fully_consistent` |
 | `CERBOS_URL` | required for Cerbos | its HTTP API (port 3592) |
+| `CERBOS_ADMIN_USER`, `CERBOS_ADMIN_PASSWORD` | none | its Admin API's credentials, to push the policies kept in Postgres |
 | `PG_AUTH_SOCKET` | `/tmp/pg_auth.sock` | created with mode 0660 |
 | `LIST_LIMIT` | 1000 | OpenFGA: match its `listObjectsMaxResults`; SpiceDB: any, the sidecar pages |
 | `CACHE_TTL_MS` | 1000 | answers are cached this long; 0 disables (staleness vs. load). A list or plan answered from the cache past half its TTL is refreshed in the background, and the extension keeps it until that half-life, so a subject asking steadily never waits on the engine |
@@ -149,7 +164,7 @@ the socket.
 | `REFRESH_CONCURRENCY` | 8 | background refreshes in flight; when busy, the oldest answers go first |
 | `ENGINE_TIMEOUT_MS` | 4000 | per engine request; keep it above `OPENFGA_LIST_DEADLINE_MS` and below the extension's `pg_auth.sidecar_timeout_ms` (5000) |
 | `CHECK_CONCURRENCY` | 8 | engine check calls in flight at once for one check request (OpenFGA: a 1000-id batch is 20 calls; SpiceDB: one) |
-| `PG_AUTH_DATABASE_URL` | none | enables the permission index (see above), e.g. `postgres://pg_auth_sidecar@/app?host=/run/postgresql` |
+| `PG_AUTH_DATABASE_URL` | none | enables the permission index, relationship tables and engine rules (see above), e.g. `postgres://pg_auth_sidecar@/app?host=/run/postgresql` |
 | `INDEX_POLL_MS` | 500 | how often OpenFGA's change feed is read; the retry interval for both |
 | `REQUEST_LOG` | off | `1` prints one line per request on stderr: what Postgres asked, the answer (a plan as the SQL filter it becomes), and whether the engine or the cache answered. For watching a setup |
 

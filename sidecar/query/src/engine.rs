@@ -157,6 +157,29 @@ impl Engine {
         Ok(())
     }
 
+    /// Make the engine run these rules (name, text), kept in Postgres (authz.set_rules): OpenFGA's
+    /// model (its DSL, converted to the JSON its API takes; JSON as is), SpiceDB's schema, or
+    /// Cerbos's policies. Rules the engine (or the conversion) refuses are a permanent error.
+    pub async fn push_rules(&self, rules: &[(String, String)]) -> Result<(), CallError> {
+        let permanent = |message: String| CallError { permanent: true, message };
+        match self {
+            Engine::OpenFga(e) => {
+                let [(_, text)] = rules else { return Err(permanent("openfga keeps one model".into())) };
+                let model = if text.trim_start().starts_with('{') {
+                    serde_json::from_str(text).map_err(|m| permanent(format!("openfga model: {m}")))?
+                } else {
+                    crate::openfga_dsl::to_json(text).map_err(|m| permanent(format!("openfga model: {m}")))?
+                };
+                e.write_model(&model).await
+            }
+            Engine::SpiceDb(e) => {
+                let [(_, schema)] = rules else { return Err(permanent("spicedb keeps one schema".into())) };
+                e.write_schema(schema).await
+            }
+            Engine::Cerbos(e) => e.put_policies(&rules.iter().map(|(_, p)| p.as_str()).collect::<Vec<_>>()).await,
+        }
+    }
+
     /// Which resources the subject may access, as a condition on their attributes; engines that
     /// decide on relationships have none to give.
     pub async fn plan(&self, (subject, object_type, permission): &Key, principal: Option<&Value>) -> Result<Plan, String> {
@@ -261,7 +284,62 @@ mod tests {
     }
 
     fn cerbos(server: &MockServer) -> Engine {
-        Engine::Cerbos(Cerbos::new(&server.uri(), Duration::from_secs(5)).unwrap())
+        Engine::Cerbos(Cerbos::new(&server.uri(), Duration::from_secs(5), None).unwrap())
+    }
+
+    #[tokio::test]
+    async fn rules_kept_in_postgres_reach_each_engine_in_its_own_form() {
+        // OpenFGA: the DSL written as JSON, and the new model asked from then on
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/stores/s1/authorization-models"))
+            .and(body_partial_json(json!({"schema_version": "1.1", "type_definitions": [{"type": "user"}]})))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"authorization_model_id": "m2"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/stores/s1/list-objects"))
+            .and(body_partial_json(json!({"authorization_model_id": "m2"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"objects": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let e = openfga(&server);
+        e.push_rules(&[("model".into(), "model\n  schema 1.1\ntype user\n".into())]).await.unwrap();
+        e.list(&key("user:anne", "doc", "viewer"), 10).await.unwrap();
+        // a model with a condition is refused for good, without asking OpenFGA
+        let refused =
+            e.push_rules(&[("model".into(), "model\n  schema 1.1\ntype doc\n  relations\n    define v: [user with c]\n".into())]).await;
+        assert!(refused.as_ref().is_err_and(|e| e.permanent && e.message.contains("conditions")), "{:?}", refused.err().map(|e| e.message));
+
+        // SpiceDB: the schema's text
+        let server = MockServer::start().await;
+        Mock::given(path("/v1/schema/write"))
+            .and(body_partial_json(json!({"schema": "definition user {}"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let e = Engine::SpiceDb(crate::spicedb::SpiceDb::new(&server.uri(), "key", None, Duration::from_secs(5)).unwrap());
+        e.push_rules(&[("schema".into(), "definition user {}".into())]).await.unwrap();
+
+        // Cerbos: each policy's YAML as JSON, through the Admin API with its credentials
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/admin/policy"))
+            .and(wiremock::matchers::header("authorization", "Basic Y2VyYm9zOnNlY3JldA=="))
+            .and(body_partial_json(json!({"policies": [{"apiVersion": "api.cerbos.dev/v1", "resourcePolicy": {"resource": "doc"}}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"success": {}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let admin = Some(("cerbos".to_owned(), "secret".to_owned()));
+        let e = Engine::Cerbos(Cerbos::new(&server.uri(), Duration::from_secs(5), admin).unwrap());
+        let policy = "apiVersion: api.cerbos.dev/v1\nresourcePolicy:\n  resource: doc\n  version: default\n";
+        e.push_rules(&[("resource/doc".into(), policy.into())]).await.unwrap();
+        // without the Admin API's credentials it cannot store them: a permanent error
+        let refused = cerbos(&server).push_rules(&[("resource/doc".into(), policy.into())]).await;
+        assert!(refused.as_ref().is_err_and(|e| e.permanent && e.message.contains("Admin API")));
     }
 
     #[tokio::test]

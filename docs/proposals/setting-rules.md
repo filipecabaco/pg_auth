@@ -163,10 +163,13 @@ teams that want their rules versioned with their schema. In order:
    unknown keys, keeps every version in `authz.setups`, returns the one in force from
    `authz.setup()`, and removes what a new version drops; the Drive scenario in
    `compare/complex.exs` is set up by one document.
-4. **Add C**, `authz.set_rules(engine, text)`: store the engine's rules and push them. OpenFGA
-   (WriteAuthorizationModel) and SpiceDB (WriteSchema) accept them over their APIs; Cerbos needs its
-   Admin API enabled with a mutable policy store. Teams that manage rules in the engine already
-   keep doing so: C is optional, and when it is used Postgres is the source of truth.
+4. **Add C**, `authz.set_rules(engine, name, text)`: done. One row per file, as people keep them:
+   one OpenFGA model (its DSL, converted by the sidecar) or SpiceDB schema, one row per Cerbos
+   policy. Each change is a version in `authz.rules`; the sidecar pushes the latest
+   (WriteAuthorizationModel, WriteSchema, Cerbos's Admin API with a database policy store), records
+   whether the engine took it, and `authz.doctor()` fails on rules it refused, which keeps the
+   version before. Teams that manage rules in the engine keep doing so: C is optional, and when it
+   is used Postgres is the source of truth. `compare/rules.exs` checks it on the three engines.
 5. **Context, last and per engine:** expiring relationships first (SpiceDB takes an expiry on write,
    and a row column can supply it), then request-level context (time, client IP from a setting) for
    OpenFGA conditions and SpiceDB caveats, then per-row context, which BatchCheck accepts but

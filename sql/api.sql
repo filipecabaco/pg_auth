@@ -386,6 +386,26 @@ begin
         return next;
     end if;
 
+    -- the engine's rules kept in Postgres (authz.set_rules)
+    if exists (select 1 from authz.rules) then
+        check_name := 'rules';
+        if exists (select 1 from authz.rules() r where r.error is not null) then
+            status := 'fail';
+            detail := 'the engine refused ' || (select string_agg(format('%s %s version %s (%s)', r.engine, r.name, r.version, r.error), '; ')
+                                                from authz.rules() r where r.error is not null) || ': it keeps the version before';
+            fix := 'correct the rules and store them again with authz.set_rules(engine, name, body)';
+        elsif exists (select 1 from authz.rules() r where r.pushed_at is null) then
+            status := 'warn';
+            detail := 'not pushed yet: ' || (select string_agg(r.engine || ' ' || r.name, ', ') from authz.rules() r where r.pushed_at is null)
+                      || ': is a sidecar with PG_AUTH_DATABASE_URL running for that engine?';
+            fix := 'start the sidecar with PG_AUTH_DATABASE_URL and grant it authz.rules_pending, authz.rules_pushed';
+        else
+            status := 'ok'; fix := null;
+            detail := (select string_agg(format('%s %s version %s', r.engine, r.name, r.version), ', ') from authz.rules() r) || ': in force';
+        end if;
+        return next;
+    end if;
+
     -- tables an API role can read with no row level security at all
     for t in select c.oid::regclass as rel
              from pg_class c join pg_namespace n on n.oid = c.relnamespace

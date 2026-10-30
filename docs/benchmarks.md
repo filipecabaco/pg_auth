@@ -1,7 +1,7 @@
 # Benchmarks
 
 Every benchmark scenario is a row level security problem people hit in production, collected in
-the [RLS issues catalogue](research/rls-issues.md). Each one runs a scenario's queries as a narrow
+the [RLS issues catalogue](https://github.com/filipecabaco/pg_auth/blob/main/docs/research/rls-issues.md). Each one runs a scenario's queries as a narrow
 and a broad subject against several variants of the same schema: no RLS, RLS written naively, RLS
 written the way Supabase recommends (best practice), and pg_auth enforcing an engine's
 decisions: OpenFGA and SpiceDB on every scenario, Cerbos and Cedar on the scenarios their rules

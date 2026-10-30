@@ -75,5 +75,5 @@ fields and the user's roles.
 ## Try it on your own Postgres {#install}
 
 - [Getting started](usage.md): install, subjects, protecting tables, granting by writing rows, debugging
-- [Performance](performance.md) and [benchmarks](benchmarks.md): what it costs
+- [Performance](https://github.com/filipecabaco/pg_auth/blob/main/docs/performance.md) and [benchmarks](benchmarks.md): what it costs
 - [Implementation](design.md): the planner hook, the protocol, security

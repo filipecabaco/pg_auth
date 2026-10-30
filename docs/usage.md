@@ -44,7 +44,7 @@ preload an extension, and running the sidecar elsewhere over HTTPS does not chan
    `pg_auth.sidecar_url` and `pg_auth.sidecar_secret_file` in Postgres. Requests and answers are
    signed with the secret, and anything else is refused; a round trip costs about 0.2 ms more than
    the socket, plus the network's, paid once by a request that asks the sidecar
-   ([measured under load](performance.md#under-load-and-with-the-sidecar-on-another-host)). Give the sidecar's own connection to Postgres
+   ([measured under load](https://github.com/filipecabaco/pg_auth/blob/main/docs/performance.md#under-load-and-with-the-sidecar-on-another-host)). Give the sidecar's own connection to Postgres
    `?sslmode=verify-full&sslrootcert=...` in `PG_AUTH_DATABASE_URL` (libpq's modes), and keep both
    hosts' clocks within 30 s of each other. See the sidecar's
    [README](https://github.com/filipecabaco/pg_auth/blob/main/sidecar/query/README.md#over-the-network);
@@ -290,7 +290,7 @@ $yaml$);
 The policy's plan for the subject becomes a filter on those columns (`owner = 'anne' or status =
 'published'`), which indexes serve as they serve RLS. A column named differently from the
 attribute is `owner_id as owner`. Cerbos needs its Admin API on to take pushed policies
-([Versions, pushes and checks](#versions-pushes-and-checks)).
+([Versions, pushes and checks](guides/migrations.md#versions-pushes-and-checks)).
 
 ### Cedar
 
@@ -366,228 +366,21 @@ $cedar$);
 
 A table protected twice (`memberships` as `Org` and as `OrgAdmins`) is a list of entries. Partial
 evaluation turns the policies into filters on the columns: `principal in resource.org` becomes
-`org_id = ANY(the subject's orgs)`. A share carries its document's org, which the policy reads (the
-demo fills it in with a trigger, `docker/demo/sql/cedar.sql`).
+`org_id = ANY(the subject's orgs)`. A share carries its document's org, which the policy trusts to
+decide who may share, so it is held to the document by a key (`foreign key (doc_id, org_id)
+references documents (id, org_id)`) and filled in by a trigger (`docker/demo/sql/cedar.sql`).
 
 Rules managed in the engine itself, not stored by pg_auth, take a mapping alone:
 [Rules managed in the engine itself](#4-rules-managed-in-the-engine-itself).
 
-### The mapping
+### Going further
 
-```yaml
-<table>:                         # one entry, or a list of them (a table protected or related twice)
-  type: <type>                   # default: the table's name, singular or plural, when the rules have it
-  id: <column or expression>     # default: its primary key
-  read: <permission>             # what reading a row asks; a protected table needs it
-  write: <permission>            # what inserting, updating and deleting asks; without it, denied
-  update: <permission>           # and delete: their own permission
-  insert: <type>#<permission> from <column>   # inserts checked on a parent
-  attributes: [<column>, <column> as <name>]  # the values the rules read
-  tree: <table>(<id>, <parent>) from <permission>   # a permission inherited down a tree
-  relations:                     # rows that are relationships of this type
-    <relation>: <subject column>
-    <relation>: {subject: <column>, subject_type: <type>, until: <column>, when: <sql>, ...}
-  rows: {object: <column>, relation: <column>, subject: <column>}   # the relation in a column
-```
-
-A key it does not know, a type, relation or permission the rules do not have, or a column the
-table does not have fails when the transaction commits, naming the table and what the rules have.
-
-- **The id** is a column (the row's own id, or a parent's such as `org_id`), or an IMMUTABLE
-  expression over the row (`id: "split_part(name, '/', 1)"`, a storage path's first folder).
-  Index it as you would for RLS. Partitions created later are protected too.
-- **Several ways to reach a row** (an order visible to its buyer, or to its seller's staff): a
-  list of entries, one per way, each with its type. A row is visible when any allows it.
-- **An insert checked on a parent:** a table protected by its own id cannot authorize an INSERT,
-  the engine has no object yet (`insert: project#create from project_id`).
-- **A tree** (folders with `parent_id`): `tree: folders(id, parent_id) from viewer_direct`, with the
-  model reading `viewer: viewer_direct or viewer from parent`. The engine lists only direct grants
-  and Postgres expands them; triggers keep a closure of the tree.
-- **Rules on the row's own attributes** (Cerbos, Cedar): `attributes: [owner_id, status]` sends
-  those columns as the resource's attributes, `owner_id as ownerId` under another name. The
-  engine's plan for the subject (always, never, or a condition on the attributes) is compiled into
-  a filter on those columns: indexes serve it as they serve RLS, and a cached plan serves every
-  subject whose plan has the same shape. A condition the engine expresses with more than
-  comparisons, `and`, `or`, `not` and `in` is evaluated per row. The principal's roles come from
-  the claim `roles_claim` (default `role`; `authz.configure(roles_claim => 'app_metadata.roles')`)
-  or, with `subject => 'guc'`, from `pg_auth.subject_roles` (comma separated, superuser-only like
-  `pg_auth.subject_id`); its attributes are the token's claims. **Scoped policies** (Cerbos: a
-  tenant's overrides, `scope:` in the policy) need the request's scope:
-  `authz.configure(scope_claim => 'tenant_id')` sends that claim as Cerbos's scope
-  (`pg_auth.subject_scope` for a session subject; `policy_version` for a version other than
-  `default`). Without one, a scoped override does not apply; `authz.doctor()` says so.
-- **Row state** (`not deleted`, `published`) stays plain SQL: add an ordinary restrictive policy
-  next to pg_auth's; it joins the scan's filter.
-
-### Rows that are relationships
-
-An app with no backend changes who may see what by writing rows, through PostgREST like any other
-table: a membership, a share, a team. The mapping makes a table's rows relationships in the
-engine (OpenFGA, SpiceDB, or Cedar's parents), and pg_auth delivers each change:
-
-```yaml
-memberships:
-  type: org
-  rows: {object: org_id, relation: role, subject: user_id}   # org:<org_id>#<role>@user:<user_id>
-documents:
-  relations:
-    org: org_id                                               # document:<id>#org@org:<org_id>
-shares:
-  type: document
-  relations:
-    shared_with: {object: doc_id, subject: user_id}           # document:<doc_id>#shared_with@user:<user_id>
-```
-
-- `rows` reads the relation from a column. The relations a row may name are the ones in the rules
-  that take the subject; a row naming another fails at once (`check_violation`), where the app sees
-  it, instead of the engine refusing it after the commit. `allowed: [reader, writer]` narrows them,
-  and names them for rules kept in the engine, which pg_auth cannot read.
-- `relations` writes one relation per entry. The object is the entry's `id`, or `object`, else the
-  table's single-column primary key.
-- The subject's type comes from the rules (the relation's one directly related type). A
-  relation's keys say otherwise:
-
-| key | |
-|---|---|
-| `subject` | the subject's column |
-| `subject_type`, `subject_relation` | the subject's type, or a userset (`subject_type: team, subject_relation: member`: the team's members) |
-| `subject_id` | a fixed subject, `'*'` for everyone (`user:*`): no subject column |
-| `object` | the object's column, when not the entry's id |
-| `until` | the relationship ends at the row's timestamp (null: for good) |
-| `condition` | written with an OpenFGA condition or SpiceDB caveat, the row giving its parameters (`{name: in_region, with: {allowed: regions}}`) |
-| `when` | only rows matching this SQL (one `shares` table for users, teams and the public, one entry per kind) |
-| `name` | the declaration's name, when the generated `<type>_<relation>` is not wanted |
-
-- **Write to relations, read permissions.** The rows write plain relations (`admin`, `member`,
-  `shared_with`); tables are protected by permissions computed from them (`viewer: shared_with or
-  can_read from org`). SpiceDB only takes writes to relations, and the model reads the same in
-  OpenFGA.
-- **When it shows.** A trigger records each insert, delete and relationship-changing update in
-  `authz_internal.outbox` with the write itself, so a rolled-back write never reaches the engine. The
-  sidecar delivers it on commit, and every backend asks again: the change shows within tens of
-  milliseconds (`compare/relationships.exs`).
-- **Grants that end.** `until expires_at`: the sidecar deletes the relationship from the engine
-  when it is due, and every backend asks again, as for any revocation: it goes within a few
-  hundred milliseconds of its end. An end moved later keeps it, one moved earlier or into the past
-  ends it now, a renewal writes it again; a row whose end has passed is no relationship at all.
-  SpiceDB also gets the end as the relationship's expiration, so the engine ends it itself if the
-  sidecar is down (within its revision window, a few seconds). Its schema says so: `use
-  expiration`, and `relation shared_with: user | user with expiration` (`user with expiration`
-  alone when the column is `not null`). OpenFGA has no expiry of its own: its grants end when the
-  sidecar deletes them, so while the sidecar is down an ended grant stays, like any revocation.
-  Ends waiting in the outbox are not changes waiting: `authz.doctor()` counts them apart.
-- **Conditions and caveats.** A relationship can carry an OpenFGA condition or a SpiceDB caveat,
-  the row giving its values, and each request the rest: a share in some regions, a grant until a
-  deadline, an office's IP range.
-
-  ```text
-  condition in_region(region: string, allowed: list<string>) {     # OpenFGA
-    region in allowed
-  }
-  type doc
-    relations
-      define viewer: [user, user with in_region]
-  ```
-
-  ```yaml
-  shares:
-    type: doc
-    relations:
-      viewer: {object: doc_id, subject: user_id, condition: {name: in_region, with: {allowed: regions}}}
-  ```
-
-  ```sql
-  -- what every request gives: the time asked, the token's region claim, a header
-  select authz.configure(context => '{"current_time": "now", "region": {"claim": "region"},
-                                      "client_ip": {"setting": "request.headers", "key": "x-forwarded-for"}}');
-  ```
-
-  - A null column gives no value. New values in the row write the relationship again with them.
-  - `authz.configure(context => ...)` names what every request gives: `"now"` (the time the
-    engine is asked, RFC 3339), `{"claim": "region"}` (the token's claim, `a.b` for a nested one),
-    or `{"setting": "request.headers", "key": "x-forwarded-for"}` (a setting, or a key of its
-    JSON). A value the request lacks is not sent, and a condition needing it is not met: those
-    rows stay hidden.
-  - Answers depend on the context, so they are kept per context; one asked with the time is kept
-    up to the sidecar's `CACHE_TTL_MS` (1 s), so a grant ends within that of its deadline. The
-    permission index is not used while a context is configured: a set is filled for no request
-    in particular. Broad subjects are then checked row by row.
-  - **The protected row's own values.** A condition can also take values from the row being read
-    (a report's level against a reader's clearance): protect the table with them as attributes,
-    named as the condition's parameters (`reports: {read: viewer, attributes: [level]}`). What that costs depends on the engine, since an engine's list cannot take a value
-    per row:
-
-    | engine | how rows are decided | expect |
-    |---|---|---|
-    | SpiceDB | one LookupResources per subject (with the request's context): rows granted outright and rows not granted at all are decided in Postgres, by an indexable `id = ANY(...)` filter; only rows granted through a caveat that needs the row's values are checked, each with them | the cost of a list, plus one round trip per row whose grant is conditional. A subject with more than `LIST_LIMIT` objects has every row checked |
-    | OpenFGA | ListObjects takes no row's values (and fails on a condition missing one), so every row read is checked with its values | one round trip per row read: fine for reads by key and small pages, slow for scans. Prefer SpiceDB for this shape, or a column the relationship can carry instead |
-    | Cerbos | attributes are its own model: plans compile into filters on the columns | no round trip per row |
-    | Cedar | partial evaluation leaves conditions on the row: compiled into filters on the columns (an entity attribute among the subject's ancestors becomes `org_id = ANY(...)`, `resource in` the ids below an entity); a part outside comparisons, `in`, `has`, `&&`, `\|\|` and `!` is decided by Cedar for the rows the rest leaves | no round trip per row; the sidecar evaluates a row itself |
-- **If the engine is down,** changes wait and are delivered when it is back. A change the engine
-  refuses is set aside with its reason, and `authz.doctor()` reports it; the changes after it go
-  on.
-- **Needs** the sidecar's `PG_AUTH_DATABASE_URL` (as for the permission index), and a unique key
-  over the columns, so two rows are never one relationship. Rows already in the table are
-  delivered when the mapping first names the table.
-
-### Versions, pushes and checks
-
-```sql
-select engine, name, version, mapping, pushed_at, error from authz.rules();   -- the versions in force
-select jsonb_pretty(authz_internal.setup());                                  -- what the mappings set up
-```
-
-- **Versions.** Every change is a new version in `authz_internal.rules`, with who stored it and when; the
-  same rules and mapping again are not one. `authz.rules()` shows the latest of each, `body` and
-  `mapping` included. A migration carries the rules and their mapping with the tables they
-  protect, and they are reviewed as written.
-- **What changes.** A new version sets up what its mapping says: a table it no longer names loses
-  its protection or stops being a relationship table, one unchanged is left as it is (its rows are
-  not delivered again). A version changing only the mapping is not pushed again: the engine has
-  its rules already. Rules stored with no mapping keep the one before, so updating the rules alone
-  leaves the tables as they are; `mapping => ''` removes it.
-- **Pushed.** The sidecar pushes the latest version within milliseconds (OpenFGA: a new
-  authorization model, which it then reads with; SpiceDB: WriteSchema; Cerbos: its Admin API), and
-  every backend asks again, since new rules may change any answer. Each push is recorded in
-  `pushed_at`. Relationships wait for the rules they need: none is delivered while that engine's
-  rules are not pushed.
-- **Checked.** The mapping is applied when the rules are stored, so its tables and columns must
-  exist by then, and a mapping that is not YAML, or names a key it does not take, fails at once,
-  naming its table. A mapping naming a type or permission the rules do not have fails when the
-  transaction commits, naming what they have:
-
-  ```text
-  ERROR:  the setup names what the rules stored with authz.set_rules do not have:
-  public.docs: document has no vewer in the openfga model (it has: editor, org, viewer)
-  ```
-
-  That check runs at commit, so a migration can change the rules and the tables using them
-  together. A relationship that ends needs, on SpiceDB, a relation that takes it with an
-  expiration (and as it is, when the column may be null). One written with a condition needs a
-  relation that takes `user with <condition>`, a condition the rules have, and parameters it
-  takes. Cerbos policies are checked for their resource and actions (`approve:*` covers
-  `approve:big`). What the stored rules do not show, the engine still checks when they are pushed.
-- **Refused.** Rules the engine refuses (an undefined relation, a policy that does not compile) are
-  kept with its reason in `error`, `authz.doctor()` fails its `rules` check, and the engine keeps
-  the version before. Cerbos stores policies it cannot compile and goes on with the ones before:
-  the sidecar asks it whether they compile, and puts the versions before back when they do not.
-  Store a corrected version to replace it.
-- **OpenFGA's DSL** is converted to the API's JSON by the sidecar (schema 1.1: types, relations,
-  `[user, user:*, team#member, user with in_region]`, `or`, `and`, `but not`, `from`, conditions);
-  modules are refused. JSON is taken as is.
-- **Every sidecar follows them.** The engine's id for the rules in force (OpenFGA's model, SpiceDB's
-  schema revision) is kept beside them, and every sidecar asks with it from the next request, not
-  only the one that pushed them.
-- **Cedar** is pushed to no server: the sidecar holding the push compiles the rules in force with the
-  new version and validates the policies against the schema (strictly); a version that does not
-  is refused with Cedar's reason, the version before kept. Every sidecar then loads the rules in
-  force, and the parents delivered (kept in `authz_internal.entity_parents`, read again after each
-  delivery). Not taken: a schema with a namespace (a subject `type:id` cannot name `App::User`),
-  policy templates, and the request's context.
-- **Cerbos** must store policies in a database with its Admin API on
-  (`storage.driver: sqlite3` or `postgres`, `server.adminAPI.enabled: true`), and the sidecar needs
-  its credentials (`CERBOS_ADMIN_USER`, `CERBOS_ADMIN_PASSWORD`). One `authz.set_rules` row per
-  policy, named as you would name its file.
+- [Mappings](guides/mappings.md): every key, relationship tables, conditions and ends, and what
+  each error means.
+- [Migrations](guides/migrations.md): storing and changing rules and mappings over a project's
+  life, versions and pushes, the first admin, dry runs and checks after deploy.
+- [Debugging](guides/debugging.md): a user who sees nothing, a refused write, failing queries, a
+  grant that does not show.
 
 ## 4. Rules managed in the engine itself
 

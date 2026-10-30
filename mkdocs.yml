@@ -61,22 +61,16 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting started: usage.md
-  - Implementation: design.md
-  - Performance: performance.md
+  - Guides:
+      - Mappings: guides/mappings.md
+      - Migrations: guides/migrations.md
+      - Debugging: guides/debugging.md
   - Benchmarks: benchmarks.md
-  - Testing: testing.md
-  - Development: development.md
-  - Research:
-      - Why RLS is slow: research/why-rls-is-slow.md
-      - RLS issues catalogue: research/rls-issues.md
-      - Broad subjects at scale: research/broad-subjects-at-scale.md
-      - Scaling authorization services: research/scaling-authz-services.md
-      - Scaling database-native authorization: research/scaling-db-native.md
-      - OpenFGA and SpiceDB: research/openfga-spicedb.md
-      - Keto, Permify, Topaz, Warrant: research/keto-permify-topaz-warrant.md
-      - Policy engines: research/policy-engines.md
-  - Proposals:
-      - Permission index: proposals/permission-index.md
-      - Attribute rules from Cerbos: proposals/cerbos.md
-      - Setting rules: proposals/setting-rules.md
-      - External providers: proposals/external-providers.md
+  - Implementation: design.md
+# kept in the repository, not on the site
+exclude_docs: |
+  research/
+  proposals/
+  performance.md
+  testing.md
+  development.md

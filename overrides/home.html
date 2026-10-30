@@ -34,7 +34,8 @@ resourcePolicy:
   resource: document</code></pre>
 <pre data-engine-show="cedar"><code><span class="n">// pg_auth: protects documents (id): read view, write edit, attributes (org_id as org, org_id as admins)</span>
 entity Document { org: Org, admins: OrgAdmins };
-permit (principal, action == Action::"view", resource) when { principal in resource.org };</code></pre>
+permit (principal, action == Action::"view", resource)
+  when { principal in resource.org };</code></pre>
         <p data-for="relationships">The rules: an organisation's members read its documents, and only its admins edit
           them. Anne is the admin of org 1, which owns three documents. Bob is in no org yet.</p>
         <p data-for="attributes">The rule: everyone reads published documents and their own drafts, and only the owner

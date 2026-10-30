@@ -14,6 +14,10 @@
 
   const base = new URL(root.dataset.demo, document.baseURI);
   const at = (path) => new URL(path, base).href;
+  // The build's files that keep their name from one build to the next, asked for with the build's
+  // time: a browser that cached a previous build's machine never restores it under a newer page
+  let build = "";
+  const built = (path) => `${at(path)}?build=${encodeURIComponent(build)}`;
   const screen = root.querySelector(".pa-demo__screen");
   const boots = [...root.querySelectorAll("[data-boot]")];
   const status = root.querySelector(".pa-demo__status");
@@ -56,10 +60,11 @@
     setStatus("loading", "loading the machine");
 
     try {
-      const run = await fetch(at("run.json")).then((r) => {
+      const run = await fetch(at("run.json"), { cache: "no-store" }).then((r) => {
         if (!r.ok) throw new Error("demo not built");
         return r.json();
       });
+      build = run.built_at || "";
       stylesheet(at("xterm/xterm.css"));
       await Promise.all([script(at("xterm/xterm.js")), script(at("armless/armless.js"))]);
       await script(at("xterm/addon-fit.js"));
@@ -71,8 +76,8 @@
         wasm_smp: at("armless/armless-smp.wasm"),
         memory_mb: run.memory_mb,
         cpus: run.cpus,
-        filesystem: { json: at("system/filesystem.json"), baseurl: at("system/filesystem/") },
-        initial_state: at("system/state.bin.zst"),
+        filesystem: { json: built("system/filesystem.json"), baseurl: at("system/filesystem/") },
+        initial_state: built("system/state.bin.zst"),
         autostart: false,
       });
 
@@ -83,7 +88,7 @@
       });
       emulator.on("error", (error) => setStatus("error", `failed: ${error.message || error}`));
 
-      const replay = fetch(at("system/console.bin"))
+      const replay = fetch(built("system/console.bin"))
         .then((r) => (r.ok ? r.arrayBuffer() : null))
         .catch(() => null);
 
@@ -135,8 +140,8 @@
       root.classList.add("is-running");
       setStatus("ready", "running in this tab");
       if (narrow.matches) layout();
-      // the snapshot is connected to openfga: follow an engine picked before booting
-      if (root.dataset.engine !== "openfga") connect(root.dataset.engine);
+      // every boot starts from the demo's data, on the engine picked (before booting, or openfga)
+      connect(root.dataset.engine);
       // the terminal takes the keyboard only when clicked: a step or the boot button leaves focus
       // where it was, so Tab still moves through the page (and a phone opens no keyboard)
       preloadWarmPack().catch(() => {});
@@ -150,7 +155,7 @@
 
   // The files the first commands read, in one background download instead of one request each
   async function preloadWarmPack() {
-    const response = await fetch(at("system/warm.pack"));
+    const response = await fetch(built("system/warm.pack"));
     if (!response.ok) return;
     const pack = new Uint8Array(await response.arrayBuffer());
     const indexSize = new DataView(pack.buffer).getUint32(0, true);
@@ -165,6 +170,12 @@
   }
 
   const ready = () => emulator && root.dataset.state === "ready";
+
+  // Back to this page from another (the browser's back-forward cache): a fresh page, not the
+  // machine as it was left
+  window.addEventListener("pageshow", (e) => {
+    if (e.persisted && started) location.reload();
+  });
 
   // Switch pane, clear whatever is half-typed there (ctrl-u), then type the line
   const type = (pane, line) => emulator.console_input(`${PANE[pane]}\x15${line}\r`);

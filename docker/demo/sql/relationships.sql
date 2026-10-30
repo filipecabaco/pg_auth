@@ -17,14 +17,17 @@ insert into memberships values (1, 'anne', 'admin'), (2, 'carl', 'admin');
 \set rules `cat :rules_file`
 select authz.set_rules(:'engine', :'rules_name', :'rules');
 
--- The page calls this when a visitor switches to this engine: the data back as the demo starts,
--- so its steps tell the same story on a second visit. It runs as its owner (a superuser), and the
--- membership it removes is delivered to the engine like any other.
+-- The page calls this when the demo boots and when a visitor switches engines: every table back as
+-- the demo starts (rows added removed, rows deleted put back), so each visit tells the same story.
+-- It runs as its owner (a superuser), and every change it makes reaches the engine like any other.
 create function demo_reset() returns void language sql security definer set search_path = public as $$
-  delete from memberships where (org_id, user_id) not in ((1, 'anne'), (2, 'carl'));
   delete from shares;
-  update documents d set title = t.title
-  from (values (1, 'Roadmap'), (2, 'Budget'), (3, 'Launch plan'), (4, 'Hiring'), (5, 'Pricing')) t(id, title)
-  where d.id = t.id and d.title <> t.title;
+  delete from memberships where (org_id, user_id) not in ((1, 'anne'), (2, 'carl'));
+  insert into memberships values (1, 'anne', 'admin'), (2, 'carl', 'admin')
+    on conflict (org_id, user_id) do update set role = excluded.role where memberships.role <> excluded.role;
+  delete from documents where id not in (1, 2, 3, 4, 5);
+  insert into documents values (1, 1, 'Roadmap'), (2, 1, 'Budget'), (3, 1, 'Launch plan'), (4, 2, 'Hiring'), (5, 2, 'Pricing')
+    on conflict (id) do update set org_id = excluded.org_id, title = excluded.title
+    where (documents.org_id, documents.title) is distinct from (excluded.org_id, excluded.title);
 $$;
 grant execute on function demo_reset() to authenticated;

@@ -14,12 +14,14 @@ insert into documents values (1, 'Roadmap', 'anne', 'published'), (2, 'Budget', 
 \set rules `cat /etc/demo/rules/cerbos.yaml`
 select authz.set_rules('cerbos', 'resource/document', :'rules');
 
--- The page calls this when a visitor switches to this engine: the data back as the demo starts,
--- so its steps tell the same story on a second visit. It runs as its owner (a superuser).
+-- The page calls this when the demo boots and when a visitor switches engines: every table back as
+-- the demo starts (rows added removed, rows deleted put back), so each visit tells the same story.
+-- It runs as its owner (a superuser).
 create function demo_reset() returns void language sql security definer set search_path = public as $$
-  update documents d set title = t.title, owner = t.owner, status = t.status
-  from (values (1, 'Roadmap', 'anne', 'published'), (2, 'Budget', 'anne', 'draft'), (3, 'Launch plan', 'anne', 'draft'),
-               (4, 'Hiring', 'carl', 'published'), (5, 'Pricing', 'carl', 'draft')) t(id, title, owner, status)
-  where d.id = t.id;
+  delete from documents where id not in (1, 2, 3, 4, 5);
+  insert into documents values (1, 'Roadmap', 'anne', 'published'), (2, 'Budget', 'anne', 'draft'),
+    (3, 'Launch plan', 'anne', 'draft'), (4, 'Hiring', 'carl', 'published'), (5, 'Pricing', 'carl', 'draft')
+    on conflict (id) do update set title = excluded.title, owner = excluded.owner, status = excluded.status
+    where (documents.title, documents.owner, documents.status) is distinct from (excluded.title, excluded.owner, excluded.status);
 $$;
 grant execute on function demo_reset() to authenticated;

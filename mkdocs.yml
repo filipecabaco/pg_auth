@@ -79,3 +79,4 @@ nav:
       - Permission index: proposals/permission-index.md
       - Attribute rules from Cerbos: proposals/cerbos.md
       - Setting rules: proposals/setting-rules.md
+      - External providers: proposals/external-providers.md

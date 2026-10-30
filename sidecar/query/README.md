@@ -214,6 +214,8 @@ available beside it.
 - **TLS.** Its own certificate, or `PG_AUTH_TLS_TERMINATED=1` behind a platform that terminates
   TLS; without either it does not start, nor without the secret.
 - **Health.** `GET /healthz` answers `ok`, and nothing else.
+- **Try it.** `docker/remote` runs Postgres, SpiceDB and the sidecar in separate containers with
+  `docker compose`, the sidecar reached only over HTTPS.
 - **Cost.** About 0.17 ms a round trip more than the socket, measured on one host
   (`compare/remote.exs`: 190 µs beyond the engine, against 22 µs), plus the network's own round
   trip.

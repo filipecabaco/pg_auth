@@ -19,6 +19,10 @@ defmodule Remote do
   @files %{"openfga" => {"model", "openfga.fga"}, "spicedb" => {"schema", "spicedb.zed"}}
   @bare "model\n  schema 1.1\ntype user\n"
   @host "sidecar.pg-auth.test"
+  # a proxy terminating TLS in front of a sidecar on plain HTTP, as a platform would; and one that
+  # also changes the answers on their way back
+  @proxy "proxy.pg-auth.test"
+  @tamper "tamper.pg-auth.test"
   @tls "/run/pg_auth/tls"
   @secret "a-secret-the-sidecar-and-postgres-hold-0123456789"
   @deadline_ms 30_000
@@ -37,7 +41,7 @@ defmodule Remote do
 
   defp run(engine) do
     stack = Stack.new("remote", "pg_auth_compare=1")
-    certs = certs(Path.join(System.tmp_dir!(), "pg_auth-remote-#{stack.id}"))
+    certs = certs(dir(stack))
 
     try do
       # a sidecar on a socket, first so its image sets up the volume they share; Postgres points
@@ -56,14 +60,15 @@ defmodule Remote do
       })
 
       setup(conn, engine)
-      story(conn) ++ refusals(conn) ++ attacks(port) ++ cost(conn, stack) ++ misconfigured(stack, engine)
+      story(conn) ++ refusals(conn) ++ attacks(port) ++ behind_a_proxy(conn, stack, dir(stack)) ++ cost(conn, stack) ++
+        misconfigured(stack, engine)
     catch
       kind, reason ->
         for {c, log} <- Stack.logs(stack), do: IO.puts(:stderr, "---- #{c}\n#{String.slice(log, -3000, 3000)}")
         [{"run", "FAILED: " <> Exception.format(kind, reason, __STACKTRACE__)}]
     after
       Stack.stop(stack)
-      File.rm_rf(Path.join(System.tmp_dir!(), "pg_auth-remote-#{stack.id}"))
+      File.rm_rf(dir(stack))
     end
   end
 
@@ -169,6 +174,80 @@ defmodule Remote do
     ]
   end
 
+  defp dir(stack), do: Path.join(System.tmp_dir!(), "pg_auth-remote-#{stack.id}")
+
+  # The sidecar on plain HTTP (PG_AUTH_TLS_TERMINATED=1) behind nginx, which holds the certificate,
+  # as on a platform that terminates TLS in front of its services. The signatures cross the proxy
+  # untouched, so it still cannot answer for the sidecar.
+  defp behind_a_proxy(conn, stack, dir) do
+    sidecar = Stack.track(stack, "#{stack.id}-plain")
+    env = engine_env(stack) ++ Enum.flat_map(
+      ["PG_AUTH_LISTEN=0.0.0.0:8080", "PG_AUTH_TLS_TERMINATED=1", "PG_AUTH_SECRET_FILE=#{@tls}/secret",
+       "PG_AUTH_SOCKET=/tmp/unused.sock", "CACHE_TTL_MS=1000",
+       # to follow the rules in force (the model the rules pushed), as every sidecar does
+       "PG_AUTH_DATABASE_URL=postgres://sidecar:remote@#{stack.id}-postgres:5432/postgres"], &["-e", &1])
+    {^sidecar, plain} = Docker.run(sidecar, Stack.sidecar_image(), 8080, [], Stack.pg_docker_args(stack) ++ env)
+
+    File.write!(Path.join(dir, "nginx.conf"), """
+    server {
+      listen 443 ssl;
+      ssl_certificate /certs/server.pem;
+      ssl_certificate_key /certs/server.key;
+      location / { proxy_pass http://#{sidecar}:8080; }
+    }
+    server {
+      listen 8443 ssl;
+      ssl_certificate /certs/server.pem;
+      ssl_certificate_key /certs/server.key;
+      location / {
+        proxy_pass http://#{sidecar}:8080;
+        proxy_set_header Accept-Encoding "";
+        sub_filter_types application/json;
+        sub_filter '"ids":[' '"ids":["4","5",';
+        sub_filter_once off;
+      }
+    }
+    """)
+    File.chmod!(Path.join(dir, "server.key"), 0o644)
+    proxy = Stack.track(stack, "#{stack.id}-proxy")
+    {^proxy, _} =
+      Docker.run(proxy, "nginx:1.27.5-alpine", 443, [],
+        ["--network", stack.net, "--network-alias", @proxy, "--network-alias", @tamper, "-v", "#{dir}:/certs:ro",
+         "-v", "#{Path.join(dir, "nginx.conf")}:/etc/nginx/conf.d/default.conf:ro"])
+    Stack.wait(fn -> Docker.logs(proxy) =~ "start worker process" end, proxy)
+
+    # each with a subject not asked about yet, so the sidecar is asked rather than an answer kept
+    fails = fn url, subject, message ->
+      settings(conn, %{"pg_auth.sidecar_url" => url})
+      result = as(conn, subject, "select id from documents")
+      match?({:error, %Postgrex.Error{postgres: %{message: m}}} when is_binary(m), result) and
+        elem(result, 1).postgres.message =~ message
+    end
+
+    steps = [
+      check("behind a proxy terminating TLS: carl reads through it", fn ->
+        settings(conn, %{"pg_auth.sidecar_url" => "https://#{@proxy}"})
+        (eventually(fn -> visible(conn, "carl") == [4, 5] end) or raise("carl: #{inspect(as(conn, "carl", "select id from documents"))}")) and
+          Docker.logs(proxy) =~ "POST /v1/ask"
+      end),
+      check("a secret the sidecar does not hold fails, through the proxy", fn ->
+        settings(conn, %{"pg_auth.sidecar_secret_file" => "#{@tls}/wrong-secret"})
+        ok = fails.("https://#{@proxy}", "frank", "refused pg_auth's signature")
+        settings(conn, %{"pg_auth.sidecar_secret_file" => "#{@tls}/secret"})
+        ok
+      end),
+      check("an answer the proxy changed fails the statement", fn ->
+        fails.("https://#{@tamper}:8443", "grace", "not signed with the secret")
+      end),
+      check("the sidecar's plain port, reached past the proxy, refuses unsigned: 401", fn ->
+        Req.post!("http://127.0.0.1:#{plain}/v1/ask", body: ~s({"op":"ping"}), retry: false).status == 401
+      end)
+    ]
+
+    settings(conn, %{"pg_auth.sidecar_url" => "https://#{@host}:8443"})
+    steps
+  end
+
   # what a round trip costs beyond the engine's own time (authz.stats()), on one backend: through
   # a sidecar on the socket, then over HTTPS (its connection kept, after a warm-up). Every read is
   # a new subject, so each asks the sidecar, and the sidecar the engine.
@@ -206,7 +285,10 @@ defmodule Remote do
     ca.("ca")
     ca.("other-ca")
     ssl.(~w(req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=sidecar -keyout server.key -out server.csr))
-    File.write!(Path.join(dir, "ext.cnf"), "subjectAltName=DNS:#{@host}\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n")
+    File.write!(
+      Path.join(dir, "ext.cnf"),
+      "subjectAltName=DNS:#{@host},DNS:#{@proxy},DNS:#{@tamper}\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n"
+    )
     ssl.(~w(x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 -extfile ext.cnf -out server.pem))
     File.write!(Path.join(dir, "secret"), @secret <> "\n")
     File.write!(Path.join(dir, "wrong-secret"), "a-secret-the-sidecar-has-never-heard-of-0123456\n")

@@ -1,0 +1,66 @@
+# pg_auth with its sidecar reached over HTTPS, as a sidecar away from the database runs
+# (docs/proposals/external-providers.md): Postgres with pg_auth, SpiceDB, and the sidecar in its
+# own container, every request between them signed. The demo's tables and rules
+# (docker/demo/sql, docker/demo/rules). See README.md here.
+#
+#   docker compose up --build -d && ./try.sh
+#   docker compose down -v
+name: pg_auth-remote
+
+services:
+  # a test CA, a certificate it signs for the name `sidecar`, and the shared secret, made once
+  certs:
+    image: alpine:3.22
+    volumes:
+      - tls:/tls
+      - ./certs.sh:/certs.sh:ro
+    command: sh /certs.sh
+
+  spicedb:
+    image: authzed/spicedb:v1.56.2
+    command: serve --grpc-preshared-key example-key --datastore-engine memory --http-enabled --http-addr :8443
+
+  postgres:
+    build:
+      context: ../..
+      dockerfile: bench/docker/Dockerfile
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - 127.0.0.1:55432:5432
+    volumes:
+      - tls:/etc/pg_auth:ro
+      - ../demo/sql:/demo/sql:ro
+      - ../demo/rules:/demo/rules:ro
+      - ./setup.sh:/docker-entrypoint-initdb.d/10-pg_auth.sh:ro
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 1s
+      retries: 120
+
+  # reached by Postgres only over HTTPS (pg_auth.sidecar_url); its socket is not shared
+  sidecar:
+    build: ../../sidecar/query
+    environment:
+      SPICEDB_URL: http://spicedb:8443
+      SPICEDB_TOKEN: example-key
+      PG_AUTH_LISTEN: 0.0.0.0:8443
+      PG_AUTH_SECRET_FILE: /tls/secret
+      PG_AUTH_TLS_CERT: /tls/server.pem
+      PG_AUTH_TLS_KEY: /tls/server.key
+      PG_AUTH_DATABASE_URL: postgres://sidecar:sidecar@postgres:5432/postgres
+    volumes:
+      - tls:/tls:ro
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      spicedb:
+        condition: service_started
+
+volumes:
+  tls: {}

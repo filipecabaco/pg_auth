@@ -109,17 +109,17 @@ defmodule Relationships do
           "create table app.shares (doc_id int not null, user_id text, team text)",
           "grant select, insert, delete on all tables in schema app to app_user",
           # a document belongs to its org; a membership makes a user an admin or a member
-          "select authz.relate('app.documents', object_type => 'document', object_column => 'id', relation => 'org', subject_type => 'org', subject_column => 'org_id')",
-          "select authz.relate('app.memberships', object_type => 'org', object_column => 'org_id', relation_column => 'role', subject_type => 'user', subject_column => 'user_id')",
-          "select authz.relate('app.team_members', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'user', subject_column => 'user_id')",
+          "select authz_internal.relate('app.documents', object_type => 'document', object_column => 'id', relation => 'org', subject_type => 'org', subject_column => 'org_id')",
+          "select authz_internal.relate('app.memberships', object_type => 'org', object_column => 'org_id', relation_column => 'role', subject_type => 'user', subject_column => 'user_id')",
+          "select authz_internal.relate('app.team_members', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'user', subject_column => 'user_id')",
           # a share names a user, or a team's members
-          "select authz.relate('app.shares', name => 'with_user', object_type => 'document', object_column => 'doc_id', relation => 'shared_with', subject_type => 'user', subject_column => 'user_id')",
-          "select authz.relate('app.shares', name => 'with_team', object_type => 'document', object_column => 'doc_id', relation => 'shared_with', subject_type => 'team', subject_column => 'team', subject_relation => 'member')",
+          "select authz_internal.relate('app.shares', name => 'with_user', object_type => 'document', object_column => 'doc_id', relation => 'shared_with', subject_type => 'user', subject_column => 'user_id')",
+          "select authz_internal.relate('app.shares', name => 'with_team', object_type => 'document', object_column => 'doc_id', relation => 'shared_with', subject_type => 'team', subject_column => 'team', subject_relation => 'member')",
           # who may read and write what: only an org's admins manage its members, anyone who can
           # see a document can share it
-          "select authz.protect('app.documents', type => 'document', id => 'id', read => 'viewer', write => 'viewer')",
-          "select authz.protect('app.memberships', type => 'org', id => 'org_id', read => 'can_read', write => 'can_manage')",
-          "select authz.protect('app.shares', type => 'document', id => 'doc_id', read => 'viewer', write => 'viewer')",
+          "select authz_internal.protect('app.documents', type => 'document', id => 'id', read => 'viewer', write => 'viewer')",
+          "select authz_internal.protect('app.memberships', type => 'org', id => 'org_id', read => 'can_read', write => 'can_manage')",
+          "select authz_internal.protect('app.shares', type => 'document', id => 'doc_id', read => 'viewer', write => 'viewer')",
           # bootstrap, as a migration would: two orgs' documents, and org 1's first admin
           "insert into app.documents select i, 1 + (i > 4)::int, 'doc ' || i from generate_series(1, 6) i",
           "insert into app.memberships values (1, 'anne', 'admin')"
@@ -164,8 +164,8 @@ defmodule Relationships do
     waiting = not delivered?(conn)
     {_, 0} = System.cmd("docker", ["unpause", stack.engine.container])
     arrived = eventually(fn -> visible(conn, "erin") == [1, 2, 3, 4] end)
-    set_aside = eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.outbox where error is not null", []).rows == [[1]] end)
-    Postgrex.query!(conn, "delete from authz.outbox where error is not null", [])
+    set_aside = eventually(fn -> Postgrex.query!(conn, "select count(*) from authz_internal.outbox where error is not null", []).rows == [[1]] end)
+    Postgrex.query!(conn, "delete from authz_internal.outbox where error is not null", [])
     {"engine down: erin's grant waits, then arrives; an invalid one is set aside",
      outcome(waiting and arrived and set_aside, "waited in the outbox, delivered; fred's 'owner' set aside")}
   end
@@ -192,7 +192,7 @@ defmodule Relationships do
     end
   end
 
-  defp delivered?(conn), do: Postgrex.query!(conn, "select count(*) from authz.outbox", []).rows == [[0]]
+  defp delivered?(conn), do: Postgrex.query!(conn, "select count(*) from authz_internal.outbox", []).rows == [[0]]
   defp delivered!(conn), do: eventually(fn -> delivered?(conn) end) || raise("the outbox was not delivered")
 
   # what `user` sees, as the application's role

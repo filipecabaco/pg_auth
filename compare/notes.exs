@@ -39,7 +39,8 @@ defmodule Notes do
     stack = Stack.new("notes", "pg_auth_compare=1")
 
     try do
-      url = "postgres://postgres:notes@#{stack.id}-postgres:5432/postgres"
+      # the sidecar as an ordinary login holding only the authz_sidecar role
+      url = "postgres://sidecar:notes@#{stack.id}-postgres:5432/postgres"
       env = [{"PG_AUTH_DATABASE_URL", url}]
 
       stack =
@@ -91,7 +92,7 @@ defmodule Notes do
     Postgrex.query!(conn, "select authz.set_rules($1, $2, $3)", [engine, name, File.read!(Path.join(@rules, file))])
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.rules() where pushed_at is null", []).rows == [[0]] end) ||
       raise("rules not pushed")
-    eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.outbox where not_before is null", []).rows == [[0]] end) ||
+    eventually(fn -> Postgrex.query!(conn, "select count(*) from authz_internal.outbox where not_before is null", []).rows == [[0]] end) ||
       raise("relationships not delivered")
   end
 
@@ -237,6 +238,7 @@ defmodule Notes do
       "alter system set pg_auth.sidecar_socket = '#{Stack.socket("default")}'",
       "select pg_reload_conf()",
       "create role authenticated nologin",
+      "create role sidecar login password 'notes' in role authz_sidecar",
       "select authz.configure(subject => 'jwt')"
     ])
     conn

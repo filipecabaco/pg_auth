@@ -24,7 +24,7 @@ Latency is secondary; correct variants stay within ~1-3x of the baseline.
 
 ## pg_auth
 
-`authz.protect('app.documents_p', 'org', 'org_id', 'member')` installs the policy on the parent and on every
+`authz_internal.protect('app.documents_p', 'org', 'org_id', 'member')` installs the policy on the parent and on every
 partition (now and when created or attached later), so leaf queries are protected without per-leaf setup. All four
 pg_auth variants (`pg_auth`, `pg_auth_no_index`, `pg_auth_per_row`, `pg_auth_reused_plan`) returned the baseline's
 rows for every query and subject, including `leaf_*` (default scale, 3 reps, 2 CPU / 2 GB, indicative under load).

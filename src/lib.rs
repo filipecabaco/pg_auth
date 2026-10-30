@@ -23,6 +23,13 @@ mod subject;
 
 ::pgrx::pg_module_magic!(name, version);
 
+// The schemas beside authz (sql/authz.sql makes them, sql/grants.sql says who reaches them):
+// declared here so functions can be placed in them with `schema = "..."`
+#[pg_schema]
+mod authz_internal {}
+#[pg_schema]
+mod authz_sidecar {}
+
 extension_sql_file!("../sql/authz.sql", name = "authz_schema", bootstrap);
 extension_sql_file!(
     "../sql/api.sql",
@@ -53,6 +60,8 @@ extension_sql_file!(
     name = "authz_hierarchy",
     requires = ["authz_schema", access::allowed_text, subject::invalidate_config]
 );
+
+extension_sql_file!("../sql/grants.sql", name = "authz_grants", finalize);
 
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
@@ -228,8 +237,8 @@ mod tests {
             create table public.pages (id int primary key, document_id int not null, body text not null);
             insert into public.pages values (1, 100, 'p1'), (2, 200, 'p2');
 
-            select authz.bind('public.docs', 'org_id', 'org', 'view', 'edit');
-            select authz.bind('public.pages', 'document_id', 'document', 'view');
+            select authz_internal.bind('public.docs', 'org_id', 'org', 'view', 'edit');
+            select authz_internal.bind('public.pages', 'document_id', 'document', 'view');
 
             create role authz_test_user nologin;
             grant select, insert, update, delete on public.docs, public.pages to authz_test_user;
@@ -499,9 +508,9 @@ mod tests {
              insert into public.ledgers select 5000000000 + i, i from generate_series(1, 5) i;
              create table public.tags (id text primary key, n int);
              insert into public.tags values ('red', 1), ('blue', 2), ('green', 3), ('Blue', 4);
-             select authz.bind('public.accounts', 'id', 'account', 'view');
-             select authz.bind('public.ledgers', 'id', 'ledger', 'view');
-             select authz.bind('public.tags', 'id', 'tag', 'view');
+             select authz_internal.bind('public.accounts', 'id', 'account', 'view');
+             select authz_internal.bind('public.ledgers', 'id', 'ledger', 'view');
+             select authz_internal.bind('public.tags', 'id', 'tag', 'view');
              grant select on public.accounts, public.ledgers, public.tags to authz_test_user",
         )
         .unwrap();
@@ -548,7 +557,7 @@ mod tests {
         Spi::run(
             "create table public.tags (id text primary key, n int);
              insert into public.tags values ('red', 1), ('blue', 2), ('green', 3), ('Blue', 4);
-             select authz.bind('public.tags', 'id', 'tag', 'view');
+             select authz_internal.bind('public.tags', 'id', 'tag', 'view');
              grant select on public.tags to authz_test_user;
              set local pg_auth.replan_on_breadth = off;
              set local plan_cache_mode = force_generic_plan",
@@ -581,7 +590,7 @@ mod tests {
                     case when i % 4 = 0 then 'draft' when i % 5 = 0 then null else 'published' end,
                     case when i % 11 = 0 then null else i end
              from generate_series(1, 50) i;
-             select authz.protect('public.files', type => 'file', id => 'id', read => 'read', attributes => array['owner', 'status', 'size']);
+             select authz_internal.protect('public.files', type => 'file', id => 'id', read => 'read', attributes => array['owner', 'status', 'size']);
              grant select on public.files to authz_test_user;
              set local pg_auth.subject_roles = 'user'",
         )
@@ -670,7 +679,7 @@ mod tests {
              insert into public.secrets values (1, 'hunter2');
              create table public.objects (id int primary key, name text not null);
              insert into public.objects values (1, 'alice/a'), (2, 'bob/b'), (3, 'carol/c');
-             select authz.bind('public.objects', null, 'folder', 'view', null, true, 'split_part(name, ''/'', 1)');
+             select authz_internal.bind('public.objects', null, 'folder', 'view', null, true, 'split_part(name, ''/'', 1)');
              grant execute on all functions in schema authz to authz_test_user",
         )
         .unwrap();
@@ -709,7 +718,7 @@ mod tests {
     fn outbox() -> Vec<String> {
         Spi::connect(|client| {
             client
-                .select("select op || ' ' || object || ' ' || relation || ' ' || subject from authz.outbox order by id", None, &[])
+                .select("select op || ' ' || object || ' ' || relation || ' ' || subject from authz_internal.outbox order by id", None, &[])
                 .unwrap()
                 .map(|row| row.get::<String>(1).unwrap().unwrap())
                 .collect()
@@ -726,7 +735,7 @@ mod tests {
                     .select(
                         "select op || ' ' || object || ' ' || subject || case when expires_at is not null then ' ending' else '' end
                                 || case when not_before is not null then ' when due' else '' end
-                         from authz.outbox order by id",
+                         from authz_internal.outbox order by id",
                         None,
                         &[],
                     )
@@ -735,9 +744,10 @@ mod tests {
                     .collect()
             })
         };
-        let claimed =
-            || Spi::get_one::<String>("select string_agg(op || ' ' || object, ', ' order by id) from authz.outbox_claim(10)").unwrap();
-        let delivered = || Spi::run("delete from authz.outbox where not_before is null").unwrap();
+        let claimed = || {
+            Spi::get_one::<String>("select string_agg(op || ' ' || object, ', ' order by id) from authz_sidecar.outbox_claim(10)").unwrap()
+        };
+        let delivered = || Spi::run("delete from authz_internal.outbox where not_before is null").unwrap();
         Spi::run(
             "create table public.shares (doc_id int, user_id text, expires_at timestamptz, primary key (doc_id, user_id));
              insert into public.shares values (1, 'anne', now() + interval '1 hour'), (2, 'bob', now() - interval '1 hour'), (3, 'carl', null)",
@@ -745,7 +755,7 @@ mod tests {
         .unwrap();
         // the rows already there: bob's ended (not delivered); anne's written with its end, and its delete held until then
         let queued = Spi::get_one::<i64>(
-            "select authz.relate('public.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+            "select authz_internal.relate('public.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
                                  subject_type => 'user', subject_column => 'user_id', expires_column => 'expires_at')",
         )
         .unwrap();
@@ -753,8 +763,9 @@ mod tests {
         assert_eq!(outbox(), ["write doc:1 user:anne ending", "delete doc:1 user:anne when due", "write doc:3 user:carl"]);
         // the sidecar gets what is due, the end in RFC 3339
         assert_eq!(claimed().as_deref(), Some("write doc:1, write doc:3"));
-        let end =
-            Spi::get_one::<String>("select expires_at from authz.outbox_claim(10) where object = 'doc:1'").unwrap().unwrap_or_default();
+        let end = Spi::get_one::<String>("select expires_at from authz_sidecar.outbox_claim(10) where object = 'doc:1'")
+            .unwrap()
+            .unwrap_or_default();
         assert!(end.len() == 27 && end.ends_with('Z') && end.as_bytes()[10] == b'T', "{end}");
         delivered();
 
@@ -762,7 +773,7 @@ mod tests {
         Spi::run("update public.shares set expires_at = now() + interval '2 hours' where user_id = 'anne'").unwrap();
         assert_eq!(outbox(), ["write doc:1 user:anne ending", "delete doc:1 user:anne when due"]);
         let held_until_new_end =
-            "select count(*) from authz.outbox o, public.shares s where s.user_id = 'anne' and o.not_before = s.expires_at";
+            "select count(*) from authz_internal.outbox o, public.shares s where s.user_id = 'anne' and o.not_before = s.expires_at";
         assert_eq!(Spi::get_one::<i64>(held_until_new_end).unwrap(), Some(1));
         delivered();
         // ended early: deleted now; renewed with no end: written, nothing held
@@ -777,34 +788,34 @@ mod tests {
         // an end that came: the delete is due
         Spi::run(
             "insert into public.shares values (4, 'dave', now() + interval '1 hour');
-             update authz.outbox set not_before = now() - interval '1 second' where not_before is not null",
+             update authz_internal.outbox set not_before = now() - interval '1 second' where not_before is not null",
         )
         .unwrap();
         assert_eq!(claimed().as_deref(), Some("write doc:4, delete doc:4"));
         // held expiries are not changes waiting
-        Spi::run("delete from authz.outbox; insert into public.shares values (5, 'eve', now() + interval '1 day')").unwrap();
+        Spi::run("delete from authz_internal.outbox; insert into public.shares values (5, 'eve', now() + interval '1 day')").unwrap();
         delivered();
         let doctor =
             Spi::get_one::<String>("select status || ': ' || detail from authz.doctor() where check_name = 'relationship tables'").unwrap();
         assert_eq!(doctor.as_deref(), Some("ok: 1 declared, delivered, 1 expiries scheduled"));
         assert!(
             error_of(
-                "select authz.relate('public.shares', name => 'x', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+                "select authz_internal.relate('public.shares', name => 'x', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
                                                subject_type => 'user', subject_column => 'user_id', expires_column => 'user_id')"
             )
             .unwrap_or_default()
             .contains("is not a timestamp")
         );
-        // the same from a setup document's relationship (authz.setup itself would take a version
+        // the same from a setup document's relationship (authz_internal.setup itself would take a version
         // from the sequence other tests count on)
         let setup = |expires: &str| {
             format!(
-                r#"select authz.setup_relate('public.shares', 'doc', null, '{{"type": "doc", "column": "doc_id"}}', '"viewer"',
+                r#"select authz_internal.setup_relate('public.shares', 'doc', null, '{{"type": "doc", "column": "doc_id"}}', '"viewer"',
                                              '{{"type": "user", "column": "user_id"}}', 'a relationship', '{expires}')"#
             )
         };
         Spi::run(&setup(r#"{"column": "expires_at"}"#)).unwrap();
-        let declared = Spi::get_one::<String>("select expires_column::text from authz.relationships where name = 'doc'").unwrap();
+        let declared = Spi::get_one::<String>("select expires_column::text from authz_internal.relationships where name = 'doc'").unwrap();
         assert_eq!(declared.as_deref(), Some("expires_at"));
         assert!(error_of(&setup(r#"{"at": "expires_at"}"#)).unwrap_or_default().contains(r#"has no key "at""#));
     }
@@ -818,13 +829,13 @@ mod tests {
         .unwrap();
         // the rows already there are delivered too (bob's has no role: no relationship)
         let queued = Spi::get_one::<i64>(
-            "select authz.relate('public.memberships', object_type => 'org', object_column => 'org_id',
+            "select authz_internal.relate('public.memberships', object_type => 'org', object_column => 'org_id',
                                  subject_type => 'user', subject_column => 'user_id', relation_column => 'role')",
         )
         .unwrap();
         assert_eq!(queued, Some(1));
         assert_eq!(outbox(), ["write org:1 admin user:anne"]);
-        Spi::run("delete from authz.outbox").unwrap();
+        Spi::run("delete from authz_internal.outbox").unwrap();
 
         Spi::run(
             "insert into public.memberships values (3, 'carl', 'member');
@@ -844,12 +855,12 @@ mod tests {
                 "delete org:3 member user:carl",
             ]
         );
-        Spi::run("delete from authz.outbox").unwrap();
+        Spi::run("delete from authz_internal.outbox").unwrap();
 
         // a group as the subject, and a fixed relation; a write rolled back never reaches the engine
         Spi::run(
             "create table public.team_docs (doc_id int, team text);
-             select authz.relate('public.team_docs', object_type => 'document', object_column => 'doc_id', relation => 'viewer',
+             select authz_internal.relate('public.team_docs', object_type => 'document', object_column => 'doc_id', relation => 'viewer',
                                  subject_type => 'team', subject_column => 'team', subject_relation => 'member');
              insert into public.team_docs values (7, 'eng'), (8, null);",
         )
@@ -858,13 +869,13 @@ mod tests {
         assert_eq!(outbox(), ["write document:7 viewer team:eng#member"]);
 
         // no longer delivered once unrelated
-        Spi::run("select authz.unrelate('public.team_docs'); insert into public.team_docs values (10, 'ops')").unwrap();
+        Spi::run("select authz_internal.unrelate('public.team_docs'); insert into public.team_docs values (10, 'ops')").unwrap();
         assert_eq!(outbox().len(), 1);
         assert!(fails(
-            "select authz.relate('public.team_docs', object_type => 'd', object_column => 'nope', subject_type => 't', subject_column => 'team', relation => 'v')"
+            "select authz_internal.relate('public.team_docs', object_type => 'd', object_column => 'nope', subject_type => 't', subject_column => 'team', relation => 'v')"
         ));
         assert!(fails(
-            "select authz.relate('public.team_docs', object_type => 'd', object_column => 'doc_id', subject_type => 't', subject_column => 'team')"
+            "select authz_internal.relate('public.team_docs', object_type => 'd', object_column => 'doc_id', subject_type => 't', subject_column => 'team')"
         ));
     }
 
@@ -874,14 +885,14 @@ mod tests {
         Spi::run(
             "create table public.shares (doc_id int, grantee_kind text, grantee_id text, role text);
              insert into public.shares values (1, 'user', 'anne', 'viewer'), (1, 'team', 'eng', 'editor'), (2, 'public', null, 'viewer');
-             select authz.relate('public.shares', name => 'user', filter => 'grantee_kind = ''user''',
+             select authz_internal.relate('public.shares', name => 'user', filter => 'grantee_kind = ''user''',
                                  object_type => 'doc', object_column => 'doc_id', relation_column => 'role',
                                  subject_type => 'user', subject_column => 'grantee_id', relations => array['viewer', 'editor']);
-             select authz.relate('public.shares', name => 'team', filter => 'grantee_kind = ''team''',
+             select authz_internal.relate('public.shares', name => 'team', filter => 'grantee_kind = ''team''',
                                  object_type => 'doc', object_column => 'doc_id', relation_column => 'role',
                                  subject_type => 'team', subject_column => 'grantee_id', subject_relation => 'member',
                                  relations => array['viewer', 'editor']);
-             select authz.relate('public.shares', name => 'public', filter => 'grantee_kind = ''public''',
+             select authz_internal.relate('public.shares', name => 'public', filter => 'grantee_kind = ''public''',
                                  object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
                                  subject_type => 'user', subject_id => '*');",
         )
@@ -889,7 +900,7 @@ mod tests {
         let mut sent = outbox();
         sent.sort();
         assert_eq!(sent, ["write doc:1 editor team:eng#member", "write doc:1 viewer user:anne", "write doc:2 viewer user:*"]);
-        Spi::run("delete from authz.outbox").unwrap();
+        Spi::run("delete from authz_internal.outbox").unwrap();
 
         // a relation outside the declared ones fails the write itself
         assert!(
@@ -903,12 +914,12 @@ mod tests {
         let mut moved = outbox();
         moved.sort();
         assert_eq!(moved, ["delete doc:1 viewer user:anne", "write doc:1 viewer user:*"]);
-        Spi::run("delete from authz.outbox").unwrap();
+        Spi::run("delete from authz_internal.outbox").unwrap();
 
         // the type and the subject's relation read from columns, the object fixed (a singleton)
         Spi::run(
             "create table public.platform_admins (kind text, id text, via text);
-             select authz.relate('public.platform_admins', object_type => 'platform', object_id => 'main', relation => 'admin',
+             select authz_internal.relate('public.platform_admins', object_type => 'platform', object_id => 'main', relation => 'admin',
                                  subject_type_column => 'kind', subject_column => 'id', subject_relation_column => 'via');
              insert into public.platform_admins values ('user', 'root', null), ('group', 'ops', 'member')",
         )
@@ -918,14 +929,14 @@ mod tests {
         // each part needs exactly one source, and a filter must parse
         assert!(
             error_of(
-                "select authz.relate('public.shares', name => 'x', object_type => 'doc', object_id => '1', object_column => 'doc_id',
+                "select authz_internal.relate('public.shares', name => 'x', object_type => 'doc', object_id => '1', object_column => 'doc_id',
                                  relation => 'viewer', subject_type => 'user', subject_column => 'grantee_id')"
             )
             .unwrap_or_default()
             .contains("the object's id")
         );
         assert!(fails(
-            "select authz.relate('public.shares', name => 'x', filter => 'no_such_column = 1', object_type => 'doc',
+            "select authz_internal.relate('public.shares', name => 'x', filter => 'no_such_column = 1', object_type => 'doc',
                                  object_column => 'doc_id', relation => 'viewer', subject_type => 'user', subject_column => 'grantee_id')"
         ));
     }
@@ -943,15 +954,16 @@ mod tests {
         // OpenFGA has one model
         assert!(error_of("select authz.set_rules('openfga', 'other', 'model')").unwrap_or_default().contains("openfga has one model"));
         // what the sidecar is to push: the latest version only
-        let pending = Spi::get_one::<String>("select string_agg(name || ' ' || version, ',') from authz.rules_pending('openfga')").unwrap();
+        let pending =
+            Spi::get_one::<String>("select string_agg(name || ' ' || version, ',') from authz_sidecar.rules_pending('openfga')").unwrap();
         assert_eq!(pending.as_deref(), Some("model 2"));
-        Spi::run("select authz.rules_pushed('openfga', 'model', 2)").unwrap();
-        assert_eq!(Spi::get_one::<i64>("select count(*) from authz.rules_pending('openfga')").unwrap(), Some(0));
+        Spi::run("select authz_sidecar.rules_pushed('openfga', 'model', 2)").unwrap();
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz_sidecar.rules_pending('openfga')").unwrap(), Some(0));
         // Cerbos keeps a policy per name; one the engine refuses is reported
         Spi::run(
             "select authz.set_rules('cerbos', 'resource/doc', 'apiVersion: api.cerbos.dev/v1');
              select authz.set_rules('cerbos', 'derived/common', 'apiVersion: api.cerbos.dev/v1');
-             select authz.rules_pushed('cerbos', 'resource/doc', 1, 'invalid policy')",
+             select authz_sidecar.rules_pushed('cerbos', 'resource/doc', 1, 'invalid policy')",
         )
         .unwrap();
         assert_eq!(Spi::get_one::<i64>("select count(*) from authz.rules('cerbos')").unwrap(), Some(2));
@@ -989,34 +1001,35 @@ mod tests {
             assert!(error.contains(expected), "{sql}\n  expected: {expected}\n  got: {error}");
         };
         fails_with(
-            "select authz.protect('public.rdocs', type => 'document', id => 'id', read => 'vewer')",
+            "select authz_internal.protect('public.rdocs', type => 'document', id => 'id', read => 'vewer')",
             "public.rdocs: document has no vewer in the openfga model (it has: org, viewer)",
         );
         fails_with(
-            "select authz.protect('public.rdocs', type => 'doc', id => 'id', read => 'viewer')",
+            "select authz_internal.protect('public.rdocs', type => 'doc', id => 'id', read => 'viewer')",
             "public.rdocs: the openfga model has no type doc (its types: document, org, user)",
         );
         fails_with(
-            "select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation_column => 'role',
+            "select authz_internal.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation_column => 'role',
                                         relations => array['admin', 'owner'], subject_type => 'user', subject_column => 'user_id')",
             "org has no relation owner in the openfga model (it has: admin, member)",
         );
         fails_with(
-            "select authz.relate('public.rdocs', object_type => 'document', object_column => 'id', relation => 'viewer',
+            "select authz_internal.relate('public.rdocs', object_type => 'document', object_column => 'id', relation => 'viewer',
                                         subject_type => 'org', subject_column => 'org_id')",
             "document#viewer is computed in the openfga model: rows write the relations it assigns (org)",
         );
         fails_with(
-            "select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation => 'member',
+            "select authz_internal.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation => 'member',
                                         subject_type => 'user', subject_id => '*')",
             "org#member does not take `user:*` in the openfga model (it takes: user)",
         );
         // what the model has commits
-        let valid = "select authz.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation_column => 'role',
+        let valid =
+            "select authz_internal.relate('public.rmembers', object_type => 'org', object_column => 'org_id', relation_column => 'role',
                                          relations => array['admin', 'member'], subject_type => 'user', subject_column => 'user_id'),
-                            authz.relate('public.rdocs', object_type => 'document', object_column => 'id', relation => 'org',
+                            authz_internal.relate('public.rdocs', object_type => 'document', object_column => 'id', relation => 'org',
                                          subject_type => 'org', subject_column => 'org_id'),
-                            authz.protect('public.rdocs', type => 'document', id => 'id', read => 'viewer')";
+                            authz_internal.protect('public.rdocs', type => 'document', id => 'id', read => 'viewer')";
         assert_eq!(error_at_commit(valid), None);
         // a new model dropping what the setup uses fails; changed together with the setup it commits
         let without_viewer = "model\n  schema 1.1\ntype user\ntype org\n  relations\n    define admin: [user]\n    define member: [user]\n    \
@@ -1027,7 +1040,7 @@ mod tests {
         );
         assert_eq!(
             error_at_commit(&format!(
-                "select authz.set_rules('openfga', 'model', {}), authz.protect('public.rdocs', type => 'document', id => 'id', read => 'reader')",
+                "select authz.set_rules('openfga', 'model', {}), authz_internal.protect('public.rdocs', type => 'document', id => 'id', read => 'reader')",
                 quote(without_viewer)
             )),
             None
@@ -1047,7 +1060,7 @@ mod tests {
         .unwrap();
         let ending = |relation: &str| {
             error_at_commit(&format!(
-                "select authz.relate('public.eshares', object_type => 'doc', object_column => 'doc_id', relation => '{relation}',
+                "select authz_internal.relate('public.eshares', object_type => 'doc', object_column => 'doc_id', relation => '{relation}',
                                      subject_type => 'user', subject_column => 'user_id', expires_column => 'expires_at')"
             ))
         };
@@ -1085,7 +1098,7 @@ mod tests {
         .unwrap();
         let relate = |relation: &str, condition: &str, context: &str| {
             error_at_commit(&format!(
-                "select authz.relate('public.cshares', object_type => 'doc', object_column => 'doc_id', relation => '{relation}',
+                "select authz_internal.relate('public.cshares', object_type => 'doc', object_column => 'doc_id', relation => '{relation}',
                                      subject_type => 'user', subject_column => 'user_id', condition => '{condition}',
                                      condition_context => '{context}')"
             ))
@@ -1112,15 +1125,16 @@ mod tests {
         let outbox = || {
             Spi::get_one::<String>(
                 "select string_agg(op || ' ' || object || coalesce(' ' || condition || ' ' || condition_context::text, ''), ', ' order by id)
-                 from authz.outbox",
+                 from authz_internal.outbox",
             )
             .unwrap()
         };
         assert_eq!(outbox().as_deref(), Some(r#"write doc:1 in_region {"allowed": ["eu"]}"#));
-        Spi::run("delete from authz.outbox; update public.cshares set regions = '{eu,us}'").unwrap();
+        Spi::run("delete from authz_internal.outbox; update public.cshares set regions = '{eu,us}'").unwrap();
         assert_eq!(outbox().as_deref(), Some(r#"delete doc:1, write doc:1 in_region {"allowed": ["eu", "us"]}"#));
         let claimed =
-            Spi::get_one::<String>("select condition || ' ' || condition_context from authz.outbox_claim(10) where op = 'write'").unwrap();
+            Spi::get_one::<String>("select condition || ' ' || condition_context from authz_sidecar.outbox_claim(10) where op = 'write'")
+                .unwrap();
         assert_eq!(claimed.as_deref(), Some(r#"in_region {"allowed": ["eu", "us"]}"#));
     }
 
@@ -1147,17 +1161,17 @@ mod tests {
         let declared = || {
             Spi::get_one::<String>(
                 "select concat_ws(' | ',
-                   (select string_agg(rel::text || ' ' || object_type || '#' || permission || coalesce('/' || write_permission, ''), ', ' order by rel::text) from authz.bindings),
-                   (select string_agg(concat_ws(' ', rel::text, name, coalesce(relation, '(' || relation_column || ')'), array_to_string(relations, '|')), ', ' order by name) from authz.relationships))",
+                   (select string_agg(rel::text || ' ' || object_type || '#' || permission || coalesce('/' || write_permission, ''), ', ' order by rel::text) from authz_internal.bindings),
+                   (select string_agg(concat_ws(' ', rel::text, name, coalesce(relation, '(' || relation_column || ')'), array_to_string(relations, '|')), ', ' order by name) from authz_internal.relationships))",
             )
             .unwrap()
             .unwrap_or_default()
         };
         assert_eq!(declared(), "ndocs document#viewer/editor | ndocs document_org org, nmembers org_rows (role) admin|member");
         // the rows already there wait for the rules they need
-        let claimed = || Spi::get_one::<i64>("select count(*) from authz.outbox_claim(10, 'openfga')").unwrap();
+        let claimed = || Spi::get_one::<i64>("select count(*) from authz_sidecar.outbox_claim(10, 'openfga')").unwrap();
         assert_eq!(claimed(), Some(0));
-        Spi::run("select authz.rules_pushed('openfga', 'model', 1)").unwrap();
+        Spi::run("select authz_sidecar.rules_pushed('openfga', 'model', 1)").unwrap();
         assert_eq!(claimed(), Some(2));
         // the next version drops a note: what it declared goes
         Spi::get_one_with_args::<i32>(
@@ -1176,14 +1190,53 @@ mod tests {
     }
 
     #[pg_test]
+    fn each_role_reaches_only_its_schemas() {
+        Spi::run(
+            "create role authz_test_app nologin;
+             create role authz_test_daemon nologin in role authz_sidecar;
+             create role authz_test_migrator nologin in role authz_admin;
+             create table public.owned (id int primary key);
+             alter table public.owned owner to authz_test_migrator;
+             create table public.not_owned (id int primary key)",
+        )
+        .unwrap();
+        let reaches = |role: &str, check: &str| Spi::get_one::<bool>(&check.replace("$role", &format!("'{role}'"))).unwrap() == Some(true);
+        let schema = |role: &str, s: &str| reaches(role, &format!("select has_schema_privilege($role, '{s}', 'usage')"));
+        let runs = |role: &str, f: &str| reaches(role, &format!("select has_function_privilege($role, '{f}', 'execute')"));
+
+        // every role: what its queries call, and nothing else
+        assert!(runs("authz_test_app", "authz.permits(text, text, text)"));
+        assert!(!runs("authz_test_app", "authz.set_rules(text, text, text)"));
+        assert!(!schema("authz_test_app", "authz_internal") && !schema("authz_test_app", "authz_sidecar"));
+        assert!(!reaches("authz_test_app", "select has_table_privilege($role, 'authz_internal.bindings', 'select')"));
+        // the sidecar: its schema only
+        assert!(schema("authz_test_daemon", "authz_sidecar") && runs("authz_test_daemon", "authz_sidecar.outbox_claim(int, text)"));
+        assert!(!schema("authz_test_daemon", "authz_internal") && !runs("authz_test_daemon", "authz.set_rules(text, text, text)"));
+        // migrations: the rules, the setup and the lower level, but not the sidecar's
+        assert!(runs("authz_test_migrator", "authz.set_rules(text, text, text)") && schema("authz_test_migrator", "authz_internal"));
+        assert!(!schema("authz_test_migrator", "authz_sidecar"));
+
+        // an admin protects the tables it owns, and no other: Postgres checks ownership
+        assert_eq!(error_at_commit("select 1"), None);
+        Spi::run("set local role authz_test_migrator").unwrap();
+        assert_eq!(error_at_commit("select authz_internal.protect('public.owned', type => 'doc', id => 'id', read => 'viewer')"), None);
+        let refused = error_at_commit("select authz_internal.protect('public.not_owned', type => 'doc', id => 'id', read => 'viewer')");
+        assert!(refused.as_deref().is_some_and(|e| e.contains("must be owner")), "{refused:?}");
+        Spi::run("reset role").unwrap();
+    }
+
+    #[pg_test]
     fn rules_without_notes_leave_a_setup_written_by_hand() {
         Spi::run(
             "create table public.hdocs (id int primary key);
-             select authz.protect('public.hdocs', type => 'doc', id => 'id', read => 'viewer');
+             select authz_internal.protect('public.hdocs', type => 'doc', id => 'id', read => 'viewer');
              select authz.set_rules('spicedb', 'schema', 'definition user {}\ndefinition doc {\n  relation viewer: user\n}\n')",
         )
         .unwrap();
-        assert_eq!(Spi::get_one::<i64>("select count(*) from authz.bindings where rel = 'public.hdocs'::regclass").unwrap(), Some(1));
+        assert_eq!(
+            Spi::get_one::<i64>("select count(*) from authz_internal.bindings where rel = 'public.hdocs'::regclass").unwrap(),
+            Some(1)
+        );
     }
 
     #[pg_test]
@@ -1197,19 +1250,19 @@ mod tests {
         // approve:* covers approve:big
         assert_eq!(
             error_at_commit(
-                "select authz.protect('public.expenses', type => 'expense', id => 'id', read => 'view', write => 'approve:big')"
+                "select authz_internal.protect('public.expenses', type => 'expense', id => 'id', read => 'view', write => 'approve:big')"
             ),
             None
         );
         assert!(
             error_at_commit(
-                "select authz.protect('public.expenses', type => 'expense', id => 'id', read => 'view', on_delete => 'delete')"
+                "select authz_internal.protect('public.expenses', type => 'expense', id => 'id', read => 'view', on_delete => 'delete')"
             )
             .unwrap_or_default()
             .contains("the cerbos policies for expense have no action delete (they have: approve:*, view)")
         );
         assert!(
-            error_at_commit("select authz.protect('public.expenses', type => 'invoice', id => 'id', read => 'view')")
+            error_at_commit("select authz_internal.protect('public.expenses', type => 'invoice', id => 'id', read => 'view')")
                 .unwrap_or_default()
                 .contains("the cerbos policies have no resource policy for invoice")
         );
@@ -1224,30 +1277,32 @@ mod tests {
         // the outbox's claim takes its lock without waiting: wait for another test holding it
         Spi::run("select pg_advisory_xact_lock(hashtext('pg_auth.outbox'))").unwrap();
         Spi::run(
-            "insert into authz.outbox (op, object, relation, subject) values
+            "insert into authz_internal.outbox (op, object, relation, subject) values
                  ('write', 'org:1', 'member', 'user:a'), ('delete', 'org:1', 'member', 'user:a'), ('write', 'org:2', 'member', 'user:b')",
         )
         .unwrap();
-        let claimed = Spi::get_one::<String>("select string_agg(op || ' ' || object, ',' order by id) from authz.outbox_claim(2)").unwrap();
+        let claimed =
+            Spi::get_one::<String>("select string_agg(op || ' ' || object, ',' order by id) from authz_sidecar.outbox_claim(2)").unwrap();
         assert_eq!(claimed.as_deref(), Some("write org:1,delete org:1"));
         // the claim's lock is this transaction's: another session would get nothing until it ends
         assert_eq!(Spi::get_one::<bool>("select pg_try_advisory_xact_lock(hashtext('pg_auth.outbox'))").unwrap(), Some(true));
-        let first = Spi::get_one::<i64>("select min(id) from authz.outbox").unwrap().unwrap();
-        assert_eq!(Spi::get_one::<i64>(&format!("select authz.outbox_done(array[{first}, {}])", first + 2)).unwrap(), Some(2));
+        let first = Spi::get_one::<i64>("select min(id) from authz_internal.outbox").unwrap().unwrap();
+        assert_eq!(Spi::get_one::<i64>(&format!("select authz_sidecar.outbox_done(array[{first}, {}])", first + 2)).unwrap(), Some(2));
         assert_eq!(outbox(), ["delete org:1 member user:a"]);
         // a change the engine refused for good is set aside: the next claim skips it
-        let refused = Spi::get_one::<i64>("select min(id) from authz.outbox").unwrap().unwrap();
-        Spi::run(&format!("select authz.outbox_failed({refused}, 'openfga write 400: no relation member')")).unwrap();
-        Spi::run("insert into authz.outbox (op, object, relation, subject) values ('write', 'org:3', 'member', 'user:c')").unwrap();
-        let claimed = Spi::get_one::<String>("select string_agg(object, ',') from authz.outbox_claim(10)").unwrap();
+        let refused = Spi::get_one::<i64>("select min(id) from authz_internal.outbox").unwrap().unwrap();
+        Spi::run(&format!("select authz_sidecar.outbox_failed({refused}, 'openfga write 400: no relation member')")).unwrap();
+        Spi::run("insert into authz_internal.outbox (op, object, relation, subject) values ('write', 'org:3', 'member', 'user:c')")
+            .unwrap();
+        let claimed = Spi::get_one::<String>("select string_agg(object, ',') from authz_sidecar.outbox_claim(10)").unwrap();
         assert_eq!(claimed.as_deref(), Some("org:3"));
         // ordinary roles cannot read or change it, nor tell backends to forget their answers
         Spi::run("create role authz_outsider nologin; set local role authz_outsider").unwrap();
-        assert!(fails("select * from authz.outbox"));
-        assert!(fails("select * from authz.outbox_claim(10)"));
-        assert!(fails("select authz.answers_changed()"));
+        assert!(fails("select * from authz_internal.outbox"));
+        assert!(fails("select * from authz_sidecar.outbox_claim(10)"));
+        assert!(fails("select authz_sidecar.answers_changed()"));
         Spi::run("reset role").unwrap();
-        Spi::run("select authz.answers_changed()").unwrap();
+        Spi::run("select authz_sidecar.answers_changed()").unwrap();
     }
 
     #[pg_test]
@@ -1255,9 +1310,9 @@ mod tests {
         fixture();
         Spi::run(
             "create table public.members (org_id int, user_id text);
-             select authz.relate('public.members', object_type => 'org', object_column => 'org_id', relation => 'member',
+             select authz_internal.relate('public.members', object_type => 'org', object_column => 'org_id', relation => 'member',
                                  subject_type => 'user', subject_column => 'user_id');
-             insert into authz.outbox (op, object, relation, subject, error) values ('write', 'org:1', 'member', 'user:a', 'no relation member')",
+             insert into authz_internal.outbox (op, object, relation, subject, error) values ('write', 'org:1', 'member', 'user:a', 'no relation member')",
         )
         .unwrap();
         let row =
@@ -1358,7 +1413,7 @@ mod tests {
         Spi::run(
             "create table public.items (id int primary key);
              insert into public.items select generate_series(1, 200);
-             select authz.bind('public.items', 'id', 'item', 'view');
+             select authz_internal.bind('public.items', 'id', 'item', 'view');
              grant select on public.items to authz_test_user",
         )
         .unwrap();
@@ -1388,10 +1443,10 @@ mod tests {
     fn index_set(subject: &str, ids: &[&str], finish: bool) {
         let ids = format!("{{{}}}", ids.join(","));
         Spi::run(&format!(
-            "select authz.index_add(authz.index_begin('{subject}', 'item', 'view', 'r1'), '{ids}');
+            "select authz_sidecar.index_add(authz_sidecar.index_begin('{subject}', 'item', 'view', 'r1'), '{ids}');
              {}",
             if finish {
-                format!("select authz.index_finish(set_id) from authz.permission_sets where subject = '{subject}'")
+                format!("select authz_sidecar.index_finish(set_id) from authz_internal.permission_sets where subject = '{subject}'")
             } else {
                 String::new()
             }
@@ -1406,7 +1461,7 @@ mod tests {
             "create table public.notes (id int primary key, owner text, status text);
              insert into public.notes values (1, 'alice', 'draft'), (2, 'bob', 'draft'), (3, 'bob', 'published'), (4, null, 'draft'), (5, 'auditor', 'draft');
              create index on public.notes (owner);
-             select authz.protect('public.notes', 'note', 'id', 'read', attributes => array['owner', 'status']);
+             select authz_internal.protect('public.notes', 'note', 'id', 'read', attributes => array['owner', 'status']);
              grant select on public.notes to authz_test_user",
         )
         .unwrap();
@@ -1476,7 +1531,7 @@ mod tests {
         Spi::run(
             "create table public.notes (id int primary key, owner text, status text);
              insert into public.notes values (1, 'x', 'draft'), (2, 'carol', 'draft'), (3, 'dave', 'draft'), (4, 'carol', 'draft');
-             select authz.protect('public.notes', 'note', 'id', 'read', attributes => array['owner', 'status']);
+             select authz_internal.protect('public.notes', 'note', 'id', 'read', attributes => array['owner', 'status']);
              grant select on public.notes to authz_test_user",
         )
         .unwrap();
@@ -1508,7 +1563,7 @@ mod tests {
         Spi::run(
             "create table public.notes (id int primary key, owner text, status text);
              insert into public.notes select i, md5(i::text), (array['draft', 'published', 'archived'])[1 + i % 3] from generate_series(1, 3000) i;
-             select authz.protect('public.notes', 'note', 'id', 'read', attributes => array['owner', 'status']);
+             select authz_internal.protect('public.notes', 'note', 'id', 'read', attributes => array['owner', 'status']);
              grant select on public.notes to authz_test_user;
              set local pg_auth.subject_roles = 'user'",
         )
@@ -1571,7 +1626,7 @@ mod tests {
              create table public.lines (id int primary key, purchase_id int not null, product int not null);
              insert into public.lines select i, 1 + (i * 7) % 20000, i % 50 from generate_series(1, 60000) i;
              create index on public.lines (product); analyze public.purchases; analyze public.lines;
-             select authz.bind('public.purchases', 'id', 'org', 'view');
+             select authz_internal.bind('public.purchases', 'id', 'org', 'view');
              grant select on public.purchases, public.lines to authz_test_user",
         )
         .unwrap();
@@ -1594,7 +1649,7 @@ mod tests {
             "create table public.channels (id bigint primary key, org_id int not null, name text not null);
              insert into public.channels select i, 1 + (i % 250) * 8, 'channel ' || i from generate_series(1, 1000) i;
              create index on public.channels (org_id, id); analyze public.channels;
-             select authz.bind('public.channels', 'org_id', 'org', 'view');
+             select authz_internal.bind('public.channels', 'org_id', 'org', 'view');
              grant select on public.channels to authz_test_user",
         )
         .unwrap();
@@ -1619,7 +1674,7 @@ mod tests {
             "create table public.stock (id int primary key, item_id int not null, x int not null default 0);
              insert into public.stock select i, i % 200, 0 from generate_series(1, 4000) i;
              create index on public.stock (item_id); analyze public.stock;
-             select authz.bind('public.stock', 'item_id', 'item', 'view', 'view');
+             select authz_internal.bind('public.stock', 'item_id', 'item', 'view', 'view');
              grant select, update, delete on public.stock to authz_test_user",
         )
         .unwrap();
@@ -1713,7 +1768,7 @@ mod tests {
         items();
         Spi::run(
             "create table public.labels (id text primary key); insert into public.labels values ('5'), ('7'), ('007');
-             select authz.bind('public.labels', 'id', 'item', 'view');
+             select authz_internal.bind('public.labels', 'id', 'item', 'view');
              grant select on public.labels to authz_test_user;
              create function public.over_ten(i int) returns bool language plpgsql as 'begin return i > 10; end'",
         )
@@ -1806,7 +1861,7 @@ mod tests {
              create index on public.skewed (org_id, created);
              create index on public.skewed (created) where kind = 'error';
              analyze public.skewed;
-             select authz.bind('public.skewed', 'org_id', 'org', 'view');
+             select authz_internal.bind('public.skewed', 'org_id', 'org', 'view');
              grant select on public.skewed to authz_test_user",
         )
         .unwrap();
@@ -1837,7 +1892,7 @@ mod tests {
         Spi::run("create table public.kinds (id int primary key, org_id int not null, kind int not null, created int not null);
                   insert into public.kinds select i, case when i % 5 < 2 then 1 else 2 + i % 1000 end, i % 50, i from generate_series(1, 50000) i;
                   create index on public.kinds (org_id, created); create index on public.kinds (kind); analyze public.kinds;
-                  select authz.bind('public.kinds', 'org_id', 'org', 'view'); grant select on public.kinds to authz_test_user").unwrap();
+                  select authz_internal.bind('public.kinds', 'org_id', 'org', 'view'); grant select on public.kinds to authz_test_user").unwrap();
         as_subject("alice");
         let plan = explain("select id from public.kinds where kind = 7 order by created desc limit 5");
         assert!(!plan.contains("Bitmap") && !plan.contains("\n  ->  Sort") && plan.contains("Index Cond: (org_id = (InitPlan"), "{plan}");
@@ -1863,7 +1918,7 @@ mod tests {
              create index on public.stored (bucket, name);
              create index on public.stored (org_id);
              analyze public.stored;
-             select authz.bind('public.stored', 'org_id', 'org', 'view');
+             select authz_internal.bind('public.stored', 'org_id', 'org', 'view');
              grant select on public.stored to authz_test_user",
         )
         .unwrap();
@@ -1893,7 +1948,7 @@ mod tests {
              insert into public.breadth_pages select i, 1 + (i % 2), 1000 - i from generate_series(1, 400) i;
              create index on public.breadth_pages (org_id, created desc);
              analyze public.breadth_pages;
-             select authz.bind('public.breadth_pages', 'org_id', 'org', 'view');
+             select authz_internal.bind('public.breadth_pages', 'org_id', 'org', 'view');
              grant select on public.breadth_pages to authz_test_user",
         )
         .unwrap();
@@ -1935,7 +1990,7 @@ mod tests {
              insert into public.org_pages select i, 1 + (i % 2), 1000 - i from generate_series(1, 400) i;
              create index on public.org_pages (org_id, created desc);
              analyze public.org_pages;
-             select authz.bind('public.org_pages', 'org_id', 'org', 'view');
+             select authz_internal.bind('public.org_pages', 'org_id', 'org', 'view');
              grant select on public.org_pages to authz_test_user",
         )
         .unwrap();
@@ -2003,7 +2058,7 @@ mod tests {
              create index on public.tasks (updated desc);
              create index on public.tasks (org_id);
              analyze public.tasks;
-             select authz.bind('public.tasks', 'org_id', 'org', 'view');
+             select authz_internal.bind('public.tasks', 'org_id', 'org', 'view');
              grant select on public.tasks to authz_test_user",
         )
         .unwrap();
@@ -2037,7 +2092,7 @@ mod tests {
              create index on public.cached_tasks (updated desc);
              create index on public.cached_tasks (org_id);
              analyze public.cached_tasks;
-             select authz.bind('public.cached_tasks', 'org_id', 'org', 'view');
+             select authz_internal.bind('public.cached_tasks', 'org_id', 'org', 'view');
              grant select on public.cached_tasks to authz_test_user",
         )
         .unwrap();
@@ -2105,7 +2160,7 @@ mod tests {
              insert into public.objects select i, (array['alice', 'bob', 'carol'])[1 + i % 3] || '/file' || i from generate_series(1, 300) i;
              create index on public.objects (split_part(name, '/', 1));
              analyze public.objects;
-             select authz.protect('public.objects', 'folder', null, 'view', 'edit', key => $$split_part(name, '/', 1)$$);
+             select authz_internal.protect('public.objects', 'folder', null, 'view', 'edit', key => $$split_part(name, '/', 1)$$);
              grant select, insert on public.objects to authz_test_user",
         )
         .unwrap();
@@ -2141,7 +2196,7 @@ mod tests {
         assert_eq!(count("select count(*) from public.objects"), 0);
         reset_role();
         // a key whose value for a row could change is refused
-        assert!(fails("select authz.protect('public.objects', 'folder', null, 'view', key => 'name || random()::text')"));
+        assert!(fails("select authz_internal.protect('public.objects', 'folder', null, 'view', key => 'name || random()::text')"));
     }
 
     #[pg_test]
@@ -2150,10 +2205,10 @@ mod tests {
         Spi::run(
             "create table public.notes (id int primary key, org_id int not null, doc_id int not null);
              insert into public.notes values (1, 1, 5), (2, 2, 100), (3, 2, 7), (4, 1, 100);
-             select authz.protect('public.notes', 'org', 'org_id', 'view');
-             select authz.protect('public.notes', 'document', 'doc_id', 'view', name => 'shared');
+             select authz_internal.protect('public.notes', 'org', 'org_id', 'view');
+             select authz_internal.protect('public.notes', 'document', 'doc_id', 'view', name => 'shared');
              create table public.tickets (id int primary key, org_id int not null);
-             select authz.protect('public.tickets', 'document', 'id', 'view', 'edit',
+             select authz_internal.protect('public.tickets', 'document', 'id', 'view', 'edit',
                                   insert_type => 'org', insert_id => 'org_id', insert_permission => 'edit');
              grant select, insert on public.notes, public.tickets to authz_test_user",
         )
@@ -2196,15 +2251,15 @@ mod tests {
              insert into public.spaces values (1, null), (2, 1), (3, 1), (4, 2), (5, 4), (6, 3);
              create table public.files (id int primary key, space_id int not null);
              insert into public.files select i * 10, i from generate_series(1, 6) i;
-             select authz.protect('public.files', 'space', 'space_id', 'viewer', 'viewer',
+             select authz_internal.protect('public.files', 'space', 'space_id', 'viewer', 'viewer',
                                   hierarchy => 'public.spaces(id, parent_id)', direct => 'viewer_direct');
              grant select, insert on public.files to authz_test_user;
              grant select, insert, update, delete, truncate on public.spaces to authz_test_user",
         )
         .unwrap();
         // one level: a hierarchy expanding itself, or another declared one, would never end
-        assert!(fails("select authz.declare_hierarchy('space', 'viewer_direct', 'viewer', 'public.spaces', 'id', 'parent_id')"));
-        assert!(fails("select authz.declare_hierarchy('space', 'editor', 'editor', 'public.spaces', 'id', 'parent_id')"));
+        assert!(fails("select authz_internal.declare_hierarchy('space', 'viewer_direct', 'viewer', 'public.spaces', 'id', 'parent_id')"));
+        assert!(fails("select authz_internal.declare_hierarchy('space', 'editor', 'editor', 'public.spaces', 'id', 'parent_id')"));
         let files =
             || Spi::get_one::<String>("select string_agg(id::text, ',' order by id) from public.files").unwrap().unwrap_or_default();
         let fresh = || {
@@ -2262,16 +2317,18 @@ mod tests {
         assert_eq!(files(), "10");
         // dropped: the engine answers space#viewer again (here: nothing)
         fresh();
-        Spi::run("select authz.drop_hierarchy('space', 'viewer')").unwrap();
+        Spi::run("select authz_internal.drop_hierarchy('space', 'viewer')").unwrap();
         as_subject("alice");
         assert_eq!(files(), "");
         reset_role();
         assert_eq!(count("select count(*) from pg_trigger where tgrelid = 'public.spaces'::regclass and tgname like 'authz%'"), 0);
         // the declaration is checked
         assert!(fails(
-            "select authz.protect('public.files', 'space', 'space_id', 'viewer', hierarchy => 'public.spaces(id, nope)', direct => 'viewer_direct')"
+            "select authz_internal.protect('public.files', 'space', 'space_id', 'viewer', hierarchy => 'public.spaces(id, nope)', direct => 'viewer_direct')"
         ));
-        assert!(fails("select authz.protect('public.files', 'space', 'space_id', 'viewer', hierarchy => 'public.spaces(id, parent_id)')"));
+        assert!(fails(
+            "select authz_internal.protect('public.files', 'space', 'space_id', 'viewer', hierarchy => 'public.spaces(id, parent_id)')"
+        ));
     }
 
     #[pg_test]
@@ -2343,9 +2400,11 @@ mod tests {
         items();
         // still filling, then invalidated while filling: finishing must not make it usable
         index_set("user:wide", &["5", "7", "50", "150"], false);
-        assert_eq!(Spi::get_one::<i64>("select authz.index_invalidate()").unwrap(), Some(1));
-        let finished =
-            Spi::get_one::<bool>("select authz.index_finish(set_id) from authz.permission_sets where subject = 'user:wide'").unwrap();
+        assert_eq!(Spi::get_one::<i64>("select authz_sidecar.index_invalidate()").unwrap(), Some(1));
+        let finished = Spi::get_one::<bool>(
+            "select authz_sidecar.index_finish(set_id) from authz_internal.permission_sets where subject = 'user:wide'",
+        )
+        .unwrap();
         assert_eq!(finished, None, "a set invalidated while filling stays unused");
         FILLS.lock().unwrap().clear();
         as_subject("wide");
@@ -2428,9 +2487,9 @@ mod tests {
             None,
             "only the current subject's set"
         );
-        assert!(fails("select count(*) from authz.permitted"), "the index tables are not readable");
-        assert!(fails("select authz.index_begin('user:alice', 'item', 'view', 'x')"), "nor writable");
-        assert!(fails("select authz.index_invalidate()"));
+        assert!(fails("select count(*) from authz_internal.permitted"), "the index tables are not readable");
+        assert!(fails("select authz_sidecar.index_begin('user:alice', 'item', 'view', 'x')"), "nor writable");
+        assert!(fails("select authz_sidecar.index_invalidate()"));
         reset_role();
     }
 
@@ -2438,7 +2497,7 @@ mod tests {
         Spi::run(
             "create table public.items (id int primary key);
              insert into public.items select generate_series(1, 200);
-             select authz.bind('public.items', 'id', 'item', 'view');
+             select authz_internal.bind('public.items', 'id', 'item', 'view');
              grant select on public.items to authz_test_user",
         )
         .unwrap();
@@ -2480,7 +2539,7 @@ mod tests {
              insert into public.reshaped select i, i, 'item ' || i from generate_series(1, 60) i;
              alter table public.reshaped drop column gone;
              alter table public.reshaped add column added int default 7;
-             select authz.bind('public.reshaped', 'id', 'item', 'view');
+             select authz_internal.bind('public.reshaped', 'id', 'item', 'view');
              grant select on public.reshaped to authz_test_user",
         )
         .unwrap();
@@ -2522,7 +2581,7 @@ mod tests {
         Spi::run(
             "create table public.items (id int primary key);
              insert into public.items select generate_series(1, 200);
-             select authz.bind('public.items', 'id', 'item', 'view');
+             select authz_internal.bind('public.items', 'id', 'item', 'view');
              grant select on public.items to authz_test_user",
         )
         .unwrap();
@@ -2657,7 +2716,7 @@ mod tests {
             "protect": [
               {"table": "public.notes", "type": "doc", "column": "doc_id", "select": "viewer", "write": "editor", "delete": "owner"}]
         }"#;
-        let version = Spi::get_one_with_args::<i64>("select authz.setup($1::jsonb)", &[document.into()]).unwrap();
+        let version = Spi::get_one_with_args::<i64>("select authz_internal.setup($1::jsonb)", &[document.into()]).unwrap();
         // versions come from a sequence other tests' setups take from too: only their order counts
         assert!(version.is_some_and(|v| v > 0));
         let mut sent = outbox();
@@ -2666,23 +2725,23 @@ mod tests {
         let status =
             Spi::get_one::<String>("select value from authz.status() where item like 'protected %notes'").unwrap().unwrap_or_default();
         assert!(status.contains("/ write editor / delete owner"), "{status}");
-        assert_eq!(Spi::get_one::<String>("select authz.setup() -> 'subject' ->> 'source'").unwrap().as_deref(), Some("jwt"));
+        assert_eq!(Spi::get_one::<String>("select authz_internal.setup() -> 'subject' ->> 'source'").unwrap().as_deref(), Some("jwt"));
 
         // the same document again: nothing to deliver twice
-        Spi::run("delete from authz.outbox").unwrap();
-        Spi::get_one_with_args::<i64>("select authz.setup($1::jsonb)", &[document.into()]).unwrap();
+        Spi::run("delete from authz_internal.outbox").unwrap();
+        Spi::get_one_with_args::<i64>("select authz_internal.setup($1::jsonb)", &[document.into()]).unwrap();
         assert_eq!(outbox(), Vec::<String>::new());
 
         // a document without the shares: they are no longer delivered, the notes no longer protected
-        Spi::run(r#"select authz.setup('{"subject": {"source": "jwt"}}')"#).unwrap();
+        Spi::run(r#"select authz_internal.setup('{"subject": {"source": "jwt"}}')"#).unwrap();
         Spi::run("insert into public.shares values (3, 'user', 'bob', 'viewer')").unwrap();
         assert_eq!(outbox(), Vec::<String>::new());
-        assert_eq!(Spi::get_one::<i64>("select count(*) from authz.bindings").unwrap(), Some(0));
-        assert_eq!(Spi::get_one::<i64>("select count(*) from authz.setups").unwrap(), Some(3));
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz_internal.bindings").unwrap(), Some(0));
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz_internal.setups").unwrap(), Some(3));
 
         // a typo fails, naming what it found and what the place takes
         let typo = error_of(
-            r#"select authz.setup('{"protect": [{"table": "public.notes", "type": "doc", "colum": "doc_id", "select": "viewer"}]}')"#,
+            r#"select authz_internal.setup('{"protect": [{"table": "public.notes", "type": "doc", "colum": "doc_id", "select": "viewer"}]}')"#,
         );
         assert!(typo.unwrap_or_default().contains(r#"no key "colum""#));
     }
@@ -2692,7 +2751,7 @@ mod tests {
         fake_sidecar();
         Spi::run(
             "create table public.claims (id int primary key, owner_id text, status text);
-             select authz.protect('public.claims', type => 'claim', id => 'id', read => 'view',
+             select authz_internal.protect('public.claims', type => 'claim', id => 'id', read => 'view',
                                   attributes => array['status'], attribute_map => '{\"ownerId\": \"owner_id\"}')",
         )
         .unwrap();
@@ -2702,7 +2761,7 @@ mod tests {
         assert!(policy.contains("'ownerId', owner_id") && policy.contains("'status', status"), "{policy}");
         // a map naming a column the table lacks fails at once
         assert!(fails(
-            "select authz.protect('public.claims', type => 'claim', id => 'id', read => 'view', attribute_map => '{\"x\": \"nope\"}')"
+            "select authz_internal.protect('public.claims', type => 'claim', id => 'id', read => 'view', attribute_map => '{\"x\": \"nope\"}')"
         ));
     }
 
@@ -2711,7 +2770,7 @@ mod tests {
         fixture();
         // dana may edit org 1 but has no 'remove' on it: she updates, she does not delete
         Spi::run(
-            "select authz.protect('public.docs', type => 'org', id => 'org_id', read => 'view', write => 'edit', on_delete => 'remove')",
+            "select authz_internal.protect('public.docs', type => 'org', id => 'org_id', read => 'view', write => 'edit', on_delete => 'remove')",
         )
         .unwrap();
         let status =
@@ -2929,7 +2988,7 @@ mod tests {
              create table public.owned (id int, org_id int);
              insert into public.owned values (1, 1), (2, 2);
              alter table public.owned owner to authz_owner;
-             select authz.bind('public.owned', 'org_id', 'org', 'view');
+             select authz_internal.bind('public.owned', 'org_id', 'org', 'view');
              set local pg_auth.subject_id = 'alice';
              set local role authz_owner",
         )
@@ -2944,7 +3003,7 @@ mod tests {
         Spi::run(
             "create table public.late_events (id int, org_id int not null) partition by list (org_id);
              create table public.late_events_1 partition of public.late_events for values in (1);
-             select authz.bind('public.late_events', 'org_id', 'org', 'view');
+             select authz_internal.bind('public.late_events', 'org_id', 'org', 'view');
              create table public.late_events_2 partition of public.late_events for values in (2);
              create table public.late_events_3 (id int, org_id int not null);
              alter table public.late_events attach partition public.late_events_3 for values in (3);
@@ -3020,7 +3079,7 @@ mod tests {
         .unwrap();
         fixture();
         Spi::run(
-            "select authz.bind('public.events', 'org_id', 'org', 'view');
+            "select authz_internal.bind('public.events', 'org_id', 'org', 'view');
              grant select on public.events, public.events_1, public.events_2 to authz_test_user",
         )
         .unwrap();

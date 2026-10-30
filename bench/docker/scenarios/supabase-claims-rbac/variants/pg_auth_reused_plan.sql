@@ -4,5 +4,5 @@
 -- pg_auth with a cached generic plan built for the selective subject and reused by each subject
 -- (prepared statements across requests on a pooled connection).
 select authz.configure(subject => 'jwt', claims_setting => 'request.jwt.claims', claim => 'sub');
-select authz.protect('app.channels', 'org', 'org_id', 'can_read_channels');
-select authz.protect('app.messages', 'org', 'org_id', 'can_read_messages');
+select authz_internal.protect('app.channels', 'org', 'org_id', 'can_read_channels');
+select authz_internal.protect('app.messages', 'org', 'org_id', 'can_read_messages');

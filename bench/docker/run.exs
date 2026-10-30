@@ -481,7 +481,7 @@ defmodule Bench.Runner do
 
   defp wait_for_fills(conn, tries \\ 300) do
     Process.sleep(100)
-    %{rows: [[filling]]} = q!(conn, "select count(*) from authz.permission_sets where status = 'filling'")
+    %{rows: [[filling]]} = q!(conn, "select count(*) from authz_internal.permission_sets where status = 'filling'")
     if filling > 0 and tries > 0, do: wait_for_fills(conn, tries - 1)
   end
 

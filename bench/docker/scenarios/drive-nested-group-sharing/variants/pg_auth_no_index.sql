@@ -3,5 +3,5 @@
 -- pg_auth with production defaults but without the permission index: subjects with too many
 -- objects to list are checked with the engine (AuthzBatch).
 select authz.configure(subject => 'jwt', claims_setting => 'request.jwt.claims', claim => 'sub');
-select authz.protect('app.folders', 'folder', 'id', 'viewer');
-select authz.protect('app.documents', 'folder', 'folder_id', 'viewer');
+select authz_internal.protect('app.folders', 'folder', 'id', 'viewer');
+select authz_internal.protect('app.documents', 'folder', 'folder_id', 'viewer');

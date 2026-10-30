@@ -1,6 +1,6 @@
 //! Planner integration: shape each protected table's scan with the engine's answer.
 //!
-//! `authz.bind` installs the policy `authz.permits('<type>', '<permission>', col::text)`, which
+//! `authz_internal.bind` installs the policy `authz.permits('<type>', '<permission>', col::text)`, which
 //! asks the engine (through the sidecar) per row. At planning time this hook asks the sidecar
 //! once for the current subject and, when the subject's allowed set is small enough to list,
 //! replaces that policy predicate with
@@ -134,10 +134,10 @@ pub fn init() {
     });
 }
 
-/// Whether `expr`, read as an expression over `rel`'s columns, is IMMUTABLE: authz.protect's key
+/// Whether `expr`, read as an expression over `rel`'s columns, is IMMUTABLE: authz_internal.protect's key
 /// expressions must be, since their value for a row may not change. Only parses (Postgres raises
 /// its own error when the expression does not fit the relation); nothing is executed.
-#[pg_extern(volatile)]
+#[pg_extern(volatile, schema = "authz_internal")]
 fn key_is_immutable(rel: pg_sys::Oid, expr: &str) -> bool {
     crate::pg::catalog::expression_is_immutable(rel, expr)
 }

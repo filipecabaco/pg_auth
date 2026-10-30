@@ -24,7 +24,7 @@ fn permits(object_type: &str, permission: &str, id: Option<&str>) -> bool {
     sidecar::permits(&subject, object_type, permission, id).unwrap_or_else(|e| fail(&e))
 }
 
-/// The policy on a table protected by its rows' attributes (authz.protect attributes =>): for an
+/// The policy on a table protected by its rows' attributes (authz_internal.protect attributes =>): for an
 /// engine that decides on them (Cerbos), or whose conditions and caveats take them (OpenFGA,
 /// SpiceDB). The subject's plan, fetched once per transaction, is evaluated here against the row,
 /// with no round trip per row but for a `check` it reaches; a plan outside the condition language
@@ -162,7 +162,7 @@ fn warm() -> TableIterator<'static, (name!(step, String), name!(detail, String))
     if let Some(subject) = subject::current() {
         // every protected (type, permission), and whether it is decided on the rows' attributes
         let bindings = crate::ffi::read_one::<Vec<String>>(
-            "SELECT array_agg(DISTINCT object_type || ' ' || permission || ' ' || (attributes IS NOT NULL)) FROM authz.bindings",
+            "SELECT array_agg(DISTINCT object_type || ' ' || permission || ' ' || (attributes IS NOT NULL)) FROM authz_internal.bindings",
             &[],
         )
         .unwrap_or_default();
@@ -223,7 +223,7 @@ fn distinct_values(rel: pg_sys::Oid, col: &str, object_type: &str) -> Vec<String
         let key = if col.is_empty() {
             client
                 .select(
-                    "select key_expr from authz.bindings where (rel = $1 or rel in (select relid from pg_partition_ancestors($1))) and key_expr is not null and object_type = $2 limit 1",
+                    "select key_expr from authz_internal.bindings where (rel = $1 or rel in (select relid from pg_partition_ancestors($1))) and key_expr is not null and object_type = $2 limit 1",
                     None,
                     &[rel.into(), object_type.into()],
                 )
@@ -235,8 +235,8 @@ fn distinct_values(rel: pg_sys::Oid, col: &str, object_type: &str) -> Vec<String
             // these functions run as the extension owner, and a caller names the table
             let bound = client
                 .select(
-                    "select exists (select from authz.bindings where (rel = $1 or rel in (select relid from pg_partition_ancestors($1))) and $2 in (column_name, insert_column))
-                         or exists (select from authz.hierarchies where source = $1 and id_column = $2)",
+                    "select exists (select from authz_internal.bindings where (rel = $1 or rel in (select relid from pg_partition_ancestors($1))) and $2 in (column_name, insert_column))
+                         or exists (select from authz_internal.hierarchies where source = $1 and id_column = $2)",
                     None,
                     &[rel.into(), col.into()],
                 )
@@ -395,7 +395,7 @@ fn stats() -> TableIterator<
 
 /// For the sidecar, after it delivered relationship tables' changes to the engine: every backend
 /// forgets the answers it kept, so the next statement asks again (sql/relationships.sql).
-#[pg_extern(volatile, security_definer)]
+#[pg_extern(volatile, security_definer, schema = "authz_sidecar")]
 #[search_path(pg_catalog, pg_temp)]
 fn answers_changed() {
     crate::ffi::invalidate_answers();

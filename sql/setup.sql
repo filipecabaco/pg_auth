@@ -1,8 +1,8 @@
 -- The whole setup as one document: who is asking, which tables are relationships, and how each
 -- table is protected, applied in one transaction and kept, with every earlier version, for
--- review. It compiles into authz.configure, authz.relate and authz.protect.
+-- review. It compiles into authz.configure, authz_internal.relate and authz_internal.protect.
 --
---   select authz.setup($${
+--   select authz_internal.setup($${
 --     "subject": {"source": "jwt", "claim": "sub"},
 --     "relationships": [
 --       {"table": "app.shares", "by": "grantee_kind",
@@ -17,10 +17,10 @@
 --   }$$);
 --
 -- "column" names a column of the row, "id" a fixed value ('*': everyone). Anything the previous
--- document declared and this one does not is removed. select authz.setup() returns the document
--- in force; authz.setups keeps every version.
+-- document declared and this one does not is removed. select authz_internal.setup() returns the document
+-- in force; authz_internal.setups keeps every version.
 
-create table authz.setups (
+create table authz_internal.setups (
     version      bigserial primary key,
     applied_at   timestamptz not null default now(),
     applied_by   name not null default current_user,
@@ -31,7 +31,7 @@ create table authz.setups (
 );
 
 -- Unknown keys are typos: fail rather than ignore them.
-create function authz.setup_keys(obj jsonb, allowed text[], what text) returns void
+create function authz_internal.setup_keys(obj jsonb, allowed text[], what text) returns void
 language plpgsql immutable as $$
 declare
     k text;
@@ -49,20 +49,20 @@ $$;
 
 -- One relationship declaration, unless the same one is already in force (relate would deliver the
 -- table's rows again).
-create function authz.setup_relate(rel regclass, decl_name text, filter text, object jsonb, relation jsonb, subject jsonb, what text,
+create function authz_internal.setup_relate(rel regclass, decl_name text, filter text, object jsonb, relation jsonb, subject jsonb, what text,
                                    expires jsonb default null, condition jsonb default null)
 returns void
 language plpgsql volatile as $$
 declare
-    want authz.relationships;
-    have authz.relationships;
+    want authz_internal.relationships;
+    have authz_internal.relationships;
 begin
-    perform authz.setup_keys(object, array['type', 'type_column', 'column', 'id'], what || ' object');
-    perform authz.setup_keys(coalesce(expires, '{}'), array['column'], what || ' expires');
-    perform authz.setup_keys(coalesce(condition, '{}'), array['name', 'context'], what || ' condition');
-    perform authz.setup_keys(subject, array['type', 'type_column', 'column', 'id', 'relation', 'relation_column'], what || ' subject');
+    perform authz_internal.setup_keys(object, array['type', 'type_column', 'column', 'id'], what || ' object');
+    perform authz_internal.setup_keys(coalesce(expires, '{}'), array['column'], what || ' expires');
+    perform authz_internal.setup_keys(coalesce(condition, '{}'), array['name', 'context'], what || ' condition');
+    perform authz_internal.setup_keys(subject, array['type', 'type_column', 'column', 'id', 'relation', 'relation_column'], what || ' subject');
     if jsonb_typeof(relation) = 'object' then
-        perform authz.setup_keys(relation, array['column', 'allowed'], what || ' relation');
+        perform authz_internal.setup_keys(relation, array['column', 'allowed'], what || ' relation');
     elsif jsonb_typeof(relation) is distinct from 'string' then
         raise exception 'setup: % relation is a name, or {"column": ..., "allowed": [...]}', what;
     end if;
@@ -72,11 +72,11 @@ begin
              subject ->> 'relation', subject ->> 'relation_column', filter,
              (select array_agg(r) from jsonb_array_elements_text(relation -> 'allowed') r), expires ->> 'column',
              condition ->> 'name', condition -> 'context');
-    select * into have from authz.relationships r where r.rel = setup_relate.rel and r.name = decl_name;
+    select * into have from authz_internal.relationships r where r.rel = setup_relate.rel and r.name = decl_name;
     if have is not distinct from want then
         return;
     end if;
-    perform authz.relate(want.rel, name => want.name, filter => want.filter,
+    perform authz_internal.relate(want.rel, name => want.name, filter => want.filter,
                          object_type => want.object_type, object_type_column => want.object_type_column,
                          object_column => want.object_column, object_id => want.object_id,
                          relation => want.relation, relation_column => want.relation_column, relations => want.relations,
@@ -88,14 +88,14 @@ end
 $$;
 
 -- Remove one of a table's protections, leaving its others (unbind removes them all).
-create function authz.setup_unprotect(rel regclass, binding name) returns void
+create function authz_internal.setup_unprotect(rel regclass, binding name) returns void
 language plpgsql volatile as $$
 declare
     part regclass;
     pol name;
 begin
-    if not exists (select 1 from authz.bindings b where b.rel = setup_unprotect.rel and b.name <> binding) then
-        perform authz.unbind(rel);
+    if not exists (select 1 from authz_internal.bindings b where b.rel = setup_unprotect.rel and b.name <> binding) then
+        perform authz_internal.unbind(rel);
         return;
     end if;
     for part in select setup_unprotect.rel union select relid from pg_partition_tree(setup_unprotect.rel) loop
@@ -104,11 +104,11 @@ begin
             execute format('drop policy %I on %s', pol, part);
         end loop;
     end loop;
-    delete from authz.bindings b where b.rel = setup_unprotect.rel and b.name = binding;
+    delete from authz_internal.bindings b where b.rel = setup_unprotect.rel and b.name = binding;
 end
 $$;
 
-create function authz.setup(document jsonb) returns bigint
+create function authz_internal.setup(document jsonb) returns bigint
 language plpgsql volatile as $$
 declare
     s jsonb := document -> 'subject';
@@ -118,18 +118,18 @@ declare
     base text;
     relationships text[] := '{}';
     protections text[] := '{}';
-    previous authz.setups;
+    previous authz_internal.setups;
     gone text;
     insert_ jsonb;
     attrs jsonb;
     applied bigint;
     what text;
 begin
-    -- "source": who wrote the document ("rules": the notes in the engine's rules, authz.rules_apply)
-    perform authz.setup_keys(document, array['subject', 'relationships', 'protect', 'source'], 'the document');
+    -- "source": who wrote the document ("rules": the notes in the engine's rules, authz_internal.rules_apply)
+    perform authz_internal.setup_keys(document, array['subject', 'relationships', 'protect', 'source'], 'the document');
 
     if s is not null then
-        perform authz.setup_keys(s, array['source', 'type', 'claim', 'jwks', 'claims_setting', 'token_setting', 'token_header',
+        perform authz_internal.setup_keys(s, array['source', 'type', 'claim', 'jwks', 'claims_setting', 'token_setting', 'token_header',
                                           'clock_skew_seconds', 'roles', 'scope', 'policy_version', 'context'], 'subject');
         perform authz.configure(subject => s ->> 'source', subject_type => s ->> 'type', claim => s ->> 'claim',
                                 jwks => s -> 'jwks', claims_setting => s ->> 'claims_setting',
@@ -139,37 +139,37 @@ begin
     end if;
 
     for e in select x from jsonb_array_elements(coalesce(document -> 'relationships', '[]')) x loop
-        perform authz.setup_keys(e, array['table', 'name', 'filter', 'by', 'object', 'relation', 'subject', 'expires', 'condition'], 'a relationship');
+        perform authz_internal.setup_keys(e, array['table', 'name', 'filter', 'by', 'object', 'relation', 'subject', 'expires', 'condition'], 'a relationship');
         rel := (e ->> 'table')::regclass;
         base := coalesce(e ->> 'name', 'pg_auth');
         what := format('relationship %s (%s)', rel, base);
         if e ? 'by' then
             -- one declaration per kind: the subject is a map from the by column's values
             for v in select key, value from jsonb_each(e -> 'subject') loop
-                perform authz.setup_relate(rel, base || '_' || v.key,
+                perform authz_internal.setup_relate(rel, base || '_' || v.key,
                     concat_ws(' and ', '(' || (e ->> 'filter') || ')', format('%I = %L', e ->> 'by', v.key)),
                     e -> 'object', e -> 'relation', v.value, what || ' ' || v.key, e -> 'expires', e -> 'condition');
                 relationships := relationships || (rel::text || '/' || base || '_' || v.key);
             end loop;
         else
-            perform authz.setup_relate(rel, base, e ->> 'filter', e -> 'object', e -> 'relation', e -> 'subject', what, e -> 'expires', e -> 'condition');
+            perform authz_internal.setup_relate(rel, base, e ->> 'filter', e -> 'object', e -> 'relation', e -> 'subject', what, e -> 'expires', e -> 'condition');
             relationships := relationships || (rel::text || '/' || base);
         end if;
     end loop;
 
     for e in select x from jsonb_array_elements(coalesce(document -> 'protect', '[]')) x loop
-        perform authz.setup_keys(e, array['table', 'name', 'type', 'column', 'key', 'select', 'write', 'insert', 'update',
+        perform authz_internal.setup_keys(e, array['table', 'name', 'type', 'column', 'key', 'select', 'write', 'insert', 'update',
                                           'delete', 'attributes', 'hierarchy', 'force'], 'a protection');
         rel := (e ->> 'table')::regclass;
         insert_ := e -> 'insert';
         attrs := e -> 'attributes';
         if jsonb_typeof(insert_) = 'object' then
-            perform authz.setup_keys(insert_, array['type', 'column', 'permission'], format('protection %s insert', rel));
+            perform authz_internal.setup_keys(insert_, array['type', 'column', 'permission'], format('protection %s insert', rel));
         end if;
         if e ? 'hierarchy' then
-            perform authz.setup_keys(e -> 'hierarchy', array['tree', 'direct'], format('protection %s hierarchy', rel));
+            perform authz_internal.setup_keys(e -> 'hierarchy', array['tree', 'direct'], format('protection %s hierarchy', rel));
         end if;
-        perform authz.protect(rel, type => e ->> 'type', id => e ->> 'column', key => e ->> 'key', read => e ->> 'select',
+        perform authz_internal.protect(rel, type => e ->> 'type', id => e ->> 'column', key => e ->> 'key', read => e ->> 'select',
             -- "insert" as a name is the write permission inserts need; as an object, a parent's
             write => coalesce(e ->> 'write', case when jsonb_typeof(insert_) = 'string' then insert_ #>> '{}' end),
             on_update => e ->> 'update', on_delete => e ->> 'delete',
@@ -182,21 +182,21 @@ begin
     end loop;
 
     -- what the previous document declared and this one does not
-    select * into previous from authz.setups order by version desc limit 1;
+    select * into previous from authz_internal.setups order by version desc limit 1;
     if previous is not null then
         foreach gone in array previous.relationships loop
             if not gone = any (relationships) then
-                perform authz.unrelate(split_part(gone, '/', 1)::regclass, split_part(gone, '/', 2));
+                perform authz_internal.unrelate(split_part(gone, '/', 1)::regclass, split_part(gone, '/', 2));
             end if;
         end loop;
         foreach gone in array previous.protections loop
             if not gone = any (protections) and to_regclass(split_part(gone, '/', 1)) is not null then
-                perform authz.setup_unprotect(split_part(gone, '/', 1)::regclass, split_part(gone, '/', 2));
+                perform authz_internal.setup_unprotect(split_part(gone, '/', 1)::regclass, split_part(gone, '/', 2));
             end if;
         end loop;
     end if;
 
-    insert into authz.setups (document, relationships, protections) values (document, relationships, protections)
+    insert into authz_internal.setups (document, relationships, protections) values (document, relationships, protections)
     returning setups.version into applied;
     raise notice 'setup % applied: % relationship declarations, % protections', applied,
         coalesce(array_length(relationships, 1), 0), coalesce(array_length(protections, 1), 0);
@@ -205,14 +205,8 @@ end
 $$;
 
 -- The document in force (null before the first).
-create function authz.setup() returns jsonb
+create function authz_internal.setup() returns jsonb
 language sql stable as $$
-    select document from authz.setups order by version desc limit 1
+    select document from authz_internal.setups order by version desc limit 1
 $$;
 
-revoke all on authz.setups from public;
-revoke execute on function authz.setup(jsonb) from public;
-revoke execute on function authz.setup() from public;
-revoke execute on function authz.setup_keys(jsonb, text[], text) from public;
-revoke execute on function authz.setup_relate(regclass, text, text, jsonb, jsonb, jsonb, text, jsonb, jsonb) from public;
-revoke execute on function authz.setup_unprotect(regclass, name) from public;

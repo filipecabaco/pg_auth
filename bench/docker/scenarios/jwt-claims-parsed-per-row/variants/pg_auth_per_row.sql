@@ -4,4 +4,4 @@
 select authz.configure(subject => 'jwt', claims_setting => 'request.jwt.claims', claim => 'sub');
 -- the scenario's premise is no index on owner_id (naive_indexed_rls creates one)
 drop index if exists app.documents_owner_idx;
-select authz.protect('app.documents', 'account', 'owner_id', 'member');
+select authz_internal.protect('app.documents', 'account', 'owner_id', 'member');

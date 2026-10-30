@@ -7,7 +7,7 @@
 -- parent edges being the table's parent column (pg_auth cannot verify this; the bench's
 -- hierarchical-permissions scenario compares both against the engine).
 
-create table authz.hierarchies (
+create table authz_internal.hierarchies (
     object_type       text collate "C" not null,
     permission        text collate "C" not null,
     direct_permission text collate "C" not null,
@@ -22,7 +22,7 @@ create table authz.hierarchies (
 
 -- Keep authz.closure_<source oid> (ancestor, descendant), including each node with itself, in
 -- step with one row change of the source table. TG_ARGV: closure, id column, parent column, id type.
-create function authz.closure_maintain() returns trigger
+create function authz_internal.closure_maintain() returns trigger
 language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
 declare
     c      text := tg_argv[0];
@@ -84,13 +84,13 @@ $$;
 
 -- After each statement that changed the tree: bump the version (expansions cached across
 -- transactions are dropped), and empty the closure on TRUNCATE. TG_ARGV: closure.
-create function authz.closure_changed() returns trigger
+create function authz_internal.closure_changed() returns trigger
 language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
 begin
     if tg_op = 'TRUNCATE' then
         execute format('truncate %s', tg_argv[0]);
     end if;
-    update authz.hierarchies set version = version + 1 where closure = tg_argv[0]::regclass;
+    update authz_internal.hierarchies set version = version + 1 where closure = tg_argv[0]::regclass;
     return null;
 end
 $$;
@@ -98,7 +98,7 @@ $$;
 -- Declare that p_type#p_permission is inherited along p_source(p_id, p_parent), with
 -- p_direct the relation holding grants made on a node itself. Builds the closure and installs
 -- the triggers that maintain it.
-create function authz.declare_hierarchy(
+create function authz_internal.declare_hierarchy(
     p_type text, p_permission text, p_direct text, p_source regclass, p_id name, p_parent name
 ) returns void
 language plpgsql volatile as $$
@@ -108,7 +108,7 @@ declare
 begin
     -- one level: the engine is asked for the direct permission, which must not be expanded itself
     if p_direct = p_permission or exists (
-        select 1 from authz.hierarchies h
+        select 1 from authz_internal.hierarchies h
         where h.object_type = p_type and h.permission <> p_permission and (h.permission = p_direct or h.direct_permission = p_permission)
     ) then
         raise exception '%#% cannot expand %#%, which is a declared hierarchy or expands it', p_type, p_permission, p_type, p_direct;
@@ -135,17 +135,17 @@ begin
                     select ancestor, node from up', c, p_id, p_source, p_parent);
 
     execute format('create or replace trigger authz_closure after insert or update of %I, %I or delete on %s
-                    for each row execute function authz.closure_maintain(%L, %L, %L, %L)',
+                    for each row execute function authz_internal.closure_maintain(%L, %L, %L, %L)',
                    p_id, p_parent, p_source, c, p_id, p_parent, typ);
     execute format('create or replace trigger authz_closure_changed after insert or update of %I, %I or delete or truncate on %s
-                    for each statement execute function authz.closure_changed(%L)',
+                    for each statement execute function authz_internal.closure_changed(%L)',
                    p_id, p_parent, p_source, c);
 
-    insert into authz.hierarchies (object_type, permission, direct_permission, source, id_column, parent_column, closure)
+    insert into authz_internal.hierarchies (object_type, permission, direct_permission, source, id_column, parent_column, closure)
     values (p_type, p_permission, p_direct, p_source, p_id, p_parent, c::regclass)
     on conflict (object_type, permission) do update
         set direct_permission = excluded.direct_permission, source = excluded.source, id_column = excluded.id_column,
-            parent_column = excluded.parent_column, closure = excluded.closure, version = authz.hierarchies.version + 1;
+            parent_column = excluded.parent_column, closure = excluded.closure, version = authz_internal.hierarchies.version + 1;
 end
 $$;
 
@@ -153,16 +153,16 @@ $$;
 -- version, or no row when it is not a declared hierarchy.
 create function authz.hierarchy_of(p_type text, p_permission text, out direct_permission text, out version bigint)
 language sql stable security definer set search_path = pg_catalog, pg_temp as $$
-    select h.direct_permission, h.version from authz.hierarchies h
+    select h.direct_permission, h.version from authz_internal.hierarchies h
     where h.object_type = p_type and h.permission = p_permission
 $$;
 
 -- For the extension (as any role): every declared hierarchy as (type, permission, direct
--- permission) triples, flattened. Backends keep it until authz.hierarchies changes.
+-- permission) triples, flattened. Backends keep it until authz_internal.hierarchies changes.
 create function authz.hierarchy_declarations() returns text[]
 language sql stable security definer set search_path = pg_catalog, pg_temp as $$
     select coalesce(array_agg(u.v order by h.object_type, h.permission, u.n), '{}')
-    from authz.hierarchies h, unnest(array[h.object_type, h.permission, h.direct_permission]) with ordinality u(v, n)
+    from authz_internal.hierarchies h, unnest(array[h.object_type, h.permission, h.direct_permission]) with ordinality u(v, n)
 $$;
 
 -- The objects p_type#p_permission reaches for the current subject: its direct grants (asked of
@@ -170,12 +170,12 @@ $$;
 create function authz.hierarchy_expand(p_type text, p_permission text) returns text[]
 language plpgsql stable security definer set search_path = pg_catalog, pg_temp as $$
 declare
-    h     authz.hierarchies;
+    h     authz_internal.hierarchies;
     typ   text;
     out   text[];
     p_ids text[];
 begin
-    select * into h from authz.hierarchies where object_type = p_type and permission = p_permission;
+    select * into h from authz_internal.hierarchies where object_type = p_type and permission = p_permission;
     if h is null then
         return null;
     end if;
@@ -191,13 +191,13 @@ $$;
 
 -- Stop expanding p_type#p_permission in Postgres (the engine answers it again). The closure and
 -- its trigger go with the last hierarchy using them.
-create function authz.drop_hierarchy(p_type text, p_permission text) returns void
+create function authz_internal.drop_hierarchy(p_type text, p_permission text) returns void
 language plpgsql volatile as $$
 declare
-    h authz.hierarchies;
+    h authz_internal.hierarchies;
 begin
-    delete from authz.hierarchies where object_type = p_type and permission = p_permission returning * into h;
-    if h is null or exists (select 1 from authz.hierarchies where closure = h.closure) then
+    delete from authz_internal.hierarchies where object_type = p_type and permission = p_permission returning * into h;
+    if h is null or exists (select 1 from authz_internal.hierarchies where closure = h.closure) then
         return;
     end if;
     execute format('drop trigger if exists authz_closure on %s', h.source);
@@ -208,23 +208,16 @@ $$;
 
 -- Backends keep pg_auth's configuration across transactions: a change to it makes them reload
 -- (a tree's version bump is not one; expansions check the version themselves).
-create function authz.config_changed() returns trigger
+create function authz_internal.config_changed() returns trigger
 language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
 begin
-    perform authz.invalidate_config();
+    perform authz_internal.invalidate_config();
     return null;
 end
 $$;
-create trigger authz_config_changed after insert or delete or truncate or update on authz.settings
-    for each statement execute function authz.config_changed();
+create trigger authz_config_changed after insert or delete or truncate or update on authz_internal.settings
+    for each statement execute function authz_internal.config_changed();
 create trigger authz_config_changed after insert or delete or truncate
-    or update of object_type, permission, direct_permission on authz.hierarchies
-    for each statement execute function authz.config_changed();
+    or update of object_type, permission, direct_permission on authz_internal.hierarchies
+    for each statement execute function authz_internal.config_changed();
 
-revoke all on authz.hierarchies from public;
-revoke execute on function authz.declare_hierarchy(text, text, text, regclass, name, name) from public;
-revoke execute on function authz.drop_hierarchy(text, text) from public;
-revoke execute on function authz.closure_maintain() from public;
-revoke execute on function authz.closure_changed() from public;
-revoke execute on function authz.config_changed() from public;
-revoke execute on function authz.invalidate_config() from public;

@@ -9,4 +9,4 @@ alter view app.docs_v owner to app_owner;
 alter view app.docs_vb owner to app_owner;
 alter view app.docs_f owner to app_owner;
 alter function app.docs_fn() owner to app_owner;
-select authz.protect('app.docs', 'org', 'org_id', 'member');
+select authz_internal.protect('app.docs', 'org', 'org_id', 'member');

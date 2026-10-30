@@ -2,4 +2,4 @@
 -- @set: plan_cache_mode=force_generic_plan
 -- @prepare_as: few_grants
 -- pg_auth with a cached generic plan built for the few_grants subject and reused by each subject.
-select authz.protect('app.documents', 'document', 'id', 'viewer');
+select authz_internal.protect('app.documents', 'document', 'id', 'viewer');

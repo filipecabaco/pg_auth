@@ -1,5 +1,5 @@
 -- Friendly API:
---   authz.protect          protect a table with a permission of the engine's model
+--   authz_internal.protect          protect a table with a permission of the engine's model
 --   authz.check / can      ask the engine (any subject / the current subject)
 --   authz.status           what pg_auth is enforcing, and whether the engine answers
 
@@ -8,7 +8,7 @@
 -- the row's columns (a storage path's first folder: split_part(name, '/', 1)). Reads need the
 -- `read` permission; writes need `write` (denied when null).
 --
---   select authz.protect('app.documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
+--   select authz_internal.protect('app.documents', type => 'document', id => 'id', read => 'viewer', write => 'editor');
 --
 -- A row may be reachable several ways (an order visible to its buyer, or to its seller's staff):
 -- protect the table once per way, each with its own `name`; a row is visible when any allows it.
@@ -29,7 +29,7 @@
 --
 -- on_update => ... and on_delete => ... check UPDATE and DELETE with their own permission (GitHub: push
 -- to update, delete to delete) instead of `write`, which still checks INSERT.
-create function authz.protect(
+create function authz_internal.protect(
     rel regclass,
     type text,
     id name,
@@ -61,7 +61,7 @@ begin
         if tree is null then
             raise exception 'hierarchy must read ''table(id, parent)'', got %', protect.hierarchy;
         end if;
-        perform authz.declare_hierarchy(protect.type, protect.read, protect.direct, tree[1]::regclass, tree[2]::name, tree[3]::name);
+        perform authz_internal.declare_hierarchy(protect.type, protect.read, protect.direct, tree[1]::regclass, tree[2]::name, tree[3]::name);
     end if;
     if (protect.id is null) = (protect.key is null) then
         raise exception 'protect % by a column (id => ...) or by a key expression (key => ...), not both or neither', protect.rel;
@@ -69,12 +69,12 @@ begin
     if (protect.insert_type is null) <> (protect.insert_id is null) or (protect.insert_id is null) <> (protect.insert_permission is null) then
         raise exception 'checking inserts against another object needs insert_type, insert_id and insert_permission';
     end if;
-    perform authz.bind(protect.rel, protect.id, protect.type, protect.read, protect.write, protect.force, protect.key, protect.name,
+    perform authz_internal.bind(protect.rel, protect.id, protect.type, protect.read, protect.write, protect.force, protect.key, protect.name,
                        protect.insert_type, protect.insert_id, protect.insert_permission, protect.attributes,
                        protect.on_update, protect.on_delete, protect.attribute_map);
     raise notice '% is protected: a row is %:<%>; reading needs %; %', protect.rel, protect.type,
         coalesce(quote_ident(protect.id), protect.key), protect.read,
-        (select authz.writes_of(b) from authz.bindings b where b.rel = protect.rel and b.name = coalesce('pg_auth_' || protect.name, 'pg_auth'))
+        (select authz_internal.writes_of(b) from authz_internal.bindings b where b.rel = protect.rel and b.name = coalesce('pg_auth_' || protect.name, 'pg_auth'))
         || coalesce('; decided on the row''s ' || array_to_string(protect.attributes, ', '), '');
 
     if protect.key is not null then
@@ -94,7 +94,7 @@ $$;
 
 -- How a binding's writes are checked, for status, why and doctor: 'writes need document#editor', or
 -- each command's own permission when they differ.
-create function authz.writes_of(b authz.bindings) returns text
+create function authz_internal.writes_of(b authz_internal.bindings) returns text
 language sql immutable as $$
     select case
         when b.update_permission is null and b.delete_permission is null then
@@ -113,7 +113,7 @@ create function authz.status() returns table (item text, value text)
 language sql stable as $$
     select 'engine', authz.engine()
     union all select 'sidecar socket', current_setting('pg_auth.sidecar_socket')
-    union all select 'subject source', (select value from authz.settings where key = 'subject_source')
+    union all select 'subject source', (select value from authz_internal.settings where key = 'subject_source')
     union all
     select 'protected ' || b.rel::text || case when b.name = 'pg_auth' then '' else ' (' || b.name || ')' end,
            b.object_type || '#' || b.permission
@@ -122,13 +122,13 @@ language sql stable as $$
            || ' via ' || coalesce(quote_ident(b.column_name), '(' || b.key_expr || ')')
            || coalesce(' / insert ' || b.insert_object_type || '#' || b.insert_permission || ' via ' || quote_ident(b.insert_column), '')
            || case when b.force then '' else ' (owner not forced)' end
-    from authz.bindings b
+    from authz_internal.bindings b
     union all
     select 'hierarchy ' || h.object_type || '#' || h.permission,
            h.object_type || '#' || h.direct_permission || ' down ' || h.source::text
            || '(' || quote_ident(h.id_column) || ', ' || quote_ident(h.parent_column) || ')'
            || ', version ' || h.version
-    from authz.hierarchies h
+    from authz_internal.hierarchies h
 $$;
 
 -- Why a row is, or is not, visible: who pg_auth sees, the table's row level security, the row, and
@@ -209,7 +209,7 @@ begin
     return next;
 
     if found then
-        for b in select * from authz.bindings where bindings.rel = why.rel order by bindings.name loop
+        for b in select * from authz_internal.bindings where bindings.rel = why.rel order by bindings.name loop
             select pg_get_expr(p.polqual, p.polrelid) into qual from pg_policy p
             where p.polrelid = why.rel and p.polname = b.name || '_select';
             failure := null;
@@ -232,19 +232,19 @@ begin
                                 array_to_string(b.attributes, ', '), case when ok then 'allowed' else 'denied by the engine''s rules' end)
                            else format('%s %s %s on %s', coalesce(who.subject_type || ':' || who.subject_id, 'no subject'),
                                 case when ok then 'has' else 'lacks' end, b.object_type || '#' || b.permission, object) end
-                      || '; ' || (select authz.writes_of(bb) from authz.bindings bb where bb.rel = b.rel and bb.name = b.name);
+                      || '; ' || (select authz_internal.writes_of(bb) from authz_internal.bindings bb where bb.rel = b.rel and bb.name = b.name);
             visible := visible or ok;
             return next;
         end loop;
-        if not exists (select 1 from authz.bindings where bindings.rel = why.rel) then
-            step := 'pg_auth'; ok := null; detail := why.rel::text || ' is not protected by pg_auth: authz.protect(...)';
+        if not exists (select 1 from authz_internal.bindings where bindings.rel = why.rel) then
+            step := 'pg_auth'; ok := null; detail := why.rel::text || ' is not protected by pg_auth: authz_internal.protect(...)';
             return next;
         end if;
     end if;
 
     for pol in select p.polname, p.polpermissive, p.polcmd, pg_get_expr(p.polqual, p.polrelid) as using_expr
                from pg_policy p where p.polrelid = why.rel
-               and not exists (select 1 from authz.bindings bb where bb.rel = why.rel
+               and not exists (select 1 from authz_internal.bindings bb where bb.rel = why.rel
                                and p.polname in (bb.name || '_select', bb.name || '_insert', bb.name || '_update', bb.name || '_delete'))
                and p.polcmd in ('r', '*') loop
         step := 'other policy ' || pol.polname; ok := null;
@@ -310,9 +310,9 @@ begin
     -- a scoped override, deny rules included, never applies
     if engine = 'cerbos' then
         check_name := 'cerbos scope';
-        if coalesce((select value from authz.settings where key = 'scope_claim'), '') <> '' then
+        if coalesce((select value from authz_internal.settings where key = 'scope_claim'), '') <> '' then
             status := 'ok'; fix := null;
-            detail := 'the scope comes from the claim ' || (select value from authz.settings where key = 'scope_claim');
+            detail := 'the scope comes from the claim ' || (select value from authz_internal.settings where key = 'scope_claim');
         else
             status := 'info';
             detail := 'no scope is sent (pg_auth.subject_scope aside): Cerbos policies with a scope: are not applied, so a scoped deny does not hide rows';
@@ -323,9 +323,9 @@ begin
 
     check_name := 'subject source';
     status := 'ok'; fix := null;
-    detail := (select string_agg(key || ' = ' || value, ', ' order by key) from authz.settings
+    detail := (select string_agg(key || ' = ' || value, ', ' order by key) from authz_internal.settings
                where key in ('subject_source', 'claims_setting', 'claim', 'subject_type', 'roles_claim'));
-    if (select value from authz.settings where key = 'subject_source') = 'jwt' then
+    if (select value from authz_internal.settings where key = 'subject_source') = 'jwt' then
         status := 'info';
         detail := detail || '. The claims are trusted as they are: only a trusted API (PostgREST) may set them';
         fix := 'select authz.configure(subject => ''jwt_signed'', jwks => ...); -- to verify the token instead';
@@ -339,12 +339,12 @@ begin
                    else who.subject_type || ':' || who.subject_id || ' (' || who.source || ')' end;
     return next;
 
-    if not exists (select 1 from authz.bindings) then
+    if not exists (select 1 from authz_internal.bindings) then
         check_name := 'protected tables'; status := 'info'; detail := 'no table is protected yet';
-        fix := 'select authz.protect(''app.documents'', type => ''document'', id => ''id'', read => ''viewer'', write => ''editor'');';
+        fix := 'select authz_internal.protect(''app.documents'', type => ''document'', id => ''id'', read => ''viewer'', write => ''editor'');';
         return next;
     end if;
-    for b in select bb.*, c.relrowsecurity, c.relforcerowsecurity from authz.bindings bb join pg_class c on c.oid = bb.rel order by bb.rel::text, bb.name loop
+    for b in select bb.*, c.relrowsecurity, c.relforcerowsecurity from authz_internal.bindings bb join pg_class c on c.oid = bb.rel order by bb.rel::text, bb.name loop
         check_name := 'protected ' || b.rel::text || case when b.name = 'pg_auth' then '' else ' (' || b.name || ')' end;
         if not b.relrowsecurity then
             status := 'fail'; detail := 'row level security is off: every row is visible';
@@ -361,38 +361,38 @@ begin
             readers := (select string_agg(r, ', ') from unnest(api_roles) r where has_table_privilege(r, b.rel, 'SELECT'));
             status := 'ok'; fix := null;
             detail := format('%s#%s via %s', b.object_type, b.permission, coalesce(quote_ident(b.column_name), '(' || b.key_expr || ')'))
-                      || '; ' || (select authz.writes_of(bb) from authz.bindings bb where bb.rel = b.rel and bb.name = b.name)
+                      || '; ' || (select authz_internal.writes_of(bb) from authz_internal.bindings bb where bb.rel = b.rel and bb.name = b.name)
                       || coalesce('; readable by ' || readers, '');
         end if;
         return next;
     end loop;
 
     -- relationship tables: changes waiting for the sidecar, and changes the engine refused
-    if exists (select 1 from authz.relationships) then
+    if exists (select 1 from authz_internal.relationships) then
         check_name := 'relationship tables';
         -- an expiry is waiting only once it is due
         select count(*) filter (where error is not null) as refused,
                min(coalesce(not_before, at)) filter (where error is null and (not_before is null or not_before <= now())) as oldest,
                count(*) filter (where error is null and not_before > now()) as scheduled
-        into t from authz.outbox;
+        into t from authz_internal.outbox;
         if t.refused > 0 then
             status := 'fail';
-            detail := t.refused || ' changes the engine refused, e.g. ' || (select error from authz.outbox where error is not null order by id limit 1);
-            fix := 'select * from authz.outbox where error is not null;  -- fix the model or the rows, then delete these';
+            detail := t.refused || ' changes the engine refused, e.g. ' || (select error from authz_internal.outbox where error is not null order by id limit 1);
+            fix := 'select * from authz_internal.outbox where error is not null;  -- fix the model or the rows, then delete these';
         elsif t.oldest < now() - interval '1 minute' then
             status := 'warn';
             detail := 'changes waiting since ' || t.oldest || ': is a sidecar with PG_AUTH_DATABASE_URL running?';
-            fix := 'start the sidecar with PG_AUTH_DATABASE_URL and grant it authz.outbox_claim, outbox_done, outbox_failed, answers_changed';
+            fix := 'start the sidecar with PG_AUTH_DATABASE_URL, as a login granted authz_sidecar';
         else
             status := 'ok'; fix := null;
-            detail := (select count(*) from authz.relationships) || ' declared, delivered'
+            detail := (select count(*) from authz_internal.relationships) || ' declared, delivered'
                       || case when t.scheduled > 0 then ', ' || t.scheduled || ' expiries scheduled' else '' end;
         end if;
         return next;
     end if;
 
     -- the engine's rules kept in Postgres (authz.set_rules)
-    if exists (select 1 from authz.rules) then
+    if exists (select 1 from authz_internal.rules) then
         check_name := 'rules';
         if exists (select 1 from authz.rules() r where r.error is not null) then
             status := 'fail';
@@ -403,7 +403,7 @@ begin
             status := 'warn';
             detail := 'not pushed yet: ' || (select string_agg(r.engine || ' ' || r.name, ', ') from authz.rules() r where r.pushed_at is null)
                       || ': is a sidecar with PG_AUTH_DATABASE_URL running for that engine?';
-            fix := 'start the sidecar with PG_AUTH_DATABASE_URL and grant it authz.rules_pending, authz.rules_pushed';
+            fix := 'start the sidecar with PG_AUTH_DATABASE_URL, as a login granted authz_sidecar';
         else
             status := 'ok'; fix := null;
             detail := (select string_agg(format('%s %s version %s', r.engine, r.name, r.version), ', ') from authz.rules() r) || ': in force';
@@ -412,14 +412,14 @@ begin
 
         -- what the setup names, against those rules (also checked at every commit that changes either)
         check_name := 'setup matches rules';
-        if (select count(distinct r.engine) from authz.rules r) > 1 then
+        if (select count(distinct r.engine) from authz_internal.rules r) > 1 then
             status := 'warn';
-            detail := 'rules are stored for ' || (select string_agg(distinct r.engine, ', ') from authz.rules r)
+            detail := 'rules are stored for ' || (select string_agg(distinct r.engine, ', ') from authz_internal.rules r)
                       || ': the setup is checked against one engine''s only';
             fix := 'keep the rules of the engine this database uses';
-        elsif exists (select 1 from authz.rules_problems()) then
+        elsif exists (select 1 from authz_internal.rules_problems()) then
             status := 'fail';
-            detail := (select string_agg(p.item || ': ' || p.problem, '; ' order by p.item) from authz.rules_problems() p);
+            detail := (select string_agg(p.item || ': ' || p.problem, '; ' order by p.item) from authz_internal.rules_problems() p);
             fix := 'correct the setup, or store rules that have what it names';
         else
             status := 'ok'; fix := null;
@@ -439,15 +439,13 @@ begin
         status := 'warn';
         detail := 'readable by ' || (select string_agg(r, ', ') from unnest(api_roles) r where has_table_privilege(r, t.rel, 'SELECT'))
                   || ' with no row level security: every row is public to them';
-        fix := format('select authz.protect(%L, type => ..., id => ..., read => ...);  -- or revoke select', t.rel::text);
+        fix := format('select authz_internal.protect(%L, type => ..., id => ..., read => ...);  -- or revoke select', t.rel::text);
         return next;
     end loop;
 end
 $$;
 
-revoke execute on function authz.protect(regclass, text, name, text, text, boolean, text, text, text, name, text, text, text, name[], text, text, jsonb) from public;
 revoke execute on function authz.check(text, text, text) from public;
 revoke execute on function authz.status() from public;
 revoke execute on function authz.why(regclass, text, text, name, text[], text) from public;
 revoke execute on function authz.doctor() from public;
-revoke execute on function authz.answers_changed() from public;

@@ -5,7 +5,7 @@
 //! The sidecar owns it: it fills a set when the extension asks (`fill`), by streaming the
 //! engine's complete list, and it follows the engine's change feed (Engine::follow), marking
 //! every set stale on any change (coarse: through inheritance a change can reach any set). The extension uses fresh
-//! sets only; a set invalidated while it fills never becomes fresh (authz.index_finish).
+//! sets only; a set invalidated while it fills never becomes fresh (authz_sidecar.index_finish).
 //! Optional: enabled by PG_AUTH_DATABASE_URL.
 
 use crate::engine::{Engine, Key};
@@ -119,12 +119,15 @@ async fn fill(db: &mut Db, engine: &Engine, key: &Key) -> Result<(usize, bool), 
     let client = db.client().await?;
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
     let (subject, object_type, permission) = key;
-    let set: i64 =
-        client.query_one("select authz.index_begin($1, $2, $3, null)", &[subject, object_type, permission]).await.map_err(pg)?.get(0);
+    let set: i64 = client
+        .query_one("select authz_sidecar.index_begin($1, $2, $3, null)", &[subject, object_type, permission])
+        .await
+        .map_err(pg)?
+        .get(0);
     let filled = async {
         let ids = engine.list_all(key).await?;
         for chunk in ids.chunks(CHUNK) {
-            client.execute("select authz.index_add($1, $2)", &[&set, &chunk.to_vec()]).await.map_err(pg)?;
+            client.execute("select authz_sidecar.index_add($1, $2)", &[&set, &chunk.to_vec()]).await.map_err(pg)?;
         }
         Ok::<_, String>(ids.len())
     }
@@ -132,11 +135,11 @@ async fn fill(db: &mut Db, engine: &Engine, key: &Key) -> Result<(usize, bool), 
     let n = match filled {
         Ok(n) => n,
         Err(e) => {
-            let _ = client.execute("select authz.index_abort($1)", &[&set]).await;
+            let _ = client.execute("select authz_sidecar.index_abort($1)", &[&set]).await;
             return Err(e);
         }
     };
-    let fresh: Option<bool> = client.query_one("select authz.index_finish($1)", &[&set]).await.map_err(pg)?.get(0);
+    let fresh: Option<bool> = client.query_one("select authz_sidecar.index_finish($1)", &[&set]).await.map_err(pg)?.get(0);
     Ok((n, fresh.unwrap_or(false)))
 }
 
@@ -174,10 +177,7 @@ async fn feed_loop(url: String, engine: Arc<Engine>, retry: Duration, fresh: Fre
 async fn begin(db: &mut Db, fresh: &Fresh) -> Result<String, String> {
     let client = db.client().await?;
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
-    let rows = client
-        .query("select subject, object_type, permission, size from authz.permission_sets where status = 'fresh'", &[])
-        .await
-        .map_err(pg)?;
+    let rows = client.query("select subject, object_type, permission, size from authz_sidecar.index_fresh()", &[]).await.map_err(pg)?;
     if let Ok(mut f) = fresh.lock() {
         for r in rows {
             f.insert((r.get(0), r.get(1), r.get(2)), usize::try_from(r.get::<_, Option<i64>>(3).unwrap_or(0)).unwrap_or(0));
@@ -188,6 +188,6 @@ async fn begin(db: &mut Db, fresh: &Fresh) -> Result<String, String> {
 
 async fn invalidate(db: &mut Db) -> Result<(), String> {
     let client = db.client().await?;
-    client.execute("select authz.index_invalidate()", &[]).await.map_err(|e| format!("postgres: {e}"))?;
+    client.execute("select authz_sidecar.index_invalidate()", &[]).await.map_err(|e| format!("postgres: {e}"))?;
     Ok(())
 }

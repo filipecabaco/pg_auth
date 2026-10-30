@@ -22,7 +22,7 @@ within ~1-2x of the owner's statement: heap/index maintenance dominates (see "to
 
 ## pg_auth
 
-`authz.protect('app.documents', 'org', 'org_id', 'member', 'member')`: select, insert, update (USING and WITH
+`authz_internal.protect('app.documents', 'org', 'org_id', 'member', 'member')`: select, insert, update (USING and WITH
 CHECK) and delete policies, each `authz.permits(...)`. All four pg_auth variants returned the baseline's rows
 (default scale 500k, 3 reps, 2 CPU / 2 GB, indicative under load). Median ms:
 

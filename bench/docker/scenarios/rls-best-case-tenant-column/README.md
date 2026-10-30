@@ -38,7 +38,7 @@ tenant), which is a real cost of the "no custom claim" approach.
 
 ## What pg_auth does
 
-`authz.protect` on `tenant_id` (type `tenant`, relation `member`) and on `notes.owner_id` (type `account`,
+`authz_internal.protect` on `tenant_id` (type `tenant`, relation `member`) and on `notes.owner_id` (type `account`,
 relation `owner`; one tuple per user). Each subject has one tenant, so the engine lists one object and
 the plan is `tenant_id = ANY (InitPlan)` over the same indexes. Expect a gap of a sidecar round trip
 (or a cached answer) per statement plus planning time, and a sort on `recent_page` for the large tenant

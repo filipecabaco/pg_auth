@@ -1,7 +1,7 @@
 //! Relationship tables (sql/relationships.sql): the rows applications write that are
-//! relationships in the engine, recorded in authz.outbox by a trigger, delivered here in order.
+//! relationships in the engine, recorded in authz_internal.outbox by a trigger, delivered here in order.
 //!
-//! One sidecar delivers at a time (authz.outbox_claim takes an advisory lock for its
+//! One sidecar delivers at a time (authz_sidecar.outbox_claim takes an advisory lock for its
 //! transaction): it claims the oldest changes, applies them in the engine, and removes them by id
 //! in the same transaction, so a change is removed only once the engine has it. A batch that fails
 //! is rolled back and delivered again later; the engines' writes and deletes are idempotent. It
@@ -75,14 +75,14 @@ async fn deliver(url: &str, engine: &Engine, poll: Duration, delivered: &(impl F
 
 /// Deliver one batch: how many changes it settled (0: nothing to deliver, or another sidecar is
 /// delivering). A batch the engine refuses for good is delivered change by change: the changes it
-/// refuses are set aside with its reason (authz.outbox_failed), the others go on. After a
-/// delivery every backend forgets the answers it kept (authz.answers_changed, at commit).
+/// refuses are set aside with its reason (authz_sidecar.outbox_failed), the others go on. After a
+/// delivery every backend forgets the answers it kept (authz_sidecar.answers_changed, at commit).
 async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
     let tx = client.transaction().await.map_err(pg)?;
     let rows = tx
         .query(
-            "select id, op, object, relation, subject, expires_at, condition, condition_context from authz.outbox_claim($1, $2)",
+            "select id, op, object, relation, subject, expires_at, condition, condition_context from authz_sidecar.outbox_claim($1, $2)",
             &[&CLAIM, &engine.name()],
         )
         .await
@@ -121,13 +121,13 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
             (done, refused)
         }
     };
-    tx.execute("select authz.outbox_done($1)", &[&done]).await.map_err(pg)?;
+    tx.execute("select authz_sidecar.outbox_done($1)", &[&done]).await.map_err(pg)?;
     for (id, reason) in &refused {
         eprintln!("pg-auth-sidecar: relationship change {id} refused by the engine, set aside: {reason}");
-        tx.execute("select authz.outbox_failed($1, $2)", &[id, reason]).await.map_err(pg)?;
+        tx.execute("select authz_sidecar.outbox_failed($1, $2)", &[id, reason]).await.map_err(pg)?;
     }
     if !done.is_empty() {
-        tx.execute("select authz.answers_changed()", &[]).await.map_err(pg)?;
+        tx.execute("select authz_sidecar.answers_changed()", &[]).await.map_err(pg)?;
     }
     tx.commit().await.map_err(pg)?;
     let shown: Vec<String> = changes

@@ -1,5 +1,5 @@
 #!/usr/bin/env elixir
-# Attribute parity: rows protected by their attributes (authz.protect attributes =>) must show each
+# Attribute parity: rows protected by their attributes (authz_internal.protect attributes =>) must show each
 # principal exactly what Cerbos's CheckResources allows for those rows, through the compiled filter,
 # through one cached plan reused by every principal, and through the per-row policy. See
 # compare/README.md ("Attribute parity").
@@ -99,7 +99,7 @@ defmodule Attributes do
       Postgrex.query!(conn, "insert into items values #{values}", [])
     end
     attrs = Enum.map_join(@attributes, ", ", &"'#{&1}', #{&1}")
-    Postgrex.query!(conn, "select authz.protect('items', 'item', 'id', 'read', attributes => array[#{Enum.map_join(@attributes, ", ", &"'#{&1}'")}])", [])
+    Postgrex.query!(conn, "select authz_internal.protect('items', 'item', 'id', 'read', attributes => array[#{Enum.map_join(@attributes, ", ", &"'#{&1}'")}])", [])
     for sql <- ["create index on items (owner)", "grant select on items to reader", "analyze items"], do: Postgrex.query!(conn, sql, [])
     for [id, attr] <- Postgrex.query!(conn, "select id::text, jsonb_build_object(#{attrs})::text from items", []).rows, do: %{id: id, attr: JSON.decode!(attr)}
   end

@@ -1,6 +1,6 @@
 -- @set: pg_auth.sidecar_socket=/run/pg_auth/default.sock
 -- @set: pg_auth.permission_index=off
 -- pg_auth without the permission index: subjects with too many objects to list are checked with the engine (AuthzBatch).
-select authz.protect('app.documents', 'org', 'org_id', 'member');
-select authz.protect('app.comments', 'document', 'document_id', 'viewer');
-select authz.protect('app.attachments', 'comment', 'comment_id', 'viewer');
+select authz_internal.protect('app.documents', 'org', 'org_id', 'member');
+select authz_internal.protect('app.comments', 'document', 'document_id', 'viewer');
+select authz_internal.protect('app.attachments', 'comment', 'comment_id', 'viewer');

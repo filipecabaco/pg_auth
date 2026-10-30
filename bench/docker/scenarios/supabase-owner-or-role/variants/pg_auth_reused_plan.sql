@@ -4,5 +4,5 @@
 -- pg_auth with a cached generic plan built for the selective subject and reused by each subject
 -- (prepared statements across requests on a pooled connection).
 select authz.configure(subject => 'jwt', claims_setting => 'request.jwt.claims', claim => 'sub');
-select authz.protect('app.todos', 'account', 'owner_id', 'viewer');
-select authz.protect('app.todo_items', 'account', 'owner_id', 'viewer');
+select authz_internal.protect('app.todos', 'account', 'owner_id', 'viewer');
+select authz_internal.protect('app.todo_items', 'account', 'owner_id', 'viewer');

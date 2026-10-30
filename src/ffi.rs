@@ -248,13 +248,13 @@ pub fn read_latest<A: pgrx::FromDatum + pgrx::IntoDatum>(query: &str) -> Option<
 
 thread_local! {
     /// Bumped when pg_auth's configuration may have changed: a relcache invalidation of
-    /// authz.settings, which statement triggers on authz.settings and authz.hierarchies send
+    /// authz_internal.settings, which statement triggers on authz_internal.settings and authz_internal.hierarchies send
     /// (`invalidate_config`). Caches of the configuration hold while it is unchanged.
     static CONFIG_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    /// authz.settings, once known; until then every invalidation counts
+    /// authz_internal.settings, once known; until then every invalidation counts
     static CONFIG_REL: std::cell::Cell<pg_sys::Oid> = const { std::cell::Cell::new(pg_sys::InvalidOid) };
     /// Bumped when relationships changed in the engine: a sidecar delivered relationship tables'
-    /// changes and sent a relcache invalidation of authz.outbox (`invalidate_answers`). Answers
+    /// changes and sent a relcache invalidation of authz_internal.outbox (`invalidate_answers`). Answers
     /// kept across transactions hold while it is unchanged.
     static ANSWERS_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static ANSWERS_REL: std::cell::Cell<pg_sys::Oid> = const { std::cell::Cell::new(pg_sys::InvalidOid) };
@@ -285,9 +285,9 @@ unsafe extern "C-unwind" fn config_invalidated(_arg: pg_sys::Datum, relid: pg_sy
 /// while it loads makes the next use load it again.
 pub fn config_generation() -> u64 {
     if CONFIG_REL.get() == pg_sys::InvalidOid {
-        // SAFETY: syscache lookups by name; missing_ok, so no error when authz does not exist.
+        // SAFETY: syscache lookups by name; missing_ok, so no error when authz_internal does not exist.
         let rel = unsafe {
-            let ns = pg_sys::get_namespace_oid(c"authz".as_ptr(), true);
+            let ns = pg_sys::get_namespace_oid(c"authz_internal".as_ptr(), true);
             if ns == pg_sys::InvalidOid { pg_sys::InvalidOid } else { pg_sys::get_relname_relid(c"settings".as_ptr(), ns) }
         };
         CONFIG_REL.set(rel);
@@ -295,11 +295,11 @@ pub fn config_generation() -> u64 {
     CONFIG_GENERATION.get()
 }
 
-/// authz's relation `name`, if the extension is installed.
+/// authz_internal's relation `name`, if the extension is installed.
 fn authz_relation(name: &CStr) -> pg_sys::Oid {
-    // SAFETY: syscache lookups by name; missing_ok, so no error when authz does not exist
+    // SAFETY: syscache lookups by name; missing_ok, so no error when authz_internal does not exist
     unsafe {
-        let ns = pg_sys::get_namespace_oid(c"authz".as_ptr(), true);
+        let ns = pg_sys::get_namespace_oid(c"authz_internal".as_ptr(), true);
         if ns == pg_sys::InvalidOid { pg_sys::InvalidOid } else { pg_sys::get_relname_relid(name.as_ptr(), ns) }
     }
 }

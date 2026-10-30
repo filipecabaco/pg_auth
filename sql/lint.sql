@@ -1,5 +1,5 @@
 -- authz.lint(): row level security problems in this database, most severe first.
---   P0xx  found by analysing each policy expression (authz.lint_policies, src/lint.rs)
+--   P0xx  found by analysing each policy expression (authz_internal.lint_policies, src/lint.rs)
 --   R0xx  found from the catalog
 create function authz.lint()
 returns table (severity text, code text, object text, message text, hint text)
@@ -11,12 +11,12 @@ language sql stable as $$
         where n.nspname not in ('pg_catalog', 'information_schema') and n.nspname not like 'pg\_%'
     ),
     findings as (
-        select * from authz.lint_policies()
+        select * from authz_internal.lint_policies()
 
         union all
         select 'info', 'R001', c.oid::regclass::text,
                'row level security is enabled but there are no policies: non-owners see no rows',
-               'add policies, or protect the table with authz.protect()'
+               'add policies, or protect the table with authz_internal.protect()'
         from user_tables c
         where c.relrowsecurity and c.relkind in ('r', 'p')
           and not exists (select 1 from pg_policy p where p.polrelid = c.oid)
@@ -25,7 +25,7 @@ language sql stable as $$
         select 'high', 'R002', ch.oid::regclass::text,
                format('partition of %s without its own policies: querying it directly skips the parent''s policies',
                       par.oid::regclass),
-               'enable row level security and copy the policies to every partition (authz.protect does this)'
+               'enable row level security and copy the policies to every partition (authz_internal.protect does this)'
         from pg_inherits i
         join user_tables par on par.oid = i.inhparent
         join pg_class ch on ch.oid = i.inhrelid
@@ -60,3 +60,5 @@ language sql stable as $$
     from findings f
     order by case f.severity when 'high' then 0 when 'medium' then 1 else 2 end, f.object, f.code
 $$;
+
+revoke execute on function authz.lint() from public;

@@ -87,7 +87,7 @@ each run, so policies can read `current_setting('request.uid')`. A subject with 
 also gets them as `request.jwt.claims` (JSON; `sub` defaults to the subject id), as PostgREST sets
 them on Supabase, so policies can call `auth.jwt()` / `auth.uid()`. pg_auth variants read the same
 claims with `select authz.configure(subject => 'jwt', claims_setting => 'request.jwt.claims',
-claim => 'sub')`; `authz.settings` outlives a variant, so every pg_auth variant of such a
+claim => 'sub')`; `authz_internal.settings` outlives a variant, so every pg_auth variant of such a
 scenario calls `authz.configure` itself (`subject => 'guc'` to go back).
 
 **schema.sql** gets `-v scale=<N>` (use `:scale`; derive other sizes with `select ... \gset`).

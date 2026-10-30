@@ -21,7 +21,7 @@ Limit: pg_dump/COPY/replication paths need external tools and are not reproduced
 ## pg_auth
 
 Variants: `pg_auth` (naive layout: matview kept, BYPASSRLS role kept, partition created after `protect`),
-`pg_auth_no_force` (`authz.protect(..., force => false)`), `pg_auth_table_not_matview` (matview replaced by a table
+`pg_auth_no_force` (`authz_internal.protect(..., force => false)`), `pg_auth_table_not_matview` (matview replaced by a table
 protected on `org_id`, `app_bypass` made NOBYPASSRLS, like best_practice_rls). Evidence: result hashes vs
 no_rls_baseline (`--scale 2000`).
 

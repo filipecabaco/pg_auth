@@ -26,7 +26,7 @@ the penalty of role alternation (alt_part ~170 ms) but makes `same_*` slower (~1
 
 ## pg_auth
 
-Policies without `TO` (`authz.protect` on `app.documents` and `app.documents_p`) apply to `bench_a` and `bench_b`;
+Policies without `TO` (`authz_internal.protect` on `app.documents` and `app.documents_p`) apply to `bench_a` and `bench_b`;
 the subject (`pg_auth.subject_id`) is set before the role switch and survives it, so alternating roles keep the
 same subject. All pg_auth variants returned the baseline's rows. Median ms for the 500-iteration loops (default
 scale 50k, 3 reps, 2 CPU / 2 GB, indicative under load):

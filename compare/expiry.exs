@@ -1,5 +1,5 @@
 #!/usr/bin/env elixir
-# Relationships that end (authz.relate expires_column), end to end on a real OpenFGA and SpiceDB:
+# Relationships that end (authz_internal.relate expires_column), end to end on a real OpenFGA and SpiceDB:
 # a share shows until its end and not after (and how long after its end it took to go), an end
 # moved later keeps it, one moved earlier ends it, a renewal brings it back, and the expiries the
 # outbox holds are not changes waiting. SpiceDB also gets the end as the relationship's
@@ -75,9 +75,9 @@ defmodule Expiry do
     Postgrex.query!(conn, "select authz.set_rules($1, $2, $3)", [engine, name, rules])
     eventually(fn -> Postgrex.query!(conn, "select pushed_at is not null from authz.rules()", []).rows == [[true]] end) || raise("rules not pushed")
     run_all(conn, [
-      "select authz.relate('app.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
+      "select authz_internal.relate('app.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
                            subject_type => 'user', subject_column => 'user_id', expires_column => 'expires_at')",
-      "select authz.protect('app.docs', type => 'doc', id => 'id', read => 'viewer')"
+      "select authz_internal.protect('app.docs', type => 'doc', id => 'id', read => 'viewer')"
     ])
   end
 
@@ -132,7 +132,7 @@ defmodule Expiry do
   end
 
   defp diagnose(conn, stack) do
-    for q <- ["select engine, name, version, pushed_at, error from authz.rules()", "select * from authz.outbox"],
+    for q <- ["select engine, name, version, pushed_at, error from authz.rules()", "select * from authz_internal.outbox"],
         do: IO.puts(:stderr, "---- #{q}\n#{inspect(Postgrex.query!(conn, q, []).rows, limit: 20)}")
     for {c, log} <- Stack.logs(stack), String.contains?(c, "sidecar"), do: IO.puts(:stderr, "---- #{c}\n#{String.slice(log, -2500, 2500)}")
   end

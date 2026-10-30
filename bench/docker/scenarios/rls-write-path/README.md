@@ -31,7 +31,7 @@ Writes pay for every index: three on tasks, one of them partial and affected by 
 
 ## How pg_auth enforces writes (docs/design.md, sql/authz.sql)
 
-`authz.protect(table, type, column, read_permission, write_permission)` installs four policies:
+`authz_internal.protect(table, type, column, read_permission, write_permission)` installs four policies:
 `pg_auth_select` (`authz.permits(type, read, col::text)`), and, when a write permission is given,
 `pg_auth_insert ... WITH CHECK`, `pg_auth_update USING + WITH CHECK`, `pg_auth_delete USING`, all with
 `authz.permits(type, write, col::text)`. So INSERT has a WITH CHECK equivalent, evaluated per new row
@@ -43,7 +43,7 @@ one round trip per distinct id cached for the transaction).
 
 ## Finding: protecting by the row's own id cannot authorise INSERT
 
-The natural pg_auth modelling of "each row is an object" is `authz.protect('app.drafts', 'draft', 'id', ...)`
+The natural pg_auth modelling of "each row is an object" is `authz_internal.protect('app.drafts', 'draft', 'id', ...)`
 with a tuple `draft:<id>#tenant@tenant:<t>` per row. An INSERT is checked against `draft:<new id>`, whose
 tuple does not exist yet (and cannot be written atomically with the row: "Writes to the engine and to the
 table do not commit atomically", design.md). The check is denied, while RLS (`tenant_id = claim`) allows it.

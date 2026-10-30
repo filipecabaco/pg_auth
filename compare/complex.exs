@@ -1,13 +1,13 @@
 #!/usr/bin/env elixir
 # Complex setups end to end, as a backend-less app would write them: the engines' published shapes
 # (OpenFGA's sample stores, AuthZed's schema examples, Cerbos's demo apps), set up with
-# authz.relate and authz.protect, checked through what each user sees and may write. See
+# authz_internal.relate and authz_internal.protect, checked through what each user sees and may write. See
 # docs/proposals/setting-rules.md for where these come from and what they cannot yet express.
 #
 #   github  teams inside teams, repo access to a user or a team, the org owner sees every repo, a
 #           ban (but not), push needed to update                          OpenFGA, SpiceDB
 #   drive   nested groups, viewers inherited down a folder tree, a public link (user:*), set up by one
-#           authz.setup document
+#           authz_internal.setup document
 #                                                                         OpenFGA, SpiceDB
 #   expense derived roles (owner, finance), an amount limit on approval, a tenant's scoped deny, camelCase attributes
 #                                                                         Cerbos
@@ -62,7 +62,7 @@ defmodule Complex do
       define viewer: viewer_grant or viewer from folder
   """
 
-  # Drive's setup as one document, applied with authz.setup
+  # Drive's setup as one document, applied with authz_internal.setup
   @drive_setup %{
     relationships: [
       %{table: "app.group_members", name: "user", object: %{type: "group", column: "group_id"}, relation: "member",
@@ -166,16 +166,16 @@ defmodule Complex do
       "insert into app.repos select i, case when i = 5 then 2 else 1 end, 'repo ' || i from generate_series(1, 5) i",
       "insert into app.repo_access values (1, 'team', 'platform', 'reader'), (2, 'user', 'bob', 'writer'), (3, 'team', 'core', 'admin'), (5, 'user', 'alice', 'reader')",
       "insert into app.repo_bans values (3, 'alice')",
-      "select authz.relate('app.org_members', object_type => 'organization', object_column => 'org_id', relation_column => 'role', subject_type => 'user', subject_column => 'user_id')",
-      "select authz.relate('app.team_members', name => 'user', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'user', subject_column => 'user_id')",
-      "select authz.relate('app.team_members', name => 'team', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'team', subject_column => 'child_team', subject_relation => 'member')",
-      "select authz.relate('app.repos', object_type => 'repo', object_column => 'id', relation => 'organization', subject_type => 'organization', subject_column => 'org_id')",
+      "select authz_internal.relate('app.org_members', object_type => 'organization', object_column => 'org_id', relation_column => 'role', subject_type => 'user', subject_column => 'user_id')",
+      "select authz_internal.relate('app.team_members', name => 'user', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'user', subject_column => 'user_id')",
+      "select authz_internal.relate('app.team_members', name => 'team', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'team', subject_column => 'child_team', subject_relation => 'member')",
+      "select authz_internal.relate('app.repos', object_type => 'repo', object_column => 'id', relation => 'organization', subject_type => 'organization', subject_column => 'org_id')",
       # a declaration per kind of grantee, and only the roles the model has
-      "select authz.relate('app.repo_access', name => 'user', filter => 'grantee_kind = ''user''', object_type => 'repo', object_column => 'repo_id', relation_column => 'role', subject_type => 'user', subject_column => 'grantee_id', relations => array['reader', 'writer', 'admin'])",
-      "select authz.relate('app.repo_access', name => 'team', filter => 'grantee_kind = ''team''', object_type => 'repo', object_column => 'repo_id', relation_column => 'role', subject_type => 'team', subject_column => 'grantee_id', subject_relation => 'member', relations => array['reader', 'writer', 'admin'])",
-      "select authz.relate('app.repo_bans', object_type => 'repo', object_column => 'repo_id', relation => 'banned', subject_type => 'user', subject_column => 'user_id')",
+      "select authz_internal.relate('app.repo_access', name => 'user', filter => 'grantee_kind = ''user''', object_type => 'repo', object_column => 'repo_id', relation_column => 'role', subject_type => 'user', subject_column => 'grantee_id', relations => array['reader', 'writer', 'admin'])",
+      "select authz_internal.relate('app.repo_access', name => 'team', filter => 'grantee_kind = ''team''', object_type => 'repo', object_column => 'repo_id', relation_column => 'role', subject_type => 'team', subject_column => 'grantee_id', subject_relation => 'member', relations => array['reader', 'writer', 'admin'])",
+      "select authz_internal.relate('app.repo_bans', object_type => 'repo', object_column => 'repo_id', relation => 'banned', subject_type => 'user', subject_column => 'user_id')",
       # pushing updates a repo; deleting one takes more
-      "select authz.protect('app.repos', type => 'repo', id => 'id', read => 'can_read', write => 'can_push', on_delete => 'can_delete')"
+      "select authz_internal.protect('app.repos', type => 'repo', id => 'id', read => 'can_read', write => 'can_push', on_delete => 'can_delete')"
     ])
     delivered!(conn)
     repos = &visible(conn, %{sub: &1}, "select id from app.repos order by id")
@@ -216,8 +216,8 @@ defmodule Complex do
       "insert into app.docs values (1, 1, 'handbook'), (2, 2, 'design'), (3, 3, 'secrets'), (4, 1, 'press kit')",
       "insert into app.folder_shares values (2, null, 'engineers'), (3, 'frank', null)",
       "insert into app.doc_shares values (4, 'public', null)",
-      # the whole setup as one document (authz.setup), where github above uses the calls
-      "select authz.setup('#{JSON.encode!(@drive_setup)}')"
+      # the whole setup as one document (authz_internal.setup), where github above uses the calls
+      "select authz_internal.setup('#{JSON.encode!(@drive_setup)}')"
     ])
     delivered!(conn)
     docs = &visible(conn, %{sub: &1}, "select id from app.docs order by id")
@@ -244,7 +244,7 @@ defmodule Complex do
       "grant select, insert, update, delete on all tables in schema app to app_user",
       "insert into app.expenses values (1, 'ann', 500, 'open'), (2, 'ann', 5000, 'open'), (3, 'ben', 200, 'open'), (4, 'ann', 100, 'flagged')",
       # the policies say ownerId, as Cerbos's demos do; the column is owner
-      "select authz.protect('app.expenses', type => 'expense', id => 'id', read => 'view', write => 'approve', attributes => array['amount', 'status'], attribute_map => '{\"ownerId\": \"owner\"}')"
+      "select authz_internal.protect('app.expenses', type => 'expense', id => 'id', read => 'view', write => 'approve', attributes => array['amount', 'status'], attribute_map => '{\"ownerId\": \"owner\"}')"
     ])
     ann = %{sub: "ann", role: "user", department: "sales", tenant: "acme"}
     ben = %{sub: "ben", role: "user", department: "sales", tenant: "acme"}
@@ -295,7 +295,7 @@ defmodule Complex do
     end
   end
 
-  defp delivered?(conn), do: Postgrex.query!(conn, "select count(*) from authz.outbox", []).rows == [[0]]
+  defp delivered?(conn), do: Postgrex.query!(conn, "select count(*) from authz_internal.outbox", []).rows == [[0]]
   defp delivered!(conn), do: eventually(fn -> delivered?(conn) end) || raise("the outbox was not delivered")
 
   # as the application's role, with these token claims (as PostgREST sets them)

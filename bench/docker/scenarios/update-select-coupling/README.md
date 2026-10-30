@@ -23,7 +23,7 @@ What to look at: errors shown as `error: ...` cells in the timing table and the 
 
 ## pg_auth
 
-`authz.protect('app.documents', 'org', 'org_id', 'member', 'member')` installs separate select, insert, update and
+`authz_internal.protect('app.documents', 'org', 'org_id', 'member', 'member')` installs separate select, insert, update and
 delete policies from the read and write permission. Variants: `pg_auth`, `pg_auth_read_only` (protect without a
 write permission). Hashes vs no_rls_baseline (`--scale 5000`, both subjects):
 

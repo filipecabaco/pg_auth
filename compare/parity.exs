@@ -174,9 +174,9 @@ defmodule Parity do
           "insert into public.documents select i, i % #{dim.folders}, 'doc ' || i from generate_series(0, #{dim.docs - 1}) i",
           "insert into public.comments select d * 3 + k, d::text, 'c' from generate_series(0, #{dim.docs - 1}) d, generate_series(0, d % 3) k",
           "insert into public.comments values (-1, '999999', 'orphan')",
-          "select authz.protect('public.folders', 'folder', 'id', 'viewer')",
-          "select authz.protect('public.documents', 'document', 'id', 'can_view')",
-          "select authz.protect('public.comments', 'document', 'document_id', 'can_edit')",
+          "select authz_internal.protect('public.folders', 'folder', 'id', 'viewer')",
+          "select authz_internal.protect('public.documents', 'document', 'id', 'can_view')",
+          "select authz_internal.protect('public.comments', 'document', 'document_id', 'can_edit')",
           "create role parity_user nologin",
           "grant select on all tables in schema public to parity_user",
           "analyze"
@@ -271,7 +271,7 @@ defmodule Parity do
     r
   end
 
-  defp fresh_sets(ctx), do: hd(hd(q!(ctx.conn, "select count(*) from authz.permission_sets where status = 'fresh'").rows))
+  defp fresh_sets(ctx), do: hd(hd(q!(ctx.conn, "select count(*) from authz_internal.permission_sets where status = 'fresh'").rows))
 
   defp wait_until(f, ms) do
     cond do
@@ -335,7 +335,7 @@ defmodule Parity do
           "update public.folder_tree t set parent_id = v.parent from (values #{values}) v(id, parent) where t.id = v.id",
           "create table public.folder_files (id int4 primary key, folder_id int8 not null, name text)",
           "insert into public.folder_files select f.id * 2 + k, f.id, 'file' from public.folders f, generate_series(0, 1) k",
-          "select authz.protect('public.folder_files', 'folder', 'folder_id', 'viewer', hierarchy => 'public.folder_tree(id, parent_id)', direct => 'viewer_direct')",
+          "select authz_internal.protect('public.folder_files', 'folder', 'folder_id', 'viewer', hierarchy => 'public.folder_tree(id, parent_id)', direct => 'viewer_direct')",
           "grant select on public.folder_files to parity_user"
         ],
         do: q!(ctx.conn, sql)
@@ -365,7 +365,7 @@ defmodule Parity do
       )
       |> collect()
 
-    q!(ctx.conn, "select authz.drop_hierarchy('folder', 'viewer')")
+    q!(ctx.conn, "select authz_internal.drop_hierarchy('folder', 'viewer')")
     results
   end
 

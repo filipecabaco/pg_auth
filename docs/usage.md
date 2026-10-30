@@ -23,6 +23,26 @@ planner hook shapes each query so that checking is cheap. Postgres 15 to 18. How
 `select * from authz.status()` shows the engine, the socket, the subject source and every
 protected table.
 
+### Who may use what
+
+pg_auth keeps its objects in three schemas, one per kind of user, and makes two roles to grant
+them (roles belong to the cluster: a second database finds them, and `drop extension` leaves them):
+
+| schema | holds | reached by |
+|---|---|---|
+| `authz` | what queries call (`permits` and the helpers the planner writes into them), and what people call: `set_rules`, `configure`, `why`, `doctor`, `status`, `check`, `lint`, `can`, `current_subject`, `explain` | every role; its admin functions only by `authz_admin` |
+| `authz_sidecar` | the sidecar's functions: claiming relationship changes, pushing rules, filling the permission index | `authz_sidecar` |
+| `authz_internal` | the tables, and the lower-level setup the notes compile into (`protect`, `relate`, `setup`, section 4) | `authz_admin` |
+
+```sql
+grant authz_admin to migrations;                                       -- stores the rules, configures pg_auth
+create role sidecar login password '...' in role authz_sidecar;        -- PG_AUTH_DATABASE_URL's login
+```
+
+A function added to `authz_internal` or `authz_sidecar` is closed until a role is granted it. The
+admin functions run as their caller, so protecting a table still needs owning it: `authz_admin`
+cannot add policies to someone else's table.
+
 ## 2. Who is asking
 
 ```sql
@@ -228,7 +248,7 @@ shared_with from shares(doc_id).user_id                 -- document:<doc_id>#sha
   can_read from org`). SpiceDB only takes writes to relations, and the model reads the same in
   OpenFGA.
 - **When it shows.** A trigger records each insert, delete and relationship-changing update in
-  `authz.outbox` with the write itself, so a rolled-back write never reaches the engine. The
+  `authz_internal.outbox` with the write itself, so a rolled-back write never reaches the engine. The
   sidecar delivers it on commit, and every backend asks again: the change shows within tens of
   milliseconds (`compare/relationships.exs`).
 - **Grants that end.** `until expires_at`: the sidecar deletes the relationship from the engine
@@ -293,10 +313,10 @@ shared_with from shares(doc_id).user_id                 -- document:<doc_id>#sha
 
 ```sql
 select engine, name, version, pushed_at, error from authz.rules();   -- the versions in force
-select jsonb_pretty(authz.setup());                                  -- what the notes set up
+select jsonb_pretty(authz_internal.setup());                         -- what the notes set up
 ```
 
-- **Versions.** Every change is a new version in `authz.rules`, with who stored it and when; the
+- **Versions.** Every change is a new version in `authz_internal.rules`, with who stored it and when; the
   same text again is not one. `authz.rules()` shows the latest of each, `body` included. A
   migration carries the rules with the tables they protect, and they are reviewed as written.
 - **What changes.** A new version sets up what its notes say: a note removed removes its
@@ -343,12 +363,12 @@ select jsonb_pretty(authz.setup());                                  -- what the
 
 Rules kept in the engine, or in a policy directory or git store Cerbos reads, stay there: pg_auth
 pushes only what `authz.set_rules` stored. The notes are then written as calls, the lower level the
-notes compile into. `authz.setup(jsonb)` takes the whole setup as one document, applies it in one
-transaction and keeps every version (`authz.setups`); `authz.protect` and `authz.relate` declare
+notes compile into, in `authz_internal` (for `authz_admin`). `authz_internal.setup(jsonb)` takes the whole setup as one document, applies it in one
+transaction and keeps every version (`authz_internal.setups`); `authz_internal.protect` and `authz_internal.relate` declare
 one table at a time:
 
 ```sql
-select authz.setup($${
+select authz_internal.setup($${
   "subject": {"source": "jwt", "claim": "sub"},
   "relationships": [
     {"table": "app.memberships", "object": {"type": "org", "column": "org_id"},
@@ -362,8 +382,8 @@ select authz.setup($${
      "select": "can_read", "write": "can_manage"}]
 }$$);
 
-select authz.protect('app.docs', type => 'doc', id => 'id', read => 'viewer', write => 'editor');
-select authz.relate('app.memberships', object_type => 'org', object_column => 'org_id',
+select authz_internal.protect('app.docs', type => 'doc', id => 'id', read => 'viewer', write => 'editor');
+select authz_internal.relate('app.memberships', object_type => 'org', object_column => 'org_id',
                     relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
 ```
 
@@ -378,7 +398,7 @@ select authz.relate('app.memberships', object_type => 'org', object_column => 'o
 - What the previous document declared and this one does not is removed. Unknown keys fail, naming
   what the place takes. With rules stored but no notes in them, a setup written this way is left
   as it is; with notes, the notes' setup replaces it.
-- `authz.unbind(table)` removes pg_auth's policies from a table, `authz.unrelate(table)` stops
+- `authz_internal.unbind(table)` removes pg_auth's policies from a table, `authz_internal.unrelate(table)` stops
   delivering its rows. Store the rules before declaring tables that write their relations: the
   engine refuses a relationship whose relation its model does not have yet.
 

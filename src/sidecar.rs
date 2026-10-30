@@ -458,7 +458,7 @@ fn context_held() -> String {
 }
 
 /// Answers kept across transactions are dropped once relationships changed in the engine (a
-/// sidecar delivered relationship tables' changes: authz.answers_changed).
+/// sidecar delivered relationship tables' changes: authz_sidecar.answers_changed).
 fn forget_kept_if_relationships_changed() {
     let generation = crate::ffi::answers_generation();
     if KEPT_UNDER.get() != generation {
@@ -797,7 +797,7 @@ pub fn note_planned_shape(object_type: &str, permission: &str, shape: &str) {
 }
 
 /// The current subject's plan skeleton: from memory while the subject is resolved, else through
-/// the security definer function (the caller never reads authz.settings).
+/// the security definer function (the caller never reads authz_internal.settings).
 pub fn current_shape(object_type: &str, permission: &str) -> Option<String> {
     if crate::subject::resolved() {
         return crate::access::resource_plan_now(object_type, permission);

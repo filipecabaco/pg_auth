@@ -49,7 +49,7 @@ if [ ! -S /run/pg_auth/cerbos.sock ]; then
     until [ "$($PSQL -d $db -c 'select count(*) from authz.rules() where pushed_at is null')" = 0 ]; do sleep 0.3; done
   done
   for db in openfga spicedb; do
-    until [ "$($PSQL -d $db -c 'select count(*) from authz.outbox')" = 0 ]; do sleep 0.3; done
+    until [ "$($PSQL -d $db -c 'select count(*) from authz_internal.outbox')" = 0 ]; do sleep 0.3; done
   done
   until [ -S /run/pg_auth/cerbos.sock ]; do sleep 0.3; done
 

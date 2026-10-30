@@ -49,10 +49,15 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
 ```
 
 - **Binding.** A note in the engine's rules (`# pg_auth: protects docs (org_id): read view, write
-  edit`, in the `org` type), or the lower-level `authz.protect('public.docs', 'org', 'org_id',
+  edit`, in the `org` type), or the lower-level `authz_internal.protect('public.docs', 'org', 'org_id',
   'view', 'edit')` it compiles into (table, object type, id column, read permission, optional write
   permission), installs the policy `authz.permits('<type>', '<permission>', column::text)` on the table and on
   every partition, now and later.
+- **Schemas and roles.** `authz` holds what every role reaches: the functions policies and the
+  planner hook call (run as the querying role), and the user-facing ones, whose admin functions
+  are granted to `authz_admin`. `authz_sidecar` holds the sidecar's functions (role
+  `authz_sidecar`), `authz_internal` the tables and the lower-level setup (role `authz_admin`).
+  Access is decided per schema (sql/grants.sql), so a new internal function is closed by default.
 - **Sidecar.** A separate process next to Postgres that speaks one small protocol (`list`,
   `check`, `fill`, `ping`) and translates it to an engine's API: OpenFGA's or SpiceDB's, chosen by
   its configuration (§4). Network calls and engine credentials stay outside the database. The
@@ -60,16 +65,16 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
 - **Subject.** Who is asking comes from a superuser-only GUC (granted per API role), a JWT claim,
   or a bearer token verified in Postgres against a JWKS (`authz.configure`). The planner and the
   scans run as the querying role, so they resolve it through the security definer functions
-  (the role never reads `authz.settings`, which may hold secrets). The answer is kept, across
+  (the role never reads `authz_internal.settings`, which may hold secrets). The answer is kept, across
   transactions too, while the request settings it read are unchanged, the configuration has not
   changed and a verified token has not expired, so a returning subject costs no query at all
   (§5, configuration).
 - **Relationship tables** (sql/relationships.sql, sidecar `outbox.rs`) are the other direction:
   rows the application writes that are relationships in the engine. A row trigger records each
-  change in `authz.outbox` in the writing transaction; the sidecar claims the oldest changes (an
+  change in `authz_internal.outbox` in the writing transaction; the sidecar claims the oldest changes (an
   advisory lock: one sidecar delivers, in order), writes them to the engine idempotently, and
-  removes them by id in one transaction, which also calls `authz.answers_changed()`: a relcache
-  invalidation of `authz.outbox` that makes every backend drop the answers it kept across
+  removes them by id in one transaction, which also calls `authz_sidecar.answers_changed()`: a relcache
+  invalidation of `authz_internal.outbox` that makes every backend drop the answers it kept across
   transactions. Reads then skip the engine's caches (OpenFGA's `HIGHER_CONSISTENCY` for 10 s,
   SpiceDB at least as fresh as the write's ZedToken), so a grant or a revocation shows within tens
   of milliseconds of its commit. A change the engine refuses for good is set aside with its reason,
@@ -121,7 +126,7 @@ since AuthzBatch does not do EvalPlanQual rechecks. Reads that use system column
 too, since batched rows do not carry them.
 
 **Permission index** (`sql/index.sql`, `docs/proposals/permission-index.md`). For a subject with
-too many objects to list, pg_auth first looks for the subject's fresh set in `authz.permitted`
+too many objects to list, pg_auth first looks for the subject's fresh set in `authz_internal.permitted`
 (the index functions resolve the current subject themselves, so no one can read or probe another
 subject's set). It probes each batch's ids by primary key, and once a transaction has probed an
 eighth of the set it loads the whole set into memory: a primary key lookup costs one probe, a
@@ -221,7 +226,7 @@ the comparison waits for the end of the next statement. `pg_auth.replan_on_bread
 plans as built (parity's cached-plan modes do, to check those answers).
 
 **Attribute rules** (docs/proposals/cerbos.md). A table protected by its rows' attributes
-(`authz.protect(..., attributes => array[...])`, for an engine that decides on them: Cerbos)
+(`authz_internal.protect(..., attributes => array[...])`, for an engine that decides on them: Cerbos)
 has the policy `authz.permits_resource(kind, action, id::text, jsonb_build_object(...))`. The
 engine's plan for the subject (always, never, or a condition on the attributes) is compiled into
 a filter on the row's columns, which indexes and partition pruning serve; each of the plan's
@@ -249,7 +254,7 @@ saying, before running, whether a table will be answered from the index or from 
 
 **Declared hierarchies** (`sql/hierarchy.sql`). When a permission is inherited down a tree the
 app already stores (`viewer: viewer_direct or viewer from parent`, with the parent edge being a
-folder's `parent_id`), `authz.protect(..., hierarchy => 'app.folders(id, parent_id)', direct
+folder's `parent_id`), `authz_internal.protect(..., hierarchy => 'app.folders(id, parent_id)', direct
 => 'viewer_direct')` keeps a transitive closure of that table, maintained by triggers on it, as
 Zanzibar's Leopard does. The engine is then asked only for the subject's direct grants, usually a
 handful even for a subject who sees most of the tree, and Postgres expands them. A small
@@ -309,9 +314,9 @@ conditional is denied. Subjects may be usersets (`group:eng#member`).
   Writes to the engine and to the table do not commit atomically. The sidecar refreshes a list
   answered from its cache past half its TTL in the background, so a subject asking steadily
   never waits on the engine and no answer is older than the TTL.
-- **Configuration is kept per backend.** `authz.settings`, the resolved subject (while the
+- **Configuration is kept per backend.** `authz_internal.settings`, the resolved subject (while the
   request settings it came from are unchanged) and the declared hierarchies are kept across
-  transactions; statement triggers on `authz.settings` and `authz.hierarchies` send a relcache
+  transactions; statement triggers on `authz_internal.settings` and `authz_internal.hierarchies` send a relcache
   invalidation that makes every backend reload them once the change commits (with the latest
   snapshot, whatever the isolation level). A signed token without `exp` is rejected.
 - **Declared hierarchies trust Postgres's tree.** For a declared permission the app's table, not

@@ -1,4 +1,4 @@
-//! `authz.lint_policies()`: static analysis of every row level security policy in the database.
+//! `authz_internal.lint_policies()`: static analysis of every row level security policy in the database.
 //!
 //! Each policy's USING / WITH CHECK expression is read as text (`pg_node_tree`) and parsed with
 //! `nodetree`, so the analysis never touches Postgres memory. It looks for the patterns in
@@ -24,7 +24,7 @@ const RTE_RELATION: i64 = 0;
 
 type Finding = (String, String, String, String, String);
 
-#[pg_extern(stable)]
+#[pg_extern(stable, schema = "authz_internal")]
 fn lint_policies() -> TableIterator<
     'static,
     (name!(severity, String), name!(code, String), name!(object, String), name!(message, String), name!(hint, String)),
@@ -220,7 +220,7 @@ fn report(policy: &str, a: &Analysis, out: &mut Vec<Finding>) {
                 "P001",
                 policy,
                 format!("{name} ({lang}{}) runs once for every row", if secdef { ", security definer" } else { "" }),
-                "compute the allowed set once, e.g. col = ANY ((select array(...))), or protect the table with authz.bind()",
+                "compute the allowed set once, e.g. col = ANY ((select array(...))), or protect the table with authz_internal.bind()",
             ));
         } else if !uses_row && volatility != "i" {
             let jwt = name.starts_with("current_setting") || name.contains("jwt") || name.contains("uid");

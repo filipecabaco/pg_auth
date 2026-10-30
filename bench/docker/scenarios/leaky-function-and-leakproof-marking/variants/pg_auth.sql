@@ -3,4 +3,4 @@
 alter function app.spy(int) not leakproof;
 alter function app.spy_i(int) not leakproof;
 alter function app.to_int(text) not leakproof;
-select authz.protect('app.docs', 'org', 'org_id', 'member');
+select authz_internal.protect('app.docs', 'org', 'org_id', 'member');

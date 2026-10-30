@@ -26,7 +26,7 @@ as `error: ...` in the pivot table, not in the consistency list.
 ## pg_auth
 
 Variants `pg_auth` (functions not leakproof) and `pg_auth_leakproof` (functions marked LEAKPROOF by a
-superuser, as in `naive_rls`). `authz.protect('app.docs', 'org', 'org_id', 'member')`; subject `pg_auth.subject_id`.
+superuser, as in `naive_rls`). `authz_internal.protect('app.docs', 'org', 'org_id', 'member')`; subject `pg_auth.subject_id`.
 pg_auth installs an ordinary policy and only rewrites it into a filter inside the security quals
 (docs/design.md section 3: "RLS's ordering still keeps non-leakproof user functions away from rows the subject may
 not see"), so Postgres's own barrier rules apply unchanged.

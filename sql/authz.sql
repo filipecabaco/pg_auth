@@ -3,12 +3,18 @@
 -- Postgres stores no relationships and decides nothing. The source-of-truth engine (OpenFGA or
 -- SpiceDB) answers through pg-auth-sidecar (sidecar/query), which the extension asks over a local
 -- socket (src/sidecar.rs):
---   authz.bindings      protected table + column (or key expression) -> object_type + permission
---   authz.settings      how the current subject is identified
+--   authz_internal.bindings      protected table + column (or key expression) -> object_type + permission
+--   authz_internal.settings      how the current subject is identified
 -- A bound table gets the policy authz.permits(type, permission, col::text). The planner hook
 -- (src/rewrite/guard.rs) turns it into an indexable filter when the subject's allowed set is small.
+--
+-- Three schemas, by who uses them (sql/grants.sql grants them): authz, what people and queries
+-- call; authz_sidecar, what the sidecar calls (role authz_sidecar); authz_internal, the tables and
+-- the lower-level setup (role authz_admin).
+create schema authz_internal;
+create schema authz_sidecar;
 
-create table authz.bindings (
+create table authz_internal.bindings (
     rel              regclass not null,
     -- a table may carry several bindings (a row visible to its buyer, or to its seller's staff):
     -- each installs its own policies, named after it, and Postgres ORs permissive policies
@@ -41,8 +47,8 @@ create table authz.bindings (
     check ((insert_object_type is null) = (insert_column is null) and (insert_column is null) = (insert_permission is null))
 );
 
--- Drop the policies authz.bind installed on p_rel, if any.
-create function authz.drop_policies(p_rel regclass) returns void
+-- Drop the policies authz_internal.bind installed on p_rel, if any.
+create function authz_internal.drop_policies(p_rel regclass) returns void
 language plpgsql volatile as $$
 declare
     pol name;
@@ -54,7 +60,7 @@ end
 $$;
 
 -- Install the policies for binding b on one relation (the bound table or one of its partitions).
-create function authz.apply_policies(p_part regclass, b authz.bindings) returns void
+create function authz_internal.apply_policies(p_part regclass, b authz_internal.bindings) returns void
 language plpgsql volatile as $$
 declare
     coltype regtype;
@@ -67,7 +73,7 @@ begin
     if b.key_expr is not null then
         -- checks the expression against this relation's columns; IMMUTABLE so that its value
         -- for a row never changes, which the listed filter and an index on it rely on
-        if not authz.key_is_immutable(p_part, b.key_expr) then
+        if not authz_internal.key_is_immutable(p_part, b.key_expr) then
             raise exception 'the key expression of % must be IMMUTABLE: %', p_part, b.key_expr;
         end if;
         key := format('(%s)', b.key_expr);
@@ -116,18 +122,18 @@ begin
 
     -- The engine decides, through the sidecar. The planner hook turns this into an indexable
     -- filter when the subject's allowed set is small (src/rewrite/guard.rs).
-    execute format('create policy %I on %s for select using (%s)', b.name || '_select', p_part, authz.predicate(b.object_type, b.permission, key, attrs));
+    execute format('create policy %I on %s for select using (%s)', b.name || '_select', p_part, authz_internal.predicate(b.object_type, b.permission, key, attrs));
 
     if b.write_permission is not null and b.insert_object_type is null then
-        pred := authz.predicate(b.object_type, b.write_permission, key, attrs);
+        pred := authz_internal.predicate(b.object_type, b.write_permission, key, attrs);
         execute format('create policy %I on %s for insert with check (%s)', b.name || '_insert', p_part, pred);
     end if;
     if coalesce(b.update_permission, b.write_permission) is not null then
-        pred := authz.predicate(b.object_type, coalesce(b.update_permission, b.write_permission), key, attrs);
+        pred := authz_internal.predicate(b.object_type, coalesce(b.update_permission, b.write_permission), key, attrs);
         execute format('create policy %I on %s for update using (%s) with check (%s)', b.name || '_update', p_part, pred, pred);
     end if;
     if coalesce(b.delete_permission, b.write_permission) is not null then
-        pred := authz.predicate(b.object_type, coalesce(b.delete_permission, b.write_permission), key, attrs);
+        pred := authz_internal.predicate(b.object_type, coalesce(b.delete_permission, b.write_permission), key, attrs);
         execute format('create policy %I on %s for delete using (%s)', b.name || '_delete', p_part, pred);
     end if;
     if b.insert_object_type is not null then
@@ -139,7 +145,7 @@ $$;
 
 -- A policy's predicate: the engine's decision for the row's object id, and its attributes when
 -- the binding has them.
-create function authz.predicate(p_type text, p_permission text, p_key text, p_attrs text) returns text
+create function authz_internal.predicate(p_type text, p_permission text, p_key text, p_attrs text) returns text
 language sql immutable as $$
     select case when p_attrs is null then format('authz.permits(%L, %L, %s::text)', p_type, p_permission, p_key)
                 else format('authz.permits_resource(%L, %L, %s::text, %s)', p_type, p_permission, p_key, p_attrs) end
@@ -151,7 +157,7 @@ $$;
 -- Partitions get the same policies, now and when they are created or attached later, since
 -- querying a partition directly skips the parent's policies. With p_force (the default) the
 -- table owner is subject to the policies too; maintenance jobs then need a BYPASSRLS role.
-create function authz.bind(
+create function authz_internal.bind(
     p_rel regclass,
     p_column name,
     p_object_type text,
@@ -170,10 +176,10 @@ create function authz.bind(
 ) returns void
 language plpgsql volatile as $$
 declare
-    b    authz.bindings;
+    b    authz_internal.bindings;
     part regclass;
 begin
-    insert into authz.bindings (rel, name, column_name, key_expr, object_type, permission, write_permission,
+    insert into authz_internal.bindings (rel, name, column_name, key_expr, object_type, permission, write_permission,
                                 insert_object_type, insert_column, insert_permission, force, attributes,
                                 update_permission, delete_permission, attribute_map)
     values (p_rel, coalesce('pg_auth_' || p_name, 'pg_auth'), case when p_key is null then p_column end, p_key,
@@ -199,7 +205,7 @@ begin
 
     perform set_config('authz.applying', 'on', true);
     for part in select p_rel union select relid from pg_partition_tree(p_rel) loop
-        perform authz.apply_policies(part, b);
+        perform authz_internal.apply_policies(part, b);
     end loop;
     perform set_config('authz.applying', '', true);
 end
@@ -207,25 +213,25 @@ $$;
 
 -- Stop protecting p_rel with pg_auth. Row level security stays enabled, so with no other
 -- policies the table denies all access (fail closed).
-create function authz.unbind(p_rel regclass) returns void
+create function authz_internal.unbind(p_rel regclass) returns void
 language plpgsql volatile as $$
 declare
     part regclass;
 begin
     for part in select p_rel union select relid from pg_partition_tree(p_rel) loop
-        perform authz.drop_policies(part);
+        perform authz_internal.drop_policies(part);
     end loop;
-    delete from authz.bindings where rel = p_rel;
+    delete from authz_internal.bindings where rel = p_rel;
     raise notice 'row level security is still enabled on %; it denies all rows until other policies are added', p_rel;
 end
 $$;
 
--- Partitions created or attached after authz.bind inherit the binding's policies. Runs as the
--- extension owner, since callers cannot read authz.bindings.
-create function authz.on_ddl() returns event_trigger
+-- Partitions created or attached after authz_internal.bind inherit the binding's policies. Runs as the
+-- extension owner, since callers cannot read authz_internal.bindings.
+create function authz_internal.on_ddl() returns event_trigger
 language plpgsql security definer set search_path = pg_catalog, pg_temp as $$
 declare
-    b    authz.bindings;
+    b    authz_internal.bindings;
     part regclass;
 begin
     -- apply_policies runs ALTER TABLE, which fires this trigger again
@@ -237,7 +243,7 @@ begin
     for b in
         select distinct on (bi.rel, bi.name) bi.*
         from pg_event_trigger_ddl_commands() cmd
-        join authz.bindings bi
+        join authz_internal.bindings bi
           on cmd.objid in (select relid from pg_partition_tree(bi.rel))
           or bi.rel in (select relid from pg_partition_ancestors(cmd.objid))
         where cmd.object_type in ('table', 'table column')
@@ -247,7 +253,7 @@ begin
             where not exists (select 1 from pg_policy p
                               where p.polrelid = t.relid and p.polname = b.name || '_select')
         loop
-            perform authz.apply_policies(part, b);
+            perform authz_internal.apply_policies(part, b);
         end loop;
     end loop;
     perform set_config('authz.applying', '', true);
@@ -256,17 +262,17 @@ $$;
 
 create event trigger pg_auth_protect_partitions on ddl_command_end
     when tag in ('CREATE TABLE', 'ALTER TABLE')
-    execute function authz.on_ddl();
+    execute function authz_internal.on_ddl();
 
 -- How the current subject is identified. Exactly one source is used:
 --   'guc'         pg_auth.subject_id (superuser-only; GRANT SET ON PARAMETER to the API role)
 --   'jwt'         a claim from request.jwt.claims; trusts whoever can set that setting
 --   'jwt_signed'  a claim from a bearer token verified against jwks (HS256 / ES256)
-create table authz.settings (
+create table authz_internal.settings (
     key   text primary key,
     value text not null
 );
-insert into authz.settings values
+insert into authz_internal.settings values
     ('subject_source', 'guc'),
     ('subject_type', 'user'),
     ('claim', 'sub'),
@@ -314,14 +320,14 @@ begin
         raise exception 'subject must be one of guc, jwt, jwt_signed (got %)', subject;
     end if;
     if subject = 'jwt_signed' and jwks is null
-       and not exists (select 1 from authz.settings where key = 'jwks') then
+       and not exists (select 1 from authz_internal.settings where key = 'jwks') then
         raise exception 'subject => ''jwt_signed'' needs jwks => ''{"keys": [...]}''';
     end if;
     if jwks is not null and jsonb_typeof(jwks -> 'keys') is distinct from 'array' then
         raise exception 'jwks must be a JSON Web Key Set: {"keys": [...]}';
     end if;
 
-    insert into authz.settings (key, value)
+    insert into authz_internal.settings (key, value)
     select k, v from (values
         ('subject_source', subject),
         ('subject_type', subject_type),
@@ -339,15 +345,10 @@ begin
     where v is not null
     on conflict (key) do update set value = excluded.value;
 
-    -- the statement trigger on authz.settings makes every backend reload it
-    update authz.settings set value = (value::bigint + 1)::text where key = 'version';
+    -- the statement trigger on authz_internal.settings makes every backend reload it
+    update authz_internal.settings set value = (value::bigint + 1)::text where key = 'version';
 end
 $$;
 
-revoke all on all tables in schema authz from public;
 grant usage on schema authz to public;
-revoke execute on function authz.bind(regclass, name, text, text, text, boolean, text, text, text, name, text, name[], text, text, jsonb) from public;
-revoke execute on function authz.unbind(regclass) from public;
-revoke execute on function authz.drop_policies(regclass) from public;
-revoke execute on function authz.apply_policies(regclass, authz.bindings) from public;
 revoke execute on function authz.configure(text, text, text, jsonb, text, text, text, int, text, text, text, jsonb) from public;

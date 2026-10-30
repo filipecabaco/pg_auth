@@ -3,5 +3,5 @@
 -- pg_auth with production defaults but without the permission index: subjects with too many
 -- objects to list are checked with the engine (AuthzBatch).
 select authz.configure(subject => 'jwt', claims_setting => 'request.jwt.claims', claim => 'sub');
-select authz.protect('app.todos', 'account', 'owner_id', 'viewer');
-select authz.protect('app.todo_items', 'account', 'owner_id', 'viewer');
+select authz_internal.protect('app.todos', 'account', 'owner_id', 'viewer');
+select authz_internal.protect('app.todo_items', 'account', 'owner_id', 'viewer');

@@ -2,7 +2,7 @@
 -- Identity lives in pg_auth.subject_id, a superuser-only GUC. The trusted layer (a pooler/connection
 -- role granted SET ON PARAMETER, here: the superuser connection before SET ROLE) sets it; the request
 -- role bench_user cannot. pa_* replay the same request sequences with that split.
-select authz.protect('app.docs', 'org', 'org_id', 'member');
+select authz_internal.protect('app.docs', 'org', 'org_id', 'member');
 
 -- the pooled server connection: opened as superuser, pg_auth's socket set, then drops to bench_user
 create function app.pa_open() returns void language plpgsql security definer set search_path = pg_catalog, public as $f$

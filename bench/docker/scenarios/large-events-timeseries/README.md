@@ -4,7 +4,7 @@ Multi-tenant `app.events` (default 5M rows over 10 days, tenant sizes skewed: te
 Indexes: BRIN(created_at), btree(tenant_id, created_at), partial btree(created_at) where kind='error',
 covering btree(created_at) include (tenant_id, kind), GIN jsonb_path_ops(payload).
 Subjects: `selective` (smallest tenant), `mid` (10 tenants), `big_tenant` (tenant 1), `many` (1333 tenants, past LIST_LIMIT).
-OpenFGA holds one tuple per membership (~3 500 tuples), none per event: `authz.protect('app.events','tenant','tenant_id','member')`.
+OpenFGA holds one tuple per membership (~3 500 tuples), none per event: `authz_internal.protect('app.events','tenant','tenant_id','member')`.
 
 Queries: `last_hour`, `day_counts` (group by kind), `payload_filter` (`payload @> ...`), `range_all` (3h window), `latest_n`, `hot_kind`.
 

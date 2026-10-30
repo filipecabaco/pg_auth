@@ -224,7 +224,7 @@ defmodule Rules do
     # the notes protect and relate the tables; their rows reach the engine once it has the rules
     first = set_rules(conn, engine, name, v1)
     pushed?(conn, engine, 1) || raise("version 1 was not pushed")
-    eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.outbox", []).rows == [[0]] end) || raise("relationships not delivered")
+    eventually(fn -> Postgrex.query!(conn, "select count(*) from authz_internal.outbox", []).rows == [[0]] end) || raise("relationships not delivered")
     seen = if engine == "cerbos", do: [1, 2], else: [1, 2, 3]
 
     [
@@ -248,7 +248,7 @@ defmodule Rules do
                Postgrex.query(conn, sql, [engine, name, typo]))
       end),
       check("every version is kept, the refused one with the engine's reason", fn ->
-        Postgrex.query!(conn, "select count(*), count(error) from authz.rules where engine = $1", [engine]).rows == [[3, 1]]
+        Postgrex.query!(conn, "select count(*), count(error) from authz_internal.rules where engine = $1", [engine]).rows == [[3, 1]]
       end)
     ]
   end
@@ -281,7 +281,7 @@ defmodule Rules do
 
   defp pushed?(conn, engine, version) do
     eventually(fn ->
-      Postgrex.query!(conn, "select pushed_at is not null from authz.rules where engine = $1 and version = $2", [engine, version]).rows == [[true]]
+      Postgrex.query!(conn, "select pushed_at is not null from authz_internal.rules where engine = $1 and version = $2", [engine, version]).rows == [[true]]
     end)
   end
 

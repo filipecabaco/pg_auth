@@ -9,7 +9,7 @@
 -- OpenFGA and SpiceDB have one model or schema: one name. Cerbos has a policy per file: one name
 -- each, as you would name the files. Optional: rules managed in the engine itself stay there.
 
-create table authz.rules (
+create table authz_internal.rules (
     engine     text not null check (engine in ('openfga', 'spicedb', 'cerbos')),
     name       text not null,
     version    int not null,
@@ -31,38 +31,38 @@ create function authz.set_rules(engine text, name text, body text) returns int
 language plpgsql volatile as $$
 #variable_conflict use_column
 declare
-    latest authz.rules;
+    latest authz_internal.rules;
     other text;
 begin
     if engine not in ('openfga', 'spicedb', 'cerbos') then
         raise exception 'rules are for openfga, spicedb or cerbos (got %)', engine;
     end if;
     if engine in ('openfga', 'spicedb') then
-        select r.name into other from authz.rules r where r.engine = set_rules.engine and r.name <> set_rules.name limit 1;
+        select r.name into other from authz_internal.rules r where r.engine = set_rules.engine and r.name <> set_rules.name limit 1;
         if other is not null then
             raise exception '% has one %, already stored as %', engine,
                 case engine when 'openfga' then 'model' else 'schema' end, quote_literal(other)
                 using hint = format('select authz.set_rules(%L, %L, ...) replaces it', engine, other);
         end if;
     end if;
-    select * into latest from authz.rules r where r.engine = set_rules.engine and r.name = set_rules.name order by r.version desc limit 1;
+    select * into latest from authz_internal.rules r where r.engine = set_rules.engine and r.name = set_rules.name order by r.version desc limit 1;
     if latest.body = set_rules.body then
         return latest.version;
     end if;
-    insert into authz.rules (engine, name, version, body) values (engine, name, coalesce(latest.version, 0) + 1, body);
+    insert into authz_internal.rules (engine, name, version, body) values (engine, name, coalesce(latest.version, 0) + 1, body);
     -- the tables the rules' notes describe, protected and related in this transaction
-    perform authz.rules_apply(engine);
+    perform authz_internal.rules_apply(engine);
     perform pg_notify('pg_auth_rules', engine);
     return coalesce(latest.version, 0) + 1;
 end
 $$;
 
 -- What the notes in an engine's rules say (`# pg_auth: protects documents (id): read viewer`,
--- src/notes.rs), applied as one setup document (authz.setup): tables protected and related, and
+-- src/notes.rs), applied as one setup document (authz_internal.setup): tables protected and related, and
 -- what an earlier version's notes declared and this one's do not, removed. An object column a note
 -- leaves to the table is its primary key. Rules with no notes change nothing, unless notes set the
 -- setup before (then it is removed): a setup written by hand is not the rules' to undo.
-create function authz.rules_apply(p_engine text) returns void
+create function authz_internal.rules_apply(p_engine text) returns void
 language plpgsql volatile as $$
 declare
     document jsonb := '{"relationships": [], "protect": []}';
@@ -70,24 +70,24 @@ declare
     r record;
 begin
     for r in select l.body from authz.rules(p_engine) l loop
-        notes := authz.rules_document(p_engine, r.body);
+        notes := authz_internal.rules_document(p_engine, r.body);
         document := jsonb_build_object('relationships', (document -> 'relationships') || (notes -> 'relationships'),
                                        'protect', (document -> 'protect') || (notes -> 'protect'));
     end loop;
     if jsonb_array_length(document -> 'relationships') + jsonb_array_length(document -> 'protect') = 0
-       and authz.setup() ->> 'source' is distinct from 'rules' then
+       and authz_internal.setup() ->> 'source' is distinct from 'rules' then
         return;
     end if;
     document := document || jsonb_build_object('source', 'rules', 'relationships', coalesce((
         select jsonb_agg(case when e -> 'object' ? 'column' then e
-                              else jsonb_set(e, '{object,column}', to_jsonb(authz.rules_key(e ->> 'table'))) end)
+                              else jsonb_set(e, '{object,column}', to_jsonb(authz_internal.rules_key(e ->> 'table'))) end)
         from jsonb_array_elements(document -> 'relationships') e), '[]'));
-    perform authz.setup(document);
+    perform authz_internal.setup(document);
 end
 $$;
 
 -- A relationship table's object column when a note names none: its single-column primary key.
-create function authz.rules_key(p_table text) returns name
+create function authz_internal.rules_key(p_table text) returns name
 language plpgsql stable as $$
 declare
     key name;
@@ -109,7 +109,7 @@ create function authz.rules(engine text default null)
 returns table (engine text, name text, version int, body text, pushed_at timestamptz, error text)
 language sql stable as $$
     select distinct on (r.engine, r.name) r.engine, r.name, r.version, r.body, r.pushed_at, r.error
-    from authz.rules r
+    from authz_internal.rules r
     where rules.engine is null or r.engine = rules.engine
     order by r.engine, r.name, r.version desc
 $$;
@@ -117,7 +117,7 @@ $$;
 -- For the sidecar: the latest version of each of `p_engine`'s rules not pushed yet, with the one
 -- the engine runs now (`previous`: Cerbos stores policies it cannot compile, and the sidecar puts
 -- that one back), to the one sidecar pushing (an advisory lock held until the transaction ends).
-create function authz.rules_pending(p_engine text) returns table (name text, version int, body text, previous text)
+create function authz_sidecar.rules_pending(p_engine text) returns table (name text, version int, body text, previous text)
 language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
 begin
     if not pg_try_advisory_xact_lock(hashtext('pg_auth.rules')) then
@@ -125,7 +125,7 @@ begin
     end if;
     return query
     select l.name, l.version, l.body,
-           (select r.body from authz.rules r
+           (select r.body from authz_internal.rules r
             where r.engine = p_engine and r.name = l.name and r.pushed_at is not null order by r.version desc limit 1)
     from authz.rules(p_engine) l where l.pushed_at is null and l.error is null;
 end
@@ -133,36 +133,30 @@ $$;
 
 -- For the sidecar: the engine took this version (no error; `p_ref` its id for it, if any), or
 -- refused it for good (the error). The other sidecars hear of it, to ask with it too.
-create function authz.rules_pushed(p_engine text, p_name text, p_version int, p_error text default null, p_ref text default null)
+create function authz_sidecar.rules_pushed(p_engine text, p_name text, p_version int, p_error text default null, p_ref text default null)
 returns void
 language sql volatile security definer set search_path = pg_catalog, pg_temp as $$
-    update authz.rules set pushed_at = case when p_error is null then now() end, error = p_error, engine_ref = p_ref
+    update authz_internal.rules set pushed_at = case when p_error is null then now() end, error = p_error, engine_ref = p_ref
     where engine = p_engine and name = p_name and version = p_version;
     select pg_notify('pg_auth_rules', p_engine);
 $$;
 
 -- For the sidecar: the engine's id for the rules in force (OpenFGA's model id), or null.
-create function authz.rules_ref(p_engine text) returns text
+create function authz_sidecar.rules_ref(p_engine text) returns text
 language sql stable security definer set search_path = pg_catalog, pg_temp as $$
-    select engine_ref from authz.rules where engine = p_engine and pushed_at is not null and engine_ref is not null
+    select engine_ref from authz_internal.rules where engine = p_engine and pushed_at is not null and engine_ref is not null
     order by pushed_at desc limit 1
 $$;
 
-revoke all on authz.rules from public;
 revoke execute on function authz.set_rules(text, text, text) from public;
 revoke execute on function authz.rules(text) from public;
-revoke execute on function authz.rules_apply(text) from public;
-revoke execute on function authz.rules_key(text) from public;
-revoke execute on function authz.rules_pending(text) from public;
-revoke execute on function authz.rules_pushed(text, text, int, text, text) from public;
-revoke execute on function authz.rules_ref(text) from public;
 
 -- What the setup names that the stored rules do not have: a protected table's type, permission or
 -- action; a relationship table's type, a relation that is computed rather than written, a subject
 -- its relation does not take. Checked against the latest version stored, pushed or not, when the
 -- rules of one engine are stored (several: which one a table is asked of is the sidecar's to say).
 -- Parts read from a row's columns are the write's to check (`relations => array[...]`).
-create function authz.rules_problems() returns table (item text, problem text)
+create function authz_internal.rules_problems() returns table (item text, problem text)
 language plpgsql stable as $$
 declare
     eng text;
@@ -174,7 +168,7 @@ begin
         return;
     end if;
     rules := case eng when 'openfga' then 'the openfga model' when 'spicedb' then 'the spicedb schema' else 'the cerbos policies' end;
-    select jsonb_agg(to_jsonb(n)) into names from authz.rules() r, authz.rules_names(r.engine, r.body) n;
+    select jsonb_agg(to_jsonb(n)) into names from authz.rules() r, authz_internal.rules_names(r.engine, r.body) n;
     if jsonb_path_exists(names, '$[*] ? (@.kind == "unreadable")') then
         return;  -- the engine says what is wrong with them (authz.doctor)
     end if;
@@ -185,14 +179,14 @@ begin
     ), uses as (
         -- protected tables: each permission (Cerbos: action) on the row's type, and on the parent's for inserts
         select b.rel::text || case when b.name <> 'pg_auth' then ' (' || b.name || ')' else '' end as item, u.t, u.p
-        from authz.bindings b,
+        from authz_internal.bindings b,
              lateral (values (b.object_type, null), (b.object_type, b.permission), (b.object_type, b.write_permission),
                              (b.object_type, b.update_permission), (b.object_type, b.delete_permission),
                              (b.insert_object_type, null), (b.insert_object_type, b.insert_permission)) u(t, p)
         where u.t is not null
     ), decl as (
         select r.rel::text || case when r.name <> 'pg_auth' then ' (' || r.name || ')' else '' end as item, r.*
-        from authz.relationships r
+        from authz_internal.relationships r
         where eng <> 'cerbos'
     ), types as (
         -- relationship tables: their types, and each relation a row may write with the subject it names
@@ -273,12 +267,12 @@ end
 $$;
 
 -- At commit: the setup and the rules change together in a migration, and are checked as one.
-create function authz.rules_check() returns trigger
+create function authz_internal.rules_check() returns trigger
 language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
 declare
     problems text;
 begin
-    select string_agg(p.item || ': ' || p.problem, E'\n' order by p.item, p.problem) into problems from authz.rules_problems() p;
+    select string_agg(p.item || ': ' || p.problem, E'\n' order by p.item, p.problem) into problems from authz_internal.rules_problems() p;
     if problems is not null then
         raise exception 'the setup names what the rules stored with authz.set_rules do not have:%', E'\n' || problems
             using errcode = 'check_violation',
@@ -288,12 +282,10 @@ begin
 end
 $$;
 
-create constraint trigger rules_match after insert or update on authz.bindings
-    deferrable initially deferred for each row execute function authz.rules_check();
-create constraint trigger rules_match after insert or update on authz.relationships
-    deferrable initially deferred for each row execute function authz.rules_check();
-create constraint trigger rules_match after insert on authz.rules
-    deferrable initially deferred for each row execute function authz.rules_check();
+create constraint trigger rules_match after insert or update on authz_internal.bindings
+    deferrable initially deferred for each row execute function authz_internal.rules_check();
+create constraint trigger rules_match after insert or update on authz_internal.relationships
+    deferrable initially deferred for each row execute function authz_internal.rules_check();
+create constraint trigger rules_match after insert on authz_internal.rules
+    deferrable initially deferred for each row execute function authz_internal.rules_check();
 
-revoke execute on function authz.rules_problems() from public;
-revoke execute on function authz.rules_check() from public;

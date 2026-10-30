@@ -9,4 +9,4 @@ alter view app.docs_v owner to postgres;
 alter view app.docs_vb owner to postgres;
 alter view app.docs_f owner to postgres;
 alter function app.docs_fn() owner to postgres;
-select authz.protect('app.docs', 'org', 'org_id', 'member');
+select authz_internal.protect('app.docs', 'org', 'org_id', 'member');

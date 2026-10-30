@@ -107,23 +107,19 @@ extension then answers from Postgres instead of asking the engine per row.
   ~0.2 s for OpenFGA, ~0.4 s for SpiceDB) and once the engine's own answers reflect it: OpenFGA's
   caches expire (10 s TTL by default), SpiceDB's `minimize_latency` reads reach the write's
   revision (5 s). Until then the engine itself may still answer with the old grant.
-- **Database role.** The sidecar needs only `EXECUTE` on the writer functions:
+- **Database role.** The sidecar needs only the functions in the `authz_sidecar` schema, which the
+  extension grants to the role of the same name. Grant it to the login in `PG_AUTH_DATABASE_URL`:
 
-      grant usage on schema authz to pg_auth_sidecar;
-      grant execute on function authz.index_begin(text, text, text, text), authz.index_add(bigint, text[]),
-          authz.index_finish(bigint), authz.index_abort(bigint), authz.index_invalidate(),
-          authz.outbox_claim(int, text), authz.outbox_done(bigint[]), authz.outbox_failed(bigint, text),
-          authz.answers_changed(), authz.rules_pending(text), authz.rules_pushed(text, text, int, text, text), authz.rules_ref(text)
-          to pg_auth_sidecar;
+      create role sidecar login password '...' in role authz_sidecar;
 
 ## Relationship tables
 
 With `PG_AUTH_DATABASE_URL` set, the sidecar also delivers relationship tables' changes
-(`authz.relate`, sql/relationships.sql) to OpenFGA or SpiceDB (`src/outbox.rs`). It listens for
+(`authz_internal.relate`, sql/relationships.sql) to OpenFGA or SpiceDB (`src/outbox.rs`). It listens for
 the trigger's `NOTIFY`, claims the oldest changes (one sidecar at a time, an advisory lock), writes
 them (OpenFGA's Write with `on_duplicate`/`on_missing: ignore`, up to 100 tuples a call; SpiceDB's
 WriteRelationships with TOUCH and DELETE, up to 1000), and removes them by id in the same
-transaction, which also calls `authz.answers_changed()` so every backend forgets the answers it kept.
+transaction, which also calls `authz_sidecar.answers_changed()` so every backend forgets the answers it kept.
 A failure the engine may get over (unreachable, 5xx, 429) is retried every `INDEX_POLL_MS`; a
 change it refuses for good (another 4xx) is set aside in the outbox with its reason, and the others
 go on. Afterwards reads skip the engine's caches: OpenFGA with `HIGHER_CONSISTENCY` for 10 s,
@@ -143,11 +139,11 @@ API (`PUT /admin/policy`, the YAML sent as JSON, with `CERBOS_ADMIN_USER` and
 `CERBOS_ADMIN_PASSWORD`; Cerbos stores policies that do not compile and goes on with the ones
 before, so InspectPolicies is asked after, and when they do not compile the versions before are
 stored again, a new policy disabled, and the push refused). The result is recorded beside each version in the same transaction,
-which calls `authz.answers_changed()` and clears the sidecar's own caches when the engine took
+which calls `authz_sidecar.answers_changed()` and clears the sidecar's own caches when the engine took
 them. The engine's id for the rules (OpenFGA's model id, SpiceDB's schema ZedToken) is recorded
-beside them (`authz.rules_ref`), and every sidecar asks with it from its next wake (a
+beside them (`authz_sidecar.rules_ref`), and every sidecar asks with it from its next wake (a
 `NOTIFY`, or `INDEX_POLL_MS`): OpenFGA requests pin that model, SpiceDB reads are at least as
-fresh as that schema. A relationship written with a condition (`authz.relate condition =>`)
+fresh as that schema. A relationship written with a condition (`authz_internal.relate condition =>`)
 carries it: OpenFGA's tuple `condition`, SpiceDB's `optional_caveat`, with the row's values. Rules the engine refuses are recorded with its reason and not retried; an unreachable engine
 is retried every `INDEX_POLL_MS`.
 
@@ -184,7 +180,7 @@ the socket.
 | `REFRESH_CONCURRENCY` | 8 | background refreshes in flight; when busy, the oldest answers go first |
 | `ENGINE_TIMEOUT_MS` | 4000 | per engine request; keep it above `OPENFGA_LIST_DEADLINE_MS` and below the extension's `pg_auth.sidecar_timeout_ms` (5000) |
 | `CHECK_CONCURRENCY` | 8 | engine check calls in flight at once for one check request (OpenFGA: a 1000-id batch is 20 calls; SpiceDB: one) |
-| `PG_AUTH_DATABASE_URL` | none | enables the permission index, relationship tables and engine rules (see above), e.g. `postgres://pg_auth_sidecar@/app?host=/run/postgresql` |
+| `PG_AUTH_DATABASE_URL` | none | enables the permission index, relationship tables and engine rules (see above), e.g. `postgres://sidecar@/app?host=/run/postgresql` |
 | `INDEX_POLL_MS` | 500 | how often OpenFGA's change feed is read; the retry interval for both |
 | `REQUEST_LOG` | off | `1` prints one line per request on stderr: what Postgres asked, the answer (a plan as the SQL filter it becomes), and whether the engine or the cache answered. For watching a setup |
 

@@ -183,7 +183,7 @@ batched modes are not representative (see `bench/docker/README.md` for single-se
 ## Attribute parity
 
 `attributes.exs` checks attribute rules end to end against Cerbos: rows protected by their
-attributes (`authz.protect(..., attributes => ...)`) must show each principal exactly what
+attributes (`authz_internal.protect(..., attributes => ...)`) must show each principal exactly what
 Cerbos's CheckResources allows for the same rows with the same attributes.
 
     elixir compare/attributes.exs                                   # seed 1: 400 rows, 80 principals
@@ -201,7 +201,7 @@ Cerbos asked per row). On a mismatch it prints the plan. Exits 1 on any mismatch
 ## Relationship tables
 
 `relationships.exs` checks that an application with no backend can grant and revoke access by
-writing rows (`authz.relate`), on a real OpenFGA and SpiceDB, with the sidecar's production cache
+writing rows (`authz_internal.relate`), on a real OpenFGA and SpiceDB, with the sidecar's production cache
 settings: an org's admin adds a member, a member is refused admin rights and shares outside their
 org, shares to a user and to a team, a revocation, and the engine paused while a grant is written
 (it waits in the outbox and arrives; an invalid relationship is set aside). Each change is timed
@@ -212,7 +212,7 @@ from its commit to the moment the subject sees it.
 
 ## Grants that end
 
-`expiry.exs` checks relationship tables whose rows end (`authz.relate` `expires_column`), on a
+`expiry.exs` checks relationship tables whose rows end (`authz_internal.relate` `expires_column`), on a
 real OpenFGA and SpiceDB, the rules stored in Postgres (`authz.set_rules`): a share shows until its
 end and goes after it (timed from the end), an end moved later keeps it and one moved earlier ends
 it, a renewal brings it back, the ends waiting in the outbox are not changes waiting, and SpiceDB,
@@ -224,7 +224,7 @@ given the end as an expiration, ends it itself with the sidecar paused.
 ## Conditions and caveats
 
 `conditions.exs` checks relationships written with an OpenFGA condition or a SpiceDB caveat
-(`authz.relate` `condition`, `condition_context`) and the context each request gives
+(`authz_internal.relate` `condition`, `condition_context`) and the context each request gives
 (`authz.configure(context => ...)`), on a real OpenFGA and SpiceDB, through a sidecar that lists
 and one that checks rows (`LIST_LIMIT` 2): a share in some regions shows to a token from one of
 them, a token without the claim is not let in, the row's new regions are followed, and a share

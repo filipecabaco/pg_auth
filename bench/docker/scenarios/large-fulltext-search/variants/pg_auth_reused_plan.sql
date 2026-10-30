@@ -3,4 +3,4 @@
 -- @prepare_as: selective
 -- pg_auth with a cached generic plan built for the selective subject and reused by each subject
 -- (prepared statements across requests on a pooled connection).
-select authz.protect('app.documents', 'tenant', 'tenant_id', 'member');
+select authz_internal.protect('app.documents', 'tenant', 'tenant_id', 'member');

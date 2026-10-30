@@ -1,10 +1,10 @@
 //! The engine's rules kept in Postgres (sql/rules.sql, authz.set_rules): the latest version of
 //! each is pushed to the engine, and whether it took it recorded beside it.
 //!
-//! One sidecar pushes at a time (authz.rules_pending takes an advisory lock for its transaction).
+//! One sidecar pushes at a time (authz_sidecar.rules_pending takes an advisory lock for its transaction).
 //! Rules the engine refuses (an invalid model, a policy that does not parse) are recorded with the
 //! error, and the engine keeps the version before; a failure it may get over (unreachable) is
-//! retried. After a push every backend forgets the answers it kept (authz.answers_changed), since
+//! retried. After a push every backend forgets the answers it kept (authz_sidecar.answers_changed), since
 //! new rules may change any of them. It wakes on authz.set_rules's NOTIFY, and every `poll` in case
 //! one was missed. Optional: enabled by PG_AUTH_DATABASE_URL.
 
@@ -72,13 +72,14 @@ async fn push(url: &str, engine: &Engine, poll: Duration, pushed: &(impl Fn() + 
 async fn once(client: &mut Client, engine: &Engine) -> Result<bool, String> {
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
     // rules another sidecar pushed: asked with from now on (OpenFGA pins its model)
-    let in_force: Option<String> = client.query_one("select authz.rules_ref($1)", &[&engine.name()]).await.map_err(pg)?.get(0);
+    let in_force: Option<String> = client.query_one("select authz_sidecar.rules_ref($1)", &[&engine.name()]).await.map_err(pg)?.get(0);
     if let Some(id) = in_force.filter(|id| engine.use_rules(id)) {
         eprintln!("pg-auth-sidecar: rules in force: {id}");
         return Ok(true);
     }
     let tx = client.transaction().await.map_err(pg)?;
-    let rows = tx.query("select name, version, body, previous from authz.rules_pending($1)", &[&engine.name()]).await.map_err(pg)?;
+    let rows =
+        tx.query("select name, version, body, previous from authz_sidecar.rules_pending($1)", &[&engine.name()]).await.map_err(pg)?;
     if rows.is_empty() {
         tx.commit().await.map_err(pg)?;
         return Ok(false);
@@ -92,10 +93,12 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<bool, String> {
         Err(e) => (Some(e.message), None),
     };
     for (name, version) in &versions {
-        tx.execute("select authz.rules_pushed($1, $2, $3, $4, $5)", &[&engine.name(), name, version, &error, &id]).await.map_err(pg)?;
+        tx.execute("select authz_sidecar.rules_pushed($1, $2, $3, $4, $5)", &[&engine.name(), name, version, &error, &id])
+            .await
+            .map_err(pg)?;
     }
     if error.is_none() {
-        tx.execute("select authz.answers_changed()", &[]).await.map_err(pg)?;
+        tx.execute("select authz_sidecar.answers_changed()", &[]).await.map_err(pg)?;
     }
     tx.commit().await.map_err(pg)?;
     match &error {

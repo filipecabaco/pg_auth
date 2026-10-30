@@ -2,4 +2,4 @@
 -- @set: pg_auth.permission_index=off
 -- pg_auth with production defaults but without the permission index: subjects with too many
 -- objects to list are checked with the engine (AuthzBatch).
-select authz.protect('app.documents', 'document', 'id', 'viewer');
+select authz_internal.protect('app.documents', 'document', 'id', 'viewer');

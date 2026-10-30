@@ -1,7 +1,7 @@
 //! Notes in the engine's rules (authz.set_rules): comments whose text starts with `pg_auth:`, which
 //! say where each type's rows live, so one text in the engine's own language is the whole setup.
 //! The engine reads them as comments and ignores them; pg_auth reads them into the document
-//! `authz.setup` applies (sql/rules.sql, `authz.rules_apply`).
+//! `authz_internal.setup` applies (sql/rules.sql, `authz_internal.rules_apply`).
 //!
 //! A note belongs to the type it sits in: an OpenFGA `type` block, a SpiceDB `definition` (inside
 //! its braces, or in the comment just before it), the resource of a Cerbos policy. Three
@@ -35,7 +35,7 @@ use pgrx::prelude::*;
 use serde_json::{Map, Value, json};
 
 /// The setup document the notes in these rules describe: `{"relationships": [...], "protect": [...]}`.
-#[pg_extern(immutable, parallel_safe)]
+#[pg_extern(immutable, parallel_safe, schema = "authz_internal")]
 #[expect(clippy::needless_pass_by_value, reason = "pgrx hands text arguments over by value")]
 fn rules_document(engine: String, body: String) -> pgrx::JsonB {
     match document(&engine, &body) {

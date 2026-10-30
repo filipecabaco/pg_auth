@@ -1,6 +1,6 @@
-//! `authz.rules_names(engine, body)`: what the rules kept in Postgres (sql/rules.sql) define, read
+//! `authz_internal.rules_names(engine, body)`: what the rules kept in Postgres (sql/rules.sql) define, read
 //! from the engine's own language, so a setup naming something they do not have fails when it is
-//! committed instead of when the engine is asked (`authz.rules_problems`).
+//! committed instead of when the engine is asked (`authz_internal.rules_problems`).
 //!
 //! One row per type (`type`), per relation a row may write (`relation`, with each form of subject
 //! it takes, as written: `user`, `user:*`, `team#member`, `user with in_region`, `user with
@@ -42,7 +42,7 @@ impl Entry {
     }
 }
 
-#[pg_extern(immutable, parallel_safe)]
+#[pg_extern(immutable, parallel_safe, schema = "authz_internal")]
 #[expect(clippy::type_complexity, reason = "pgrx reads the column names and types from this literal return type")]
 fn rules_names(
     engine: &str,

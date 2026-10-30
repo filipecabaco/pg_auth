@@ -58,7 +58,7 @@ pub fn init() {
     GucRegistry::define_string_guc(
         c"pg_auth.subject_type",
         c"Subject type of the current request (authz.configure(subject => 'guc')).",
-        c"Defaults to authz.settings subject_type when unset.",
+        c"Defaults to authz_internal.settings subject_type when unset.",
         &SUBJECT_TYPE,
         GucContext::Suset,
         GucFlags::default(),
@@ -120,16 +120,16 @@ fn current_subject()
     TableIterator::once((s.source, s.kind, s.id, s.detail))
 }
 
-/// authz.settings, shared between the callers of one configuration generation.
+/// authz_internal.settings, shared between the callers of one configuration generation.
 type Settings = std::rc::Rc<HashMap<String, String>>;
 
 thread_local! {
-    /// authz.settings as of a configuration generation (ffi::config_generation): kept across
-    /// transactions until authz.settings changes.
+    /// authz_internal.settings as of a configuration generation (ffi::config_generation): kept across
+    /// transactions until authz_internal.settings changes.
     static SETTINGS: RefCell<Option<(u64, Settings)>> = const { RefCell::new(None) };
 }
 
-const SETTINGS_QUERY: &str = "SELECT coalesce(jsonb_object_agg(key, value), '{}')::text FROM authz.settings";
+const SETTINGS_QUERY: &str = "SELECT coalesce(jsonb_object_agg(key, value), '{}')::text FROM authz_internal.settings";
 const SUBJECT_QUERY: &str = "SELECT authz.subject_type() || ':' || authz.subject_id()";
 
 /// The queries subject resolution runs, for a warm-up to prepare (authz.warm).
@@ -137,7 +137,7 @@ pub fn queries() -> Vec<(&'static str, Vec<pg_sys::Oid>)> {
     vec![(SETTINGS_QUERY, vec![]), (SUBJECT_QUERY, vec![])]
 }
 
-/// Load authz.settings into this backend (authz.warm): how many there are.
+/// Load authz_internal.settings into this backend (authz.warm): how many there are.
 pub fn warm() -> usize {
     settings().len()
 }
@@ -154,7 +154,7 @@ fn settings() -> Settings {
     loaded
 }
 
-/// authz.settings, when this backend holds them for the current configuration generation.
+/// authz_internal.settings, when this backend holds them for the current configuration generation.
 fn cached_settings() -> Option<Settings> {
     let generation = crate::ffi::config_generation();
     SETTINGS.with(|s| s.borrow().as_ref().filter(|(g, _)| *g == generation).map(|(_, m)| m.clone()))
@@ -210,9 +210,9 @@ fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// Statement triggers on authz.settings and authz.hierarchies call this: every backend reloads
+/// Statement triggers on authz_internal.settings and authz_internal.hierarchies call this: every backend reloads
 /// pg_auth's configuration once the change commits.
-#[pg_extern(volatile)]
+#[pg_extern(volatile, schema = "authz_internal")]
 fn invalidate_config() {
     crate::ffi::invalidate_config();
 }
@@ -251,7 +251,7 @@ pub fn principal_key() -> u64 {
 
 /// Whether the current subject is resolved and still holds (no request setting it came from has
 /// changed): then `current`, `principal` and `generation` answer from memory, without reading
-/// authz.settings, so code running as the caller (the planner hook) may use them.
+/// authz_internal.settings, so code running as the caller (the planner hook) may use them.
 pub fn resolved() -> bool {
     kept(&CURRENT).is_some()
 }
@@ -269,7 +269,7 @@ fn who() -> Who {
 }
 
 /// Same, for code running as the querying role (the planner hook): goes through the security
-/// definer functions, so the role never reads authz.settings (which may hold signing secrets).
+/// definer functions, so the role never reads authz_internal.settings (which may hold signing secrets).
 ///
 /// That query is the planner's main fixed cost (~40 us), paid again by every scan, so the answer
 /// is reused, across transactions too, while what the functions read is unchanged: the

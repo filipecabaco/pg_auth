@@ -1,6 +1,6 @@
 # pg_auth: a brief for leadership
 
-October 2026. Status: experimental, pre-release, no license chosen.
+October 2026. Status: experimental, pre-release, no license chosen, in a personal repository.
 Site and live demo: https://filipecabaco.github.io/pg_auth/
 
 ## In one paragraph
@@ -9,9 +9,9 @@ pg_auth is a Postgres extension and a small sidecar. An authorization engine (Op
 Cerbos) holds an app's access rules, and Postgres enforces them on every query as row level
 security. An app that talks to Postgres directly, through PostgREST or a client library, gets
 sharing, teams, roles and per-row rules without an API server and without hand-written policies.
-A table is protected with one call; access is granted by inserting a row. It works today on
-Postgres you run yourself. It does not run on hosted Supabase, because it needs things the
-platform does not offer customers (below).
+The setup is the engine's own rules with a comment per table they protect; access is granted by
+inserting a row. It works today on Postgres you run yourself. It does not run on hosted Supabase:
+it needs the extension preloaded, which the platform does not offer customers (below).
 
 ## The problem it addresses
 
@@ -20,73 +20,103 @@ rows", and gets hard quickly after that:
 
 - Sharing, teams, organisations and inherited folders become helper functions and a policy per
   operation, repeated on every table, kept in sync by hand.
-- Mistakes are silent: a wrong policy hides rows or shows them, with no error. We catalogued 35
-  real RLS problems people hit (leaking views, policy recursion, updates that change 0 rows,
-  partitions queried directly, per-row function cost) and built a benchmark scenario for each.
+- Mistakes are silent: a wrong policy hides rows or shows them, with no error. A draft catalogue
+  collects 35 RLS problems from public reports (leaking views, policy recursion, updates that change
+  0 rows, partitions queried directly, per-row function cost), each with a benchmark scenario. It
+  shows the problems exist; it does not show how many projects have them.
 - Teams that need more move authorization into a backend service, which is exactly what a
   no-backend app was trying to avoid.
 
 ## What it does
 
-- **One comment per table.** `# pg_auth: protects documents (id): read viewer`, written in the
-  engine's own rules, installs the policies; the planner turns the engine's answer into an
-  indexable filter.
+- **A comment per table.** `# pg_auth: protects documents (id): read viewer`, in the engine's own
+  rules, installs the policies; the planner turns the engine's answer into an indexable filter.
 - **Grants are rows.** Inserting into a memberships table delivers the relationship to the engine;
-  the subject sees the change 4 to 34 ms after commit (measured against OpenFGA and SpiceDB).
+  the change showed 4 to 34 ms after commit in tests against OpenFGA and SpiceDB.
 - **It explains itself.** `authz.why` says why a row is hidden; `authz.doctor` checks the setup and
   prints the fix.
-- **It fails closed.** If the engine cannot answer, queries on protected tables fail rather than
-  show rows.
+- **It fails closed.** If the engine or the sidecar cannot answer, queries on protected tables fail
+  rather than show rows.
 
 ## Evidence
 
 | What | Result |
 |---|---|
-| Query cost vs best-practice RLS | 0.75x overall over 489 query × subject pairs (35 scenarios); from 0.22x to 1.71x per scenario. Slower on sub-millisecond statements, where its planning work shows |
-| Correctness | Parity suites compare every scenario's rows with each engine's own answers, including cached plans reused across users |
-| Tests | Extension tests on Postgres 15 to 18 in CI; 96.8% combined line coverage; the coverage work found two bugs, both failing closed |
-| Grant latency | 4 to 34 ms from commit to visible |
+| Query cost vs best-practice RLS | 0.80x with OpenFGA, 0.78x with SpiceDB: geometric means over 489 query and subject pairs in 35 scenarios, faster in 201 and 192 of them. Per scenario from 0.21x (a folder tree) to 1.70x (a policy on an unindexed column). Single statements on one host, sidecar on a Unix socket: no concurrency, throughput or engine cost measured |
+| Correctness | Parity suites compare every subject's rows with each engine's own answers, including plans reused across users |
+| Tests | 103 extension tests on Postgres 15 to 18 in CI; end-to-end suites against real engines run locally |
+| Grant latency | 4 to 34 ms from commit to visible, one sidecar |
+| Sidecar over HTTPS | Requests and answers signed; about 0.17 ms per round trip more than the socket, on one host, network not included |
 | Live demo | Postgres 18, pg_auth and all three engines booting in a browser tab |
 
-User tests with three personas (a Supabase app builder, an engineer already running OpenFGA, a
-newer developer on a phone) after a round of fixes: all three understood what it does within
-seconds; the demo worked end to end; every claim the engineer probed held. None would adopt it
-today, for the same three reasons: **no license, hosted Supabase cannot run it, and managed
-Postgres in general does not allow it.**
+Persona reviews were run by AI agents playing users (a Supabase app builder, a self-hosted team, a
+security reviewer, a managed-Postgres team, a Postgres image owner). They are not user research:
+they found documentation gaps and bugs, not demand.
+
+## What this does not have yet
+
+- **Evidence of demand:** no users or design partners. Sizing it needs fleet data (projects with
+  many policies, `security definer` helpers in policies, the RLS advisor's warnings) and support
+  and sales requests for relationship-based access.
+- **The setup a platform would run, measured:** a remote sidecar and an engine in or across
+  regions, under concurrency.
+- **Operations a platform needs:** extension upgrade scripts, logical backups that keep
+  pg_auth's configuration, cancelling a statement while it waits on the sidecar, and TLS on the
+  sidecar's own connection to Postgres.
+- **A license, and an owner** for the code.
 
 ## Why it cannot run on hosted Supabase today
 
-1. **`shared_preload_libraries`.** pg_auth hooks the planner and executor, so it must be preloaded
-   when Postgres starts. Customers cannot add libraries there.
-2. **A sidecar on the same host.** Postgres talks to the sidecar over a Unix socket; the sidecar
-   talks to the engine. Customers cannot run a process next to their database.
-3. **An engine.** Someone has to run OpenFGA, SpiceDB or Cerbos, reachable from the sidecar, with
-   its own availability: when it is down, protected queries fail.
+1. **`shared_preload_libraries`.** pg_auth hooks the planner and executor, so it must be loaded
+   when a session starts. Customers cannot add libraries there.
+2. **A sidecar to run.** The sidecar can run on another host, reached over HTTPS with signed
+   requests and answers, so it no longer needs the database host. Someone still has to run it
+   near the database. Supabase Compute could, once pg_auth is in the image; its private alpha
+   does not say yet whether a service can be reached privately or kept from suspending.
+3. **An engine.** Someone runs OpenFGA, SpiceDB or Cerbos, reachable from the sidecar, with its
+   own availability: when it is down, protected queries fail.
 
-## Options
+## Alternatives
 
-| Option | What it takes | What customers get |
+| | What it gives | What it leaves |
 |---|---|---|
-| A. Managed | The platform preloads pg_auth, runs the sidecar, and offers a managed engine | Authorization for no-backend apps as a product feature; the most work and the most operational surface |
-| B. Bring your engine | The platform preloads pg_auth and runs the sidecar; the customer points it at their own engine | Teams already on OpenFGA, SpiceDB or Cerbos enforce it in Postgres; less to operate, engine availability stays the customer's |
-| C. Self-hosted only | Nothing from the platform | Today's state: anyone running their own Postgres can use it |
+| Do nothing | No cost | Customers with sharing and teams keep hand-written policies, or move to a backend |
+| Better RLS tooling (policy generation, an advisor, a "why is this row hidden") | Helps every project, no engine, no new failure mode | Relationships still live in policy SQL; inherited trees and broad subjects stay slow |
+| pg_auth | Rules in one place, enforced on every surface that reads through Postgres | An engine and a sidecar to run, and an extension in the read path |
 
-Risks to weigh for A or B: availability coupling to the engine (fail closed is the safe default but
-turns an engine outage into a data-path outage), a security review of planner hooks (unsafe Rust is
-confined to two modules), and support for a new class of failure ("my query failed because the
-engine was slow").
+## A phased path
+
+| Phase | Platform work | Must be true first |
+|---|---|---|
+| 0. Self-hosted Supabase with a design partner | None | A license; a partner with sharing or teams |
+| 1. An opt-in image variant, loaded per database (`session_preload_libraries`), Unix socket only, `anon` and `authenticated` subject to it | Build and ship the variant | Upgrade scripts, logical backups, cancellable waits; loading per database tested |
+| 2. The sidecar on Compute | A sidecar per project | Compute reachable privately and kept awake; TLS to Postgres; the remote setup measured |
+| 3. A managed engine | Run an engine per project or region | Phase 1 and 2 adoption |
+
+Costs per phase (engineering time, a security review's scope, on-call, the engine and sidecar per
+project) are not estimated yet.
+
+Risks to weigh: availability coupling to the engine (fail closed is the safe default, but an engine
+outage becomes a data-path outage); a security review of the planner hooks (unsafe Rust is in
+`src/pg/` and `src/ffi.rs`, about 2,800 of the 9,000 lines outside the tests); and a new class of support
+question ("my query failed because the engine was slow").
+
+## How success would be measured
+
+Policies replaced per design partner; protected queries' p95 against their own RLS baseline;
+errors caused by the engine or the sidecar; support tickets per adopter.
 
 ## What I am asking for
 
-1. **A license decision**, so outside teams can try it at all.
-2. **A yes or no on exploring option B** with one design partner, to learn whether the demand is
-   real before committing to a managed engine.
-3. **Time for a security review** of the extension's hooks and the sidecar, if we explore further.
+1. **A go-ahead for phase 0**, time-boxed, with access to the fleet data above to size demand.
+2. **A decision on ownership and a license**, so a design partner can run it.
+3. **Time for a security review** of the hooks and the sidecar, before phase 1.
 
 ## Where to look
 
 - Live demo and overview: https://filipecabaco.github.io/pg_auth/
 - Benchmarks and method: https://filipecabaco.github.io/pg_auth/benchmarks/
 - How it is tested: https://filipecabaco.github.io/pg_auth/testing/
-- The RLS issues catalogue: https://filipecabaco.github.io/pg_auth/research/rls-issues/
+- The RLS issues catalogue (draft): https://filipecabaco.github.io/pg_auth/research/rls-issues/
+- The sidecar over HTTPS, and Compute: https://filipecabaco.github.io/pg_auth/proposals/external-providers/
 - Source: https://github.com/filipecabaco/pg_auth

@@ -131,6 +131,11 @@ defmodule Notes do
         as(conn, "carl", "insert into shares values (5, 'bob', now() + interval '4 seconds')") == 1 and
           eventually(fn -> visible(conn, "bob") == [1, 2, 3, 4, 5] end) and
           eventually(fn -> visible(conn, "bob") == [1, 2, 3, 4] end)
+      end),
+      check("anne creates a document in org 1; dan, in no org, cannot", fn ->
+        as(conn, "anne", "insert into documents values (6, 1, 'Plan')") == 1 and
+          refused?(conn, "dan", "insert into documents values (7, 1, 'Plan B')") and
+          eventually(fn -> visible(conn, "anne") == [1, 2, 3, 6] end)
       end)
     ]
   end

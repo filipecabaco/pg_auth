@@ -1,6 +1,6 @@
 ---
 template: home.html
-title: pg_auth — your app's permissions, enforced by Postgres
+title: "pg_auth: your app's permissions, enforced by Postgres"
 hide:
   - navigation
   - toc
@@ -18,8 +18,9 @@ for every client: your browser app through Supabase or PostgREST, an application
 
 The home page runs a live demo in the browser tab: Postgres 18 with pg_auth and the three engines.
 Anne and Bob use the same app; Bob sees nothing until Anne adds him to her organisation by inserting
-one row. It runs where you control Postgres: the extension loads when Postgres starts and a sidecar
-runs on the same host, which hosted Supabase and most managed Postgres do not allow yet.
+one row. It runs where you configure Postgres yourself: the extension loads when Postgres starts,
+which RDS, Cloud SQL, Neon and hosted Supabase do not allow. The sidecar runs beside Postgres, or on another
+host over HTTPS with signed requests.
 
 ## How it works {#how}
 
@@ -62,8 +63,9 @@ connection: each checked in the RLS issues catalogue.
 ## What to expect {#cost}
 
 About the time of a best-practice policy overall (the benchmarks); grants written as rows show
-within tens of milliseconds, and a share with an end date (`expires_column`) disappears when it
-ends; queries fail when the engine is down; a sidecar runs next to Postgres; experimental.
+within tens of milliseconds, and a share with an end date (`until` in its note) disappears when
+it ends; queries fail when the engine is down; the sidecar runs beside Postgres or over HTTPS;
+experimental.
 
 ## Pick the engine that fits your rules {#engines}
 

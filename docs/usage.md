@@ -2,28 +2,52 @@
 
 pg_auth enforces an external authorization engine's decisions inside Postgres, as row level
 security, for every client: PostgREST, application servers, ad hoc SQL. The engine decides; a
-sidecar next to Postgres asks it (OpenFGA, SpiceDB or Cerbos, behind the same protocol); pg_auth's
+sidecar asks it (OpenFGA, SpiceDB or Cerbos, behind the same protocol), beside Postgres or on
+another host; pg_auth's
 planner hook shapes each query so that checking is cheap. Postgres 15 to 18. How it works:
 [design.md](design.md).
 
 ## 1. Install
 
-- Build and install the extension (pgrx; Postgres 15 to 18) and add it to
-  `shared_preload_libraries = 'pg_auth'`, then `create extension pg_auth`.
-- Run the sidecar (`sidecar/query`) on the same host, listening on a Unix socket Postgres can
-  reach, pointed at OpenFGA (`OPENFGA_URL`, `OPENFGA_STORE_ID`) or SpiceDB (`SPICEDB_URL`,
-  `SPICEDB_TOKEN`; its HTTP gateway on, and `track_commit_timestamp` on in its Postgres datastore
-  for the permission index's change feed). See its
-  [README](https://github.com/filipecabaco/pg_auth/blob/main/sidecar/query/README.md).
-- Point Postgres at it (superuser only, since its answers decide what every query reads):
-  `alter system set pg_auth.sidecar_socket = '/run/pg_auth/default.sock'`.
-- Or run the sidecar elsewhere and reach it over HTTPS: `PG_AUTH_LISTEN`, a secret and a certificate
-  on the sidecar, `pg_auth.sidecar_url` and `pg_auth.sidecar_secret_file` in Postgres. Requests and
-  answers are signed with the secret, and anything else is refused; a round trip costs about
-  0.17 ms more than the socket, plus the network's. See the sidecar's
-  [README](https://github.com/filipecabaco/pg_auth/blob/main/sidecar/query/README.md#over-the-network).
-- Optional: give the sidecar `PG_AUTH_DATABASE_URL` to keep the permission index in Postgres
-  (subjects with more objects than the engine lists are then answered from Postgres).
+pg_auth runs where you configure Postgres yourself: a VM, Docker, Kubernetes, self-hosted
+Supabase. It does not run on RDS, Aurora, Cloud SQL, Neon or hosted Supabase: they do not let you
+preload an extension, and running the sidecar elsewhere over HTTPS does not change that.
+
+1. **Build the extension.** It needs Rust (`mise install` pins the version), `cargo-pgrx` 0.19.3
+   (`cargo install cargo-pgrx --version 0.19.3 --locked`, then
+   `cargo pgrx init --pg17 "$(which pg_config)"`), clang, and the Postgres server headers
+   (`postgresql-server-dev-17` on Debian or Ubuntu). Then
+   `cargo pgrx install --release --pg-config "$(which pg_config)"`, with `--sudo` when Postgres's
+   directories belong to root. Or build an image: `bench/docker/Dockerfile` is the official
+   Postgres image with pg_auth preloaded (`--build-arg PG_MAJOR=17`).
+2. **Preload it.** `shared_preload_libraries = 'pg_auth'` in `postgresql.conf`, restart Postgres,
+   then `create extension pg_auth` as a superuser.
+3. **Run an engine.** OpenFGA needs a store (`curl -X POST "$OPENFGA_URL/stores" -d
+   '{"name": "app"}'`; its `id` is `OPENFGA_STORE_ID`) and a datastore that persists. SpiceDB needs
+   its HTTP gateway on, and `track_commit_timestamp` on in its Postgres datastore for the change
+   feed. Cerbos needs its storage in a database with its Admin API on, to take the rules from
+   Postgres.
+4. **Run the sidecar** (`sidecar/query`, see its
+   [README](https://github.com/filipecabaco/pg_auth/blob/main/sidecar/query/README.md)) pointed at
+   the engine: `OPENFGA_URL` and `OPENFGA_STORE_ID`, `SPICEDB_URL` and `SPICEDB_TOKEN`, or
+   `CERBOS_URL` with `CERBOS_ADMIN_USER` and `CERBOS_ADMIN_PASSWORD`. Give it
+   `PG_AUTH_DATABASE_URL`, a login holding `authz_sidecar` (below): through it the sidecar pushes
+   the rules stored with `authz.set_rules`, delivers relationship tables' rows, and keeps the
+   permission index. Without it, none of the three happens.
+5. **Point Postgres at it**, superuser-only since its answers decide what every query reads. Beside
+   Postgres, on a Unix socket: the sidecar's `PG_AUTH_SOCKET` and Postgres's
+   `pg_auth.sidecar_socket` name the same path (both default to `/tmp/pg_auth.sock`; the sidecar's
+   image uses `/run/pg_auth/pg_auth.sock`), and the sidecar runs in the Postgres OS user's group,
+   since the socket is created 0660:
+   `alter system set pg_auth.sidecar_socket = '/run/pg_auth/pg_auth.sock'`.
+6. **Or on another host, over HTTPS:** `PG_AUTH_LISTEN`, a secret and a certificate on the sidecar,
+   `pg_auth.sidecar_url` and `pg_auth.sidecar_secret_file` in Postgres. Requests and answers are
+   signed with the secret, and anything else is refused; a round trip costs about 0.17 ms more than
+   the socket, plus the network's. The sidecar's own connection to Postgres
+   (`PG_AUTH_DATABASE_URL`) does not use TLS yet, so keep it on a private network, and keep both
+   hosts' clocks within 30 s of each other. See the sidecar's
+   [README](https://github.com/filipecabaco/pg_auth/blob/main/sidecar/query/README.md#over-the-network);
+   `docker/remote` runs it with `docker compose`.
 
 `select * from authz.status()` shows the engine, the socket, the subject source and every
 protected table.
@@ -47,6 +71,23 @@ create role sidecar login password '...' in role authz_sidecar;        -- PG_AUT
 A function added to `authz_internal` or `authz_sidecar` is closed until a role is granted it. The
 admin functions run as their caller, so protecting a table still needs owning it: `authz_admin`
 cannot add policies to someone else's table.
+
+### On self-hosted Supabase
+
+Not tested yet on the Supabase stack; what applies from how Supabase sets up Postgres:
+
+- The `supabase/postgres` image does not include pg_auth: build it against that image's
+  `pg_config` and add it to its `shared_preload_libraries`.
+- `create extension pg_auth` and `alter system` need a superuser (`supabase_admin`): `postgres` is
+  not one there. Protecting a table needs owning it, so a migration run as `postgres` cannot
+  protect `storage.objects`, which `supabase_storage_admin` owns.
+- `authz.configure(subject => 'jwt')` reads `sub` from the claims PostgREST sets. To verify the
+  token's signature instead, give `jwt_signed` the project's JWT secret as an `oct` key:
+  `{"keys": [{"kty": "oct", "k": "<the secret, base64url>"}]}`.
+- `anon` requests carry no `sub`: they see no protected rows. `service_role` bypasses row level
+  security, and so pg_auth.
+- Realtime and Storage read through Postgres, so pg_auth's policies apply to them, but neither is
+  tested yet; Realtime checks each change once per subscriber, a sidecar question each.
 
 ## 2. Who is asking
 
@@ -89,7 +130,7 @@ type org
     define can_read: member or admin
     define can_manage: admin
 type document
-  # pg_auth: protects documents (id): read viewer, write editor
+  # pg_auth: protects documents (id): read viewer, write editor, insert org#can_manage from org_id
   # pg_auth: protects shares (doc_id): read viewer, write editor
   # pg_auth: org from documents.org_id
   # pg_auth: shared_with from shares(doc_id).user_id: until expires_at
@@ -124,7 +165,7 @@ definition org {
 }
 
 definition document {
-  // pg_auth: protects documents (id): read viewer, write editor
+  // pg_auth: protects documents (id): read viewer, write editor, insert org#can_manage from org_id
   // pg_auth: protects shares (doc_id): read viewer, write editor
   // pg_auth: org from documents.org_id
   // pg_auth: shared_with from shares(doc_id).user_id: until expires_at
@@ -434,7 +475,7 @@ time reaches it, for clients that never call `last_statement_advice()`.
 
 | setting | default | what it does |
 |---|---|---|
-| `pg_auth.sidecar_socket` | | the sidecar's Unix socket (superuser) |
+| `pg_auth.sidecar_socket` | `/tmp/pg_auth.sock` | the sidecar's Unix socket (superuser) |
 | `pg_auth.sidecar_url` | | an `https://` URL: reach the sidecar over the network instead of the socket (superuser) |
 | `pg_auth.sidecar_secret_file` | | the file holding the secret requests to the URL are signed with (superuser) |
 | `pg_auth.sidecar_ca_file` | | PEM roots to check the URL's certificate against, instead of the public ones (superuser) |
@@ -510,3 +551,23 @@ written through a relationship table clears every one of them:
 - **The sidecar down:** answers already kept are used for at most its 1 s, then every statement
   on a protected table fails, the permission index included: nothing in Postgres answers alone.
 
+## 9. What it does not do yet
+
+- **Upgrades.** There are no extension update scripts: a new version is `drop extension` and
+  `create extension` again, which drops pg_auth's policies, so the rules are stored again after.
+- **Logical dumps.** `pg_dump` leaves out pg_auth's configuration (its tables belong to the
+  extension and are not marked to be dumped): after a restore, configure the subject and store the
+  rules again.
+- **Cancelling a wait.** A statement waiting on the sidecar is not cancelled until
+  `pg_auth.sidecar_timeout_ms` passes (5 s by default; a fill wait is the exception). Keep it low.
+- **Several sidecars on one database.** Each keeps its own cache: a revocation delivered by one
+  shows on the others once their cache expires (1 s) and, on SpiceDB, within the engine's
+  revision window.
+- **Read replicas.** Not tested; a replica's permission index follows the primary's with the
+  replay's lag.
+- **The first admin.** A relationship table protected with `write` lets only those who hold it add
+  rows, so the first member of a new organisation is written by a privileged path: a
+  `security definer` function, or a role that bypasses row level security.
+- **Memory.** Each backend keeps answers of its own: up to 10,000 lists, and a million ids of loaded
+  index sets.
+- **Hosted OpenFGA with OAuth** (Okta FGA): the sidecar takes a static token only.

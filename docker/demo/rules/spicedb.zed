@@ -12,7 +12,7 @@ definition org {
 }
 
 definition document {
-  // pg_auth: protects documents (id): read viewer, write editor
+  // pg_auth: protects documents (id): read viewer, write editor, insert org#can_manage from org_id
   // pg_auth: protects shares (doc_id): read viewer, write editor
   // pg_auth: org from documents.org_id
   // pg_auth: shared_with from shares(doc_id).user_id: until expires_at

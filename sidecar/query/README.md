@@ -2,7 +2,8 @@
 
 Answers the pg_auth extension's authorization questions by asking the source-of-truth engine:
 OpenFGA or SpiceDB, which decide on relationships, or Cerbos, which decides on a resource's
-attributes (docs/proposals/cerbos.md). It runs next to Postgres, outside it, and listens on a local Unix socket;
+attributes (docs/proposals/cerbos.md). It runs outside Postgres and listens on a local Unix socket, or over HTTPS
+for a Postgres on another host (below);
 Postgres holds no copy of the authorization data. The protocol is engine-neutral: the extension
 does not know which engine is behind the socket, and `ping` is the only answer that names it.
 
@@ -130,7 +131,7 @@ A failure the engine may get over (unreachable, 5xx, 429) is retried every `INDE
 change it refuses for good (another 4xx) is set aside in the outbox with its reason, and the others
 go on. Afterwards reads skip the engine's caches: OpenFGA with `HIGHER_CONSISTENCY` for 10 s,
 SpiceDB at least as fresh as the write's ZedToken. A change shows within tens of milliseconds.
-A relationship that ends (`expires_column`) is written with its end, which SpiceDB takes as the
+A relationship that ends (a note's `until`) is written with its end, which SpiceDB takes as the
 relationship's expiration (`optional_expires_at`); its delete waits in the outbox until it is due,
 and is delivered like any other change, on both engines.
 
@@ -209,11 +210,21 @@ available beside it.
   the sidecar's signature over it and the request's signature. A request without one, with a
   wrong one, or with a timestamp more than 30 s from the sidecar's clock is refused (401), and the
   secret never crosses the wire.
+- **Replays.** A captured request is refused once its timestamp is 30 s old; before that it only
+  asks the same question again, and its answer goes back encrypted. Keep the clocks of Postgres's
+  host and the sidecar's within that (NTP): a skewed clock is refused as a wrong signature.
+- **Who reaches it.** Only Postgres should: restrict the port (a firewall, a Kubernetes
+  NetworkPolicy). The sidecar reads a request's body before checking its signature, up to 16 MiB.
 - **Rotation.** `PG_AUTH_SECRET_FILE` holds one secret per line, any of them accepted: add the new
-  one, move Postgres to it, remove the old one.
+  one, move Postgres to it, remove the old one. The sidecar reads the file, and its certificate,
+  when it starts: restart it after each change.
 - **TLS.** Its own certificate, or `PG_AUTH_TLS_TERMINATED=1` behind a platform that terminates
-  TLS; without either it does not start, nor without the secret.
-- **Health.** `GET /healthz` answers `ok`, and nothing else.
+  TLS; without either it does not start, nor without the secret. Its own connection to Postgres
+  (`PG_AUTH_DATABASE_URL`) does not use TLS yet: keep it on a private network.
+- **Health.** `GET /healthz` answers `ok` while the process runs; it does not check the engine or
+  Postgres.
+- **Several replicas.** Each keeps its own answer cache: a revocation delivered by one shows on
+  the others once their cache expires (1 s) and, on SpiceDB, within the engine's revision window.
 - **Try it.** `docker/remote` runs Postgres, SpiceDB and the sidecar in separate containers with
   `docker compose`, the sidecar reached only over HTTPS.
 - **Cost.** About 0.17 ms a round trip more than the socket, measured on one host

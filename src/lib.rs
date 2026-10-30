@@ -1,5 +1,5 @@
 // Unsafe code is confined to the modules that must manipulate Postgres memory directly:
-// `rewrite` (the planner hook) and `ffi` (catalog lookups). Everything else is safe Rust.
+// `pg` (planner and executor nodes) and `ffi` (catalog lookups). Everything else is safe Rust.
 #![deny(unsafe_code)]
 
 use pgrx::prelude::*;

@@ -44,7 +44,7 @@ type org
     define admin: [user]
     define member: [user]
 type document
-  # pg_auth: protects documents (id): read viewer, write editor
+  # pg_auth: protects documents (id): read viewer, write editor, insert org#admin from org_id
   # pg_auth: org from documents.org_id
   relations
     define org: [org]
@@ -112,12 +112,14 @@ session, on a pooled connection that is never reset, outlives its request, so se
 | [SpiceDB](https://authzed.com/spicedb) | relationships (Zanzibar) | the same, with SpiceDB's Watch as the change feed |
 | [Cerbos](https://cerbos.dev) | a row's attributes and the user's roles | the rule compiled into an indexable SQL filter |
 
-The extension speaks one protocol to a sidecar that runs next to Postgres, so the engine can be
-changed without touching the database.
+The extension speaks one protocol to a sidecar, beside Postgres on a Unix socket or on another
+host over HTTPS with signed requests, so the engine can be changed without touching the database.
 
 ## Quick start
 
-pg_auth is pre-release: build it from source. Postgres 15, 16, 17 and 18 are supported.
+pg_auth is pre-release: build it from source. Postgres 15, 16, 17 and 18 are supported, where you
+configure Postgres yourself: it must be preloaded, which RDS, Cloud SQL, Neon and hosted Supabase do
+not allow.
 
 ```sh
 mise install                                   # the pinned toolchain (mise.toml)
@@ -134,8 +136,10 @@ select authz.set_rules('openfga', 'model', $$ ... $$);   -- your model, with its
 select * from authz.doctor();
 ```
 
-Run the sidecar ([`sidecar/query`](sidecar/query/README.md)) next to Postgres, pointed at your
-engine. [Getting started](docs/usage.md) covers the rest: subjects from signed tokens, several ways
+Run the sidecar ([`sidecar/query`](sidecar/query/README.md)) pointed at your engine, beside
+Postgres or on its own host over HTTPS (`pg_auth.sidecar_url`; [`docker/remote`](docker/remote)
+runs that with `docker compose`), with `PG_AUTH_DATABASE_URL` so it pushes the stored rules and
+delivers relationship rows. [Getting started](docs/usage.md) covers the rest: subjects from signed tokens, several ways
 to reach a row, inherited folders, attribute rules, inserts checked on the parent.
 
 ## Grant access by writing rows

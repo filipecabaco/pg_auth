@@ -2,7 +2,8 @@
 //! (pg_auth.sidecar_url) rather than on its Unix socket: the same protocol, one request per
 //! `POST /v1/ask`, over HTTPS. Every request and every answer is signed with a secret both ends
 //! hold (HMAC-SHA256), so a caller without it is refused and an answer is bound to the question
-//! it answers; nothing on the wire can be reused (docs/proposals/external-providers.md).
+//! it answers. A captured request is refused once its timestamp is 30 s old; before that, it can
+//! only ask the same question again (docs/proposals/external-providers.md).
 //!
 //! ```text
 //! pg-auth-timestamp: 1793350000

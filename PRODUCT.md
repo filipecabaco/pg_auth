@@ -48,8 +48,9 @@ to GitHub Pages from `filipecabaco/pg_auth`.
 - Subjects from a JWT claim (as Supabase/PostgREST set it), a verified bearer token, or a setting.
 - Reads, writes, inserts checked on a parent, several ways to reach a row, inherited trees, key
   expressions; relationship tables for grants; fails closed when the engine cannot answer.
-- Needs `shared_preload_libraries` and a sidecar on the same host: servers you control, or managed
-  Postgres only where the provider allows both.
+- Needs `shared_preload_libraries`: servers you control, or managed Postgres only where the provider
+  preloads it. The sidecar runs beside Postgres on a Unix socket, or on another host over HTTPS with
+  signed requests and answers.
 - Status: experimental, pre-release, built from source; no license chosen yet. State this plainly.
 
 ## Brand Commitments
@@ -62,7 +63,7 @@ to GitHub Pages from `filipecabaco/pg_auth`.
 
 ## Evidence on Hand
 
-- Live, in-browser demo to be built with snowglobe (as `../pg_redis` does), running Postgres with
+- Live, in-browser demo built with snowglobe (as `../pg_redis` does), running Postgres with
   pg_auth, the sidecar and all three engines; the larger download is accepted.
 - `bench/docker` results (35 scenarios, 489 pairs, 2026-10-29): 0.80x of best-practice RLS time
   overall (measured with OpenFGA); per-scenario figures in `docs/benchmarks.md`.

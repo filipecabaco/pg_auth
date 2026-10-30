@@ -13,7 +13,8 @@ sources of truth, or skip RLS and authorize in the application, which defeats th
 **Goal:** protect tables with the decisions of an external authorization engine, enforced inside
 Postgres for every client, at a cost close to a hand-tuned policy. For Supabase users this means
 no authorization in the application layer at all: PostgREST, GraphQL, Storage and Realtime all
-reach data through Postgres, so pg_auth's policies cover every surface.
+reach data through Postgres, so pg_auth's policies apply to each. PostgREST's way is the one
+tested; Storage and Realtime are not yet.
 
 ### Non-goals
 - Being an authorization engine. Postgres evaluates no model and stores no relationships; the
@@ -38,14 +39,14 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
             │                       planner_hook: list ids     │ authz.allowed_* (InitPlan)
             │                                      │           │ authz.permits   (per row)
             │                                      ▼           ▼
-            │                          src/sidecar.rs: one socket per backend,
+            │                          src/sidecar.rs: one connection per backend,
             │                          answers cached for the transaction, lists
             │                          kept across them while the sidecar's are valid
             └──────────────────────────────────┬─────────────────┘
-                                               │ JSON lines, Unix socket
+                                               │ JSON lines on a Unix socket, or signed HTTPS
                                      pg-auth-sidecar (sidecar/query)
                                                │ HTTP
-                                     OpenFGA or SpiceDB
+                                     OpenFGA, SpiceDB or Cerbos
 ```
 
 - **Binding.** A note in the engine's rules (`# pg_auth: protects docs (org_id): read view, write
@@ -58,7 +59,7 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
   are granted to `authz_admin`. `authz_sidecar` holds the sidecar's functions (role
   `authz_sidecar`), `authz_internal` the tables and the lower-level setup (role `authz_admin`).
   Access is decided per schema (sql/grants.sql), so a new internal function is closed by default.
-- **Sidecar.** A separate process next to Postgres that speaks one small protocol (`list`,
+- **Sidecar.** A separate process, beside Postgres or on another host, that speaks one small protocol (`list`,
   `check`, `fill`, `ping`) and translates it to an engine's API: OpenFGA's or SpiceDB's, chosen by
   its configuration (§4). Network calls and engine credentials stay outside the database. The
   extension does not know which engine answers. It reaches the sidecar on a Unix socket, or over
@@ -309,8 +310,10 @@ conditional is denied. Subjects may be usersets (`group:eng#member`).
 
 - **Fail closed.** Unreachable sidecar, engine error or malformed answer: the statement errors.
   No subject: no rows. Missing check results: denied.
-- **Who may steer decisions.** `pg_auth.sidecar_socket` and `pg_auth.sidecar_timeout_ms` are
-  superuser-only; the socket is created 0660 for the Postgres OS group. `authz.check` answers for
+- **Who may steer decisions.** `pg_auth.sidecar_socket`, `pg_auth.sidecar_url`,
+  `pg_auth.sidecar_secret_file`, `pg_auth.sidecar_ca_file` and `pg_auth.sidecar_timeout_ms` are
+  superuser-only; the socket is created 0660 for the Postgres OS group. The secret file is read by
+  the Postgres OS user, so a superuser, or a role reading server files, can read the secret. `authz.check` answers for
   any subject and is revoked from `public`; `authz.can` answers for the current subject only.
 - **Consistency.** Within a transaction a subject gets one answer per (type, permission). Across
   transactions answers are as fresh as the engine, minus the sidecar's cache TTL (1 s by default).

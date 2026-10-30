@@ -9,26 +9,29 @@ RLS, planning and execution together, and is faster in 201 of them, with OpenFGA
 
 ## Where it wins and where it loses
 
-Faster than hand-tuned RLS where a policy has to do real work:
+Faster than hand-tuned RLS where a policy has to do real work (OpenFGA's run; SpiceDB's is in
+[the benchmarks](benchmarks.md)):
 
 | scenario | pg_auth vs best-practice RLS |
 |---|---|
-| permissions inherited down a folder tree | 0.22x |
-| a policy reading another protected table | 0.23x |
+| permissions inherited down a folder tree | 0.21x |
+| a policy reading another protected table | 0.22x |
 | a selective subject paging an ordered table | 0.24x |
-| storage paths (a key expression) | 0.28x |
-| a large membership array | 0.40x |
-| Supabase owner-or-role | 0.45x |
+| storage paths (a key expression) | 0.34x |
+| a large membership array | 0.39x |
+| Supabase owner-or-role | 0.46x |
 
-Slower where a policy is a single indexed comparison, which is RLS's best case:
+Slower where a policy is a single indexed comparison, which is RLS's best case, or where its
+premise is kept:
 
 | scenario | pg_auth vs best-practice RLS |
 |---|---|
-| one tenant holding half the table, paging one kind of row | 1.7x |
-| joining two protected tables | 1.6x |
-| reading one partition directly | 1.5x |
-| `count(*)` over rows filtered on JWT claims | 1.3x |
-| a tenant column, RLS's best case | 1.3x |
+| a policy on a column with no index (the pg_auth variant keeps it unindexed) | 1.70x |
+| one tenant holding half the table, paging one kind of row | 1.68x |
+| reading one partition directly | 1.64x |
+| an update that must also pass the read policy | 1.60x |
+| a tenant column, RLS's best case | 1.38x |
+| joining two protected tables | 1.23x |
 
 On such statements, which run in under 0.1 ms, pg_auth's planning (about 0.02 ms per protected
 table, warm) is a visible share of the total. Run-to-run variation per scenario is large, so a

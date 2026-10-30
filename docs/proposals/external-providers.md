@@ -70,7 +70,7 @@ written for the test, and is useful without Compute.
 
 The goal (2026-10-30): the extension reaches its sidecar either next to Postgres, on a Unix socket
 as now, or as an external service over the network, chosen by a setting
-(`pg_auth.sidecar_socket`, or `pg_auth.sidecar_url` with its token). One protocol either way.
+(`pg_auth.sidecar_socket`, or `pg_auth.sidecar_url` with its secret). One protocol either way.
 What answers at the URL decides what keeps working:
 
 | behind the URL | what works |
@@ -84,9 +84,8 @@ What an external sidecar needs:
   connection kept per backend, from a synchronous client inside Postgres (`ureq` with rustls; no
   async runtime in a backend). If raw TCP is offered, the JSON lines go over TLS as they are.
 - **Authentication.** On a Unix socket the file's permissions keep everyone out. A network sidecar
-  answers "what may subject X see" for any X: it needs a token the extension sends
-  (`pg_auth.sidecar_token`, superuser-only like `pg_auth.sidecar_socket`) or mutual TLS, and must
-  not be reachable from the internet.
+  answers "what may subject X see" for any X: it must know the caller is Postgres, and must not be
+  reachable from the internet. Decided below: signed requests.
 - **Latency.** A Unix socket round trip is tens of microseconds; the same region's network about
   0.3 to 1 ms, and a TLS handshake each time a backend connects. Answers kept across transactions
   (1 s) and the permission index absorb most of it; a narrow subject's first statement and
@@ -112,9 +111,9 @@ says which workloads a remote sidecar suits.
 
 HTTPS only, and both ends prove themselves: Postgres must know it talks to its sidecar (a fake one
 could answer "allow everything"), and the sidecar must know the caller is Postgres (anyone else
-could ask what any user may see). Requests are signed rather than carrying a token, so nothing a
-proxy sees or logs can be reused, and it works behind a platform that terminates TLS in front of
-the service, which Compute likely does and which strips client certificates.
+could ask what any user may see). Requests are signed rather than carrying a token, so a proxy
+that sees or logs them never holds the secret, and it works behind a platform that terminates TLS
+in front of the service, which Compute likely does and which strips client certificates.
 
 **Settings**, superuser-only like `pg_auth.sidecar_socket`:
 
@@ -161,7 +160,7 @@ after another, so a cancel or `statement_timeout` still applies.
 | a captured request sent again | refused after 30 s; before, it only asks the same question again, and its answer travels encrypted to the sender |
 | a request changed on its way | the body is signed |
 | a fake sidecar (DNS, a misrouted service) answers "allow everything" | the certificate does not verify; behind TLS termination, it cannot sign the answer without the secret |
-| a proxy or platform logs the traffic | the logs hold signatures, never the secret |
+| a proxy or platform logs the traffic | the logs hold signatures, never the secret; they do hold the questions and answers, in the clear behind a platform that terminates TLS |
 | a role points pg_auth at its own sidecar, or reads the secret | the settings are superuser-only; the secret is in a file the postgres OS user reads |
 
 ## Cerbos

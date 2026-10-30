@@ -45,10 +45,10 @@ resourcePolicy:
         <a class="pa-btn pa-btn--quiet" href="{{ 'usage/#2-who-is-asking' | url }}">How it works with no backend</a>
       </div>
       <p class="pa-where">
-        Runs where you control Postgres: the extension loads when Postgres starts, and a small
-        service (the sidecar) runs on the same host. Hosted Supabase and most managed Postgres do not
-        allow either yet. Experimental, pre-release, no license yet. The demo downloads about 150 MB
-        once.
+        Runs where you configure Postgres yourself: the extension loads when Postgres starts, which
+        RDS, Cloud SQL, Neon and hosted Supabase do not allow. A small service, the sidecar, runs
+        beside Postgres or on another host over HTTPS. Experimental, pre-release, no license yet.
+        The demo downloads about 150 MB once.
       </p>
     </div>
 
@@ -85,7 +85,7 @@ type org
     define can_read: member or admin
     define can_manage: admin
 type document
-  <span class="n"># pg_auth: protects documents (id): read viewer, write editor</span>
+  <span class="n"># pg_auth: protects documents (id): read viewer, write editor, insert org#can_manage from org_id</span>
   <span class="n"># pg_auth: protects shares (doc_id): read viewer, write editor</span>
   <span class="n"># pg_auth: org from documents.org_id</span>
   <span class="n"># pg_auth: shared_with from shares(doc_id).user_id: until expires_at</span>
@@ -114,7 +114,7 @@ definition org {
 }
 
 definition document {
-  <span class="n">// pg_auth: protects documents (id): read viewer, write editor</span>
+  <span class="n">// pg_auth: protects documents (id): read viewer, write editor, insert org#can_manage from org_id</span>
   <span class="n">// pg_auth: protects shares (doc_id): read viewer, write editor</span>
   <span class="n">// pg_auth: org from documents.org_id</span>
   <span class="n">// pg_auth: shared_with from shares(doc_id).user_id: until expires_at</span>
@@ -220,10 +220,10 @@ $$);</code></pre>
   <h2 class="pa-h2">How it works</h2>
   <p class="pa-sub">
     Four parts, two of them yours already. Your app sends ordinary SQL; pg_auth asks the engine who
-    may see what, through a sidecar on the same host, and turns the answer into a filter Postgres can
-    use an index for.
+    may see what, through a sidecar beside Postgres or on its own host, and turns the answer into a
+    filter Postgres can use an index for.
   </p>
-  <div class="pa-arch" role="img" aria-label="Your app sends SQL to Postgres with pg_auth; pg_auth asks the sidecar over a Unix socket; the sidecar asks the engine over HTTP or gRPC. Reading: the engine's answer comes back as the ids the user may see, and Postgres filters on them. Granting: an inserted row goes to an outbox in the same transaction, and the sidecar delivers it to the engine.">
+  <div class="pa-arch" role="img" aria-label="Your app sends SQL to Postgres with pg_auth; pg_auth asks the sidecar over a Unix socket, or over HTTPS with signed requests; the sidecar asks the engine over HTTP. Reading: the engine's answer comes back as the ids the user may see, and Postgres filters on them. Granting: an inserted row goes to an outbox in the same transaction, and the sidecar delivers it to the engine.">
     <div class="pa-arch__node">
       <b>Your app</b>
       <span>browser or phone, through PostgREST: no server of its own</span>
@@ -242,7 +242,7 @@ $$);</code></pre>
     </div>
     <div class="pa-arch__link pa-arch__link--read">
       <i>which documents may bob view?</i>
-      <span>Unix socket; answers cached, refreshed ahead</span>
+      <span>Unix socket or signed HTTPS; answers cached, refreshed ahead</span>
     </div>
     <div class="pa-arch__link pa-arch__link--grant">
       <i>outbox row</i>
@@ -250,11 +250,11 @@ $$);</code></pre>
     </div>
     <div class="pa-arch__node">
       <b>Sidecar</b>
-      <span>next to Postgres: cache, delivery, the engine's credentials</span>
+      <span>beside Postgres or on its own host: cache, delivery, the engine's credentials</span>
     </div>
     <div class="pa-arch__link pa-arch__link--read">
       <i>ListObjects · LookupResources · PlanResources</i>
-      <span>HTTP or gRPC</span>
+      <span>HTTP</span>
     </div>
     <div class="pa-arch__link pa-arch__link--grant">
       <i>write the relationship</i>
@@ -452,19 +452,24 @@ $$);</code></pre>
       </p>
     </div>
     <div class="pa-expect__item">
-      <h3>When the engine is down, queries fail</h3>
+      <h3>When the engine or the sidecar is down, queries fail</h3>
       <p>
         Statements on protected tables fail rather than guess: at once if the engine refuses the
-        connection, after 4 seconds (configurable) if it hangs. Answers cached in the last second still
-        serve, and subjects too broad to list keep their last set in the permission index. Grants
-        written as rows wait and are delivered when it is back.
+        connection, after 4 seconds if it hangs, after 5 if the sidecar does (both configurable).
+        Answers cached in the last second still serve, and with the engine down, subjects too broad
+        to list keep their last set in the permission index. Grants written as rows wait and are
+        delivered when it is back.
       </p>
     </div>
     <div class="pa-expect__item">
-      <h3>It needs a sidecar next to Postgres</h3>
+      <h3>It needs a Postgres you configure</h3>
       <p>
-        Postgres 15 to 18 with <code>shared_preload_libraries</code>, and the sidecar on the same
-        host: servers you control. Hosted Supabase and most managed Postgres do not allow that yet.
+        Postgres 15 to 18 with pg_auth in <code>shared_preload_libraries</code>: a VM, Docker,
+        Kubernetes, self-hosted Supabase. Not RDS, Cloud SQL, Neon or hosted Supabase, which do not
+        preload extensions; running the sidecar over HTTPS does not change that. The sidecar runs
+        beside Postgres on a Unix socket, or on another host over HTTPS, where every request and
+        answer is signed with a secret Postgres and the sidecar hold.
+        <a href="{{ 'usage/#1-install' | url }}">Install</a>
       </p>
     </div>
     <div class="pa-expect__item">
@@ -489,8 +494,8 @@ $$);</code></pre>
     </tbody>
   </table>
   <p class="pa-proof">
-    Postgres speaks one small protocol to a sidecar on a Unix socket, so changing engines does not
-    touch the database.
+    Postgres speaks one small protocol to a sidecar, on a Unix socket or over HTTPS, so changing
+    engines does not touch the database.
   </p>
 </section>
 
@@ -498,8 +503,8 @@ $$);</code></pre>
   <div>
     <h2 class="pa-h2">Try it on your own Postgres</h2>
     <p class="pa-sub">
-      Build the extension, preload it, run the sidecar next to Postgres pointed at your engine, and
-      store your rules with a note naming the table they protect.
+      Build the extension, preload it, run the sidecar pointed at your engine (beside Postgres, or on
+      its own host over HTTPS), and store your rules with a note naming the table they protect.
     </p>
     <a class="pa-btn pa-btn--primary" href="{{ 'usage/' | url }}">Getting started</a>
   </div>

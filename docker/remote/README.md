@@ -2,8 +2,8 @@
 
 Postgres reaches its sidecar over the network instead of a Unix socket, as when the sidecar runs
 on another host or on a platform next to the database (`docs/proposals/external-providers.md`).
-Three containers: Postgres with pg_auth, SpiceDB, and the sidecar, which shares nothing with
-Postgres but the network. The tables and rules are the demo's (`docker/demo/sql`,
+Three services, Postgres with pg_auth, SpiceDB, and the sidecar, which shares nothing with
+Postgres but the network; and a one-off container that makes the test certificates. The tables and rules are the demo's (`docker/demo/sql`,
 `docker/demo/rules/spicedb.zed`).
 
     docker compose up --build -d

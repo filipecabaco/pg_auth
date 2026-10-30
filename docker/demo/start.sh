@@ -1,5 +1,6 @@
 #!/bin/sh
-# Postgres, the three engines and a sidecar for each, then tmux: anne and bob side by side, each a
+# Postgres, the three engines and a sidecar for each, and a sidecar running Cedar itself, then tmux:
+# anne and bob side by side, each a
 # psql session as that user. The snapshot is taken at bob's prompt, so visitors restore a machine
 # that is already up. When tmux exits the console runs this again; everything is still up.
 PSQL="psql -h /run/postgresql -U postgres -X -q -tA"
@@ -18,7 +19,7 @@ sidecar() {
 # how many panes have finished training (train/*.sql)
 trained() { $PSQL -d openfga -c "select count(*) from pg_stat_activity where application_name = 'trained'"; }
 
-if [ ! -S /run/pg_auth/cerbos.sock ]; then
+if [ ! -S /run/pg_auth/cedar.sock ]; then
   install -d -o postgres -g postgres /run/postgresql /run/pg_auth
   su-exec postgres pg_ctl -D "$PGDATA" -l /run/postgresql/server.log -w -s start
 
@@ -43,18 +44,20 @@ if [ ! -S /run/pg_auth/cerbos.sock ]; then
     PG_AUTH_DATABASE_URL="host=/run/postgresql user=postgres dbname=spicedb"
   sidecar cerbos CERBOS_URL=http://127.0.0.1:3592 CERBOS_ADMIN_USER=cerbos CERBOS_ADMIN_PASSWORD=cerbosAdmin \
     PG_AUTH_DATABASE_URL="host=/run/postgresql user=postgres dbname=cerbos"
+  # Cedar has no server: its sidecar loads the schema and policies its database keeps
+  sidecar cedar PG_AUTH_ENGINE=cedar PG_AUTH_DATABASE_URL="host=/run/postgresql user=postgres dbname=cedar"
 
   # the rules reach their engines, then the relationships already in the tables, before the snapshot
-  for db in openfga spicedb cerbos; do
+  for db in openfga spicedb cerbos cedar; do
     until [ "$($PSQL -d $db -c 'select count(*) from authz.rules() where pushed_at is null')" = 0 ]; do sleep 0.3; done
   done
-  for db in openfga spicedb; do
+  for db in openfga spicedb cedar; do
     until [ "$($PSQL -d $db -c 'select count(*) from authz_internal.outbox')" = 0 ]; do sleep 0.3; done
   done
-  until [ -S /run/pg_auth/cerbos.sock ]; do sleep 0.3; done
+  until [ -S /run/pg_auth/cerbos.sock ] && [ -S /run/pg_auth/cedar.sock ]; do sleep 0.3; done
 
   # train each engine, its sidecar and Postgres on the demo's statements (rolled back)
-  for db in openfga spicedb cerbos; do
+  for db in openfga spicedb cerbos cedar; do
     psql -X -q -h /run/postgresql -U admin -d $db -f /etc/demo/train/engine.sql
   done
 fi

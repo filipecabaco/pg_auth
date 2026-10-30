@@ -2,14 +2,14 @@
 
 <p align="center"><b>Real authorization for Postgres-backed apps. No policies to write, no backend to run.</b></p>
 
-pg_auth lets an authorization engine (OpenFGA, SpiceDB or Cerbos) decide who may see and change
+pg_auth lets an authorization engine (OpenFGA, SpiceDB, Cerbos, or Cedar run by its sidecar) decide who may see and change
 each row, and has Postgres enforce that decision for every client: your browser app through
 PostgREST or Supabase, an application server, psql. Sharing, teams, roles, inherited folders and
 rules on a row's own fields live in one model. A table is protected with one call, and pg_auth
 turns it into row level security that the planner can index.
 
 **Docs and live demo:** https://filipecabaco.github.io/pg_auth/ (the home page boots Postgres with pg_auth,
-OpenFGA, SpiceDB and Cerbos in your browser tab; nothing to install)
+OpenFGA, SpiceDB, Cerbos and Cedar in your browser tab; nothing to install)
 
 ## From policies to one line
 

@@ -5,9 +5,10 @@
 //! One row per type (`type`), per relation a row may write (`relation`, with each form of subject
 //! it takes, as written: `user`, `user:*`, `team#member`, `user with in_region`, `user with
 //! expiration`), per relation computed from others (`permission`), per OpenFGA condition or
-//! SpiceDB caveat (`condition`, with its parameters), and per Cerbos action (`action`, its resource
-//! as the type). Rules it cannot read give one `unreadable` row, and are not checked: the engine
-//! says what is wrong with them.
+//! SpiceDB caveat (`condition`, with its parameters), and per Cerbos or Cedar action (`action`, its
+//! resource as the type). A Cedar schema's `entity User in [Group]` is a relation `in` taking those
+//! types; its policies define nothing to check. Rules it cannot read give one `unreadable` row, and
+//! are not checked: the engine says what is wrong with them.
 
 use pgrx::prelude::*;
 use serde_json::Value;
@@ -63,6 +64,7 @@ pub(crate) fn entries(engine: &str, body: &str) -> Result<Vec<Entry>, String> {
         "openfga" => Ok(openfga_dsl(body)),
         "spicedb" => Ok(spicedb(body)),
         "cerbos" => cerbos(body),
+        "cedar" => cedar(body),
         _ => Err(format!("no rules for {engine}")),
     }
 }
@@ -279,6 +281,161 @@ fn cerbos(body: &str) -> Result<Vec<Entry>, String> {
     Ok(names)
 }
 
+/// A Cedar text with its comments blanked out (positions kept, newlines too), and the comments with
+/// where each starts: `//` to the end of the line, `/* */`, string literals left alone.
+pub(crate) fn cedar_comments(text: &str) -> (String, Vec<(usize, String)>) {
+    let bytes = text.as_bytes();
+    let mut code = bytes.to_vec();
+    let mut comments = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            // a string: to its closing quote, escapes skipped
+            i += 1;
+            while i < bytes.len() && bytes[i] != b'"' {
+                i += if bytes[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+            continue;
+        }
+        let end = if bytes[i..].starts_with(b"//") {
+            text[i..].find('\n').map_or(bytes.len(), |e| i + e)
+        } else if bytes[i..].starts_with(b"/*") {
+            text[i + 2..].find("*/").map_or(bytes.len(), |e| i + 2 + e + 2)
+        } else {
+            i += 1;
+            continue;
+        };
+        comments.push((i, text[i..end].to_owned()));
+        for b in &mut code[i..end] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+        i = end;
+    }
+    (String::from_utf8_lossy(&code).into_owned(), comments)
+}
+
+/// A Cedar text's top-level statements (split at `;` outside braces, brackets and strings), each with
+/// where it starts, annotations (`@doc("...")`) dropped from its front.
+pub(crate) fn cedar_statements(code: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let (mut depth, mut quoted, mut start) = (0i32, false, 0);
+    for (i, c) in code.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '{' | '[' | '(' if !quoted => depth += 1,
+            '}' | ']' | ')' if !quoted => depth -= 1,
+            ';' if !quoted && depth == 0 => {
+                out.push((start, code[start..i].to_owned()));
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if !code[start..].trim().is_empty() {
+        out.push((start, code[start..].to_owned()));
+    }
+    out.into_iter()
+        .map(|(at, s)| {
+            let mut rest = s.trim_start();
+            // annotations: @name or @name("...")
+            while let Some(after) = rest.strip_prefix('@') {
+                let name_end = after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(after.len());
+                rest = after[name_end..].trim_start();
+                if rest.starts_with('(') {
+                    rest = rest.find(')').map_or("", |e| &rest[e + 1..]).trim_start();
+                }
+            }
+            (at + (s.len() - s.trim_start().len()), rest.to_owned())
+        })
+        .filter(|(_, s)| !s.is_empty())
+        .collect()
+}
+
+/// A comma-separated list of names (`A, B` or `[A, B]`), quotes removed.
+fn cedar_names(list: &str) -> Vec<String> {
+    list.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|n| n.trim().trim_matches('"').to_owned())
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// The word `w` in `s` outside strings, as a whole word: its position.
+fn cedar_word(s: &str, w: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut quoted = false;
+    for (i, c) in s.char_indices() {
+        if c == '"' {
+            quoted = !quoted;
+        }
+        let word = |at: usize| at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+        let ends = |at: usize| bytes.get(at + w.len()).is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
+        if !quoted && s[i..].starts_with(w) && word(i) && ends(i) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// A Cedar schema's entity types (with their `in` parents) and actions (on each resource type they
+/// apply to). Policies define none.
+fn cedar(body: &str) -> Result<Vec<Entry>, String> {
+    let (code, _) = cedar_comments(body);
+    let mut names = Vec::new();
+    for (_, statement) in cedar_statements(&code) {
+        let s = statement.trim();
+        if s.starts_with("permit") || s.starts_with("forbid") {
+            return Ok(Vec::new());
+        }
+        if let Some(rest) = s.strip_prefix("namespace") {
+            return Err(format!(
+                "namespace {}: pg_auth takes Cedar types without a namespace",
+                rest.trim().split(['{', ' ']).next().unwrap_or_default()
+            ));
+        }
+        if let Some(rest) = s.strip_prefix("entity ") {
+            // entity A, B in [X, Y] = { ... } | entity A enum [...]
+            let head = rest.split(['{', '=']).next().unwrap_or_default();
+            let head = cedar_word(head, "enum").map_or(head, |e| &head[..e]);
+            let (types, parents) = match cedar_word(head, "in") {
+                Some(at) => (&head[..at], cedar_names(&head[at + 2..])),
+                None => (head, Vec::new()),
+            };
+            for t in cedar_names(types) {
+                names.push(Entry::of_type(&t));
+                if !parents.is_empty() {
+                    names.push(Entry::relation(&t, "in", parents.clone()));
+                }
+            }
+        } else if let Some(rest) = s.strip_prefix("action ") {
+            let Some(applies) = cedar_word(rest, "appliesTo") else { continue };
+            let head = &rest[..applies];
+            let actions = cedar_names(cedar_word(head, "in").map_or(head, |at| &head[..at]));
+            let block = &rest[applies + "appliesTo".len()..];
+            let resources = cedar_word(block, "resource")
+                .map(|at| {
+                    let after = block[at + "resource".len()..].trim_start().trim_start_matches(':').trim_start();
+                    let end = if after.starts_with('[') {
+                        after.find(']').map_or(after.len(), |e| e + 1)
+                    } else {
+                        after.find([',', '}']).unwrap_or(after.len())
+                    };
+                    cedar_names(&after[..end])
+                })
+                .unwrap_or_default();
+            for r in &resources {
+                names.extend(actions.iter().map(|a| Entry::action(r, a)));
+            }
+        }
+    }
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +504,46 @@ mod tests {
                 "permission app/doc#can_read"
             ]
         );
+    }
+
+    #[test]
+    fn a_cedar_schema_names_types_parents_and_actions() {
+        let schema = r#"
+            // pg_auth: a note, not a declaration; entity Fake;
+            entity Role;
+            @doc("people")
+            entity User in [Group, Role] { dept: String, "odd name"?: Long };
+            entity Group, Team;
+            entity Folder in Folder;
+            entity Document in [Folder] = { owner: User, tags: Set<String> };
+            /* entity Hidden; */
+            action view, "edit doc" appliesTo { principal: [User], resource: [Document, Folder], context: { ip: String } };
+            action audit in [view] appliesTo { principal: User, resource: Document };
+        "#;
+        assert_eq!(
+            summary(&cedar(schema).unwrap()),
+            [
+                "type Role",
+                "type User",
+                "relation User#in [Group, Role]",
+                "type Group",
+                "type Team",
+                "type Folder",
+                "relation Folder#in [Folder]",
+                "type Document",
+                "relation Document#in [Folder]",
+                "action Document#view",
+                "action Document#edit doc",
+                "action Folder#view",
+                "action Folder#edit doc",
+                "action Document#audit",
+            ]
+        );
+        assert_eq!(
+            cedar(r#"permit (principal, action == Action::"view", resource) when { resource.a == ";" };"#).unwrap(),
+            Vec::<Entry>::new()
+        );
+        assert!(cedar("namespace App { entity User; }").unwrap_err().contains("namespace App"));
     }
 
     #[test]

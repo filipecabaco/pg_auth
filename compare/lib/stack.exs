@@ -43,7 +43,8 @@ defmodule Compare.Stack do
   Start the engine with `model` (OpenFGA DSL) loaded, then one sidecar per `{name, list_limit}`
   in `sidecars`. Returns the stack with :engine (adapter state) and :engine_mod. Options:
 
-    * `:engine` - "openfga" (default), "spicedb" or "cerbos", each set up as in production
+    * `:engine` - "openfga" (default), "spicedb", "cerbos" or "cedar" (in the sidecar: give the
+      sidecars PG_AUTH_DATABASE_URL), each set up as in production
     * `:policies` - Cerbos's policy directory
     * `:list_max_results` - OpenFGA's listObjectsMaxResults (default 1_000_000, so a sidecar's
       LIST_LIMIT alone decides when a subject has too many objects; production default is 1000).
@@ -83,6 +84,11 @@ defmodule Compare.Stack do
   defp setup("spicedb", stack, _opts) do
     {:ok, spicedb} = Spicedb.setup(network: stack.net)
     {Spicedb, spicedb, []}
+  end
+
+  defp setup("cedar", _stack, _opts) do
+    {:ok, cedar} = Compare.Engines.Cedar.setup([])
+    {Compare.Engines.Cedar, cedar, []}
   end
 
   defp setup("cerbos", stack, opts) do

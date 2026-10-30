@@ -19,8 +19,8 @@
         same app, <span data-for="relationships">and Anne gives Bob access by writing one row.</span><span data-for="attributes">and Bob sees a document once Anne publishes it.</span>
       </p>
       <div class="pa-setup">
-        <p>The rules live in an authorization engine, a service running next to Postgres (here
-          <b data-engine-name>OpenFGA</b>), in its own syntax. One comment in them protects the <code>documents</code> table:</p>
+        <p>The rules live in an authorization engine (here <b data-engine-name>OpenFGA</b>), in its own
+          syntax. One comment in them protects the <code>documents</code> table:</p>
 <pre data-engine-show="openfga"><code>type document
   <span class="n"># pg_auth: protects documents (id): read viewer, write editor</span>
   relations
@@ -32,6 +32,9 @@
 <pre data-engine-show="cerbos"><code><span class="n"># pg_auth: protects documents (id): read view, write edit, attributes (owner, status)</span>
 resourcePolicy:
   resource: document</code></pre>
+<pre data-engine-show="cedar"><code><span class="n">// pg_auth: protects documents (id): read view, write edit, attributes (org_id as org, org_id as admins)</span>
+entity Document { org: Org, admins: OrgAdmins };
+permit (principal, action == Action::"view", resource) when { principal in resource.org };</code></pre>
         <p data-for="relationships">The rules: an organisation's members read its documents, and only its admins edit
           them. Anne is the admin of org 1, which owns three documents. Bob is in no org yet.</p>
         <p data-for="attributes">The rule: everyone reads published documents and their own drafts, and only the owner
@@ -63,7 +66,7 @@ resourcePolicy:
       </div>
       <div class="pa-demo__screen">
         {#- Setup: the whole of it, exactly as docker/demo loads it (sql/*.sql stores rules/openfga.fga,
-            rules/spicedb.zed and rules/cerbos.yaml with authz.set_rules): change them there and here
+            rules/spicedb.zed, rules/cerbos.yaml and rules/cedar.* with authz.set_rules): change them there and here
             together -#}
         <div class="pa-demo__setup" role="tabpanel" aria-label="The permission setup for this engine">
           <div>
@@ -153,9 +156,56 @@ resourcePolicy:
         match:
           expr: request.resource.attr.owner == request.principal.id
 $$);</code></pre>
+<pre data-engine-show="cedar"><code><span class="c">-- who is asking: the token's sub, a Cedar User</span>
+select authz.configure(subject => 'jwt', subject_type => 'User');
+
+<span class="c">-- the schema and the policies, in Cedar's own syntax, which the sidecar runs itself;</span>
+<span class="c">-- the schema's pg_auth: notes protect and relate the tables</span>
+select authz.set_rules('cedar', 'schema', $$
+<span class="c">// The demo's organisations in Cedar, which the sidecar runs itself: no engine server. Stored as the</span>
+<span class="c">// rule named `schema`; its notes (`pg_auth: ...`) protect and relate the tables. A membership row</span>
+<span class="c">// puts a user in its org, and in the org's admins when its role is admin; a share puts a user in</span>
+<span class="c">// the document.</span>
+
+<span class="n">// pg_auth: protects memberships (org_id): read read</span>
+entity Org;
+
+<span class="n">// pg_auth: protects memberships (org_id): read manage, write manage</span>
+entity OrgAdmins;
+
+<span class="n">// pg_auth: in from memberships(user_id).org_id: subject Org</span>
+<span class="n">// pg_auth: in from memberships(user_id).org_id: subject OrgAdmins, name admins, when role = 'admin'</span>
+<span class="n">// pg_auth: in from shares(user_id).doc_id: subject Document, until expires_at</span>
+entity User in [Org, OrgAdmins, Document];
+
+<span class="n">// pg_auth: protects documents (id): read view, write edit, attributes (org_id as org, org_id as admins)</span>
+<span class="n">// pg_auth: protects shares (doc_id): read view, write edit, attributes (org_id as org, org_id as admins)</span>
+entity Document { org: Org, admins: OrgAdmins };
+
+action read appliesTo { principal: User, resource: Org };
+action manage appliesTo { principal: User, resource: OrgAdmins };
+action view, edit appliesTo { principal: User, resource: Document };
+$$);
+
+select authz.set_rules('cedar', 'documents', $$
+<span class="c">// The demo's policies in Cedar, stored as the rule named `documents` beside the schema. pg_auth</span>
+<span class="c">// turns each into a filter on the table: `principal in resource.org` becomes `org_id IN (the</span>
+<span class="c">// subject's orgs)`, `principal in resource` the ids of the documents shared with them.</span>
+
+<span class="c">// an org's members read its memberships; its admins, who are members too, change them</span>
+permit (principal, action == Action::"read", resource is Org) when { principal in resource };
+permit (principal, action == Action::"manage", resource is OrgAdmins) when { principal in resource };
+
+<span class="c">// a document is read by its org's members and by whoever it is shared with</span>
+permit (principal, action == Action::"view", resource is Document) when { principal in resource.org };
+permit (principal, action == Action::"view", resource is Document) when { principal in resource };
+
+<span class="c">// and written, or shared, by its org's admins</span>
+permit (principal, action == Action::"edit", resource is Document) when { principal in resource.admins };
+$$);</code></pre>
           </div>
           <p class="pa-demo__setup-note">The rules stay in the engine's own syntax: pg_auth reads only the
-            <code>pg_auth:</code> notes, and the sidecar sends the rest to <span data-engine-name>OpenFGA</span> as it is.
+            <code>pg_auth:</code> notes, and the sidecar gives the rest to <span data-engine-name>OpenFGA</span> as it is.
             Each note becomes a plain RLS policy that asks the engine, so <code>pg_policies</code> lists it.</p>
         </div>
         {#- Before boot: step 1 as the demo printed it (OpenFGA), recorded from docker/demo; the rest
@@ -205,6 +255,7 @@ $$);</code></pre>
           <button type="button" data-engine="openfga" aria-pressed="true">OpenFGA</button>
           <button type="button" data-engine="spicedb" aria-pressed="false">SpiceDB</button>
           <button type="button" data-engine="cerbos" aria-pressed="false">Cerbos</button>
+          <button type="button" data-engine="cedar" aria-pressed="false">Cedar</button>
         </div>
         <p class="pa-demo__hint">Or click into a pane and type. Built with <a href="https://github.com/filipecabaco/snowglobe">snowglobe</a>.</p>
         <p class="pa-demo__hint pa-demo__hint--after" data-for="relationships">Now try one of your own: click into bob's pane and run <code>update documents set title = 'Mine' where id = 1;</code> and it changes 0 rows: only admins edit.</p>
@@ -253,7 +304,7 @@ $$);</code></pre>
       <span>beside Postgres or on its own host: cache, delivery, the engine's credentials</span>
     </div>
     <div class="pa-arch__link pa-arch__link--read">
-      <i>ListObjects · LookupResources · PlanResources</i>
+      <i>ListObjects · LookupResources · PlanResources · Cedar's partial evaluation</i>
       <span>HTTP</span>
     </div>
     <div class="pa-arch__link pa-arch__link--grant">
@@ -262,12 +313,12 @@ $$);</code></pre>
     </div>
     <div class="pa-arch__node">
       <b>Engine</b>
-      <span>OpenFGA, SpiceDB or Cerbos, with your rules in its own language</span>
+      <span>OpenFGA, SpiceDB or Cerbos, with your rules in its own language; or Cedar, which the sidecar runs itself</span>
     </div>
   </div>
   <ol class="pa-arch__legend">
-    <li class="is-read"><b>Reading.</b> The answer comes back as the ids bob may see (for Cerbos, a
-      condition on the row's fields), and pg_auth plans the query as <code>id = any('{1,2,3}')</code>
+    <li class="is-read"><b>Reading.</b> The answer comes back as the ids bob may see (for Cerbos and
+      Cedar, a condition on the row's fields), and pg_auth plans the query as <code>id = any('{1,2,3}')</code>
       on the table's index. Every client gets the same rows: PostgREST, a script, psql.</li>
     <li class="is-grant"><b>Granting.</b> A row in a relationship table is a grant. A rolled-back
       write never reaches the engine; if the engine is down, grants wait and are delivered later.</li>
@@ -491,6 +542,7 @@ $$);</code></pre>
       <tr><th><a href="https://openfga.dev">OpenFGA</a></th><td>relationships</td><td>Sharing, teams, orgs, folders: who is related to what. Conditions on the request (a region, the time) and grants that end.</td></tr>
       <tr><th><a href="https://authzed.com/spicedb">SpiceDB</a></th><td>relationships</td><td>The same model, with SpiceDB's schema and consistency. Caveats, including on the row's own values, and grants that end.</td></tr>
       <tr><th><a href="https://cerbos.dev">Cerbos</a></th><td>the row's fields and the user's roles</td><td>Owners, statuses, departments: rules over attributes. A tenant's own policies (scopes).</td></tr>
+      <tr><th><a href="https://www.cedarpolicy.com">Cedar</a></th><td>the row's fields, and the groups and folders above it</td><td>Policies over attributes and hierarchies (<code>principal in resource.org</code>), run inside the sidecar: no engine server to operate.</td></tr>
     </tbody>
   </table>
   <p class="pa-proof">

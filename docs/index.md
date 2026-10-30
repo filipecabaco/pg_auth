@@ -13,10 +13,10 @@ hide:
 # pg_auth
 
 Your app's permissions, enforced by Postgres, with no backend. An authorization engine (OpenFGA,
-SpiceDB or Cerbos) decides who may see and change each row, and Postgres enforces that decision
+SpiceDB, Cerbos, or Cedar, which the sidecar runs itself) decides who may see and change each row, and Postgres enforces that decision
 for every client: your browser app through Supabase or PostgREST, an application server, psql.
 
-The home page runs a live demo in the browser tab: Postgres 18 with pg_auth and the three engines.
+The home page runs a live demo in the browser tab: Postgres 18 with pg_auth and the four engines.
 Anne and Bob use the same app; Bob sees nothing until Anne adds him to her organisation by inserting
 one row. It runs where you configure Postgres yourself: the extension loads when Postgres starts,
 which RDS, Cloud SQL, Neon and hosted Supabase do not allow. The sidecar runs beside Postgres, or on another

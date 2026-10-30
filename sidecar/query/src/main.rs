@@ -2,8 +2,9 @@
 //! extension, asking the source-of-truth engine (OpenFGA or SpiceDB; engine.rs). Runs next to
 //! Postgres and listens on a local Unix socket; see protocol.rs for the wire format.
 //!
-//! Configuration (environment). The engine is Cerbos when CERBOS_URL is set, SpiceDB when
-//! SPICEDB_URL is, else OpenFGA:
+//! Configuration (environment). The engine is Cedar, evaluated in this process, when
+//! PG_AUTH_ENGINE=cedar (it needs PG_AUTH_DATABASE_URL: its rules and entities' parents are kept in
+//! Postgres); Cerbos when CERBOS_URL is set, SpiceDB when SPICEDB_URL is, else OpenFGA:
 //!   OPENFGA_URL, OPENFGA_STORE_ID          required for OpenFGA
 //!   OPENFGA_MODEL_ID, OPENFGA_API_TOKEN    optional
 //!   OPENFGA_CONSISTENCY                    optional, e.g. HIGHER_CONSISTENCY
@@ -45,6 +46,7 @@
 
 #![forbid(unsafe_code)]
 
+mod cedar;
 mod cerbos;
 mod engine;
 mod index;
@@ -57,6 +59,7 @@ mod protocol;
 mod rules;
 mod spicedb;
 
+use cedar::Cedar;
 use cerbos::{Cerbos, Plan};
 use engine::{Context, Engine, Key, Listed};
 use index::Index;
@@ -225,11 +228,14 @@ async fn main() {
     }
 }
 
-async fn run() -> Result<(), String> {
-    let timeout = Duration::from_millis(env_num("ENGINE_TIMEOUT_MS", 4000));
-    let concurrency = usize::try_from(env_num("CHECK_CONCURRENCY", 8)).unwrap_or(usize::MAX);
-    let poll = Duration::from_millis(env_num("INDEX_POLL_MS", 500));
-    let (engine, describe) = match (env("CERBOS_URL"), env("SPICEDB_URL")) {
+/// The engine the environment names (module docs), and how to describe it.
+fn engine_from_env(timeout: Duration) -> Result<(Engine, String), String> {
+    let cedar = env("PG_AUTH_ENGINE").is_some_and(|e| e == "cedar");
+    if cedar && env("PG_AUTH_DATABASE_URL").is_none() {
+        return Err("PG_AUTH_ENGINE=cedar needs PG_AUTH_DATABASE_URL: its policies and parents are kept in Postgres".into());
+    }
+    Ok(match (env("CERBOS_URL"), env("SPICEDB_URL")) {
+        _ if cedar => (Engine::Cedar(Cedar::new()), "cedar, in this process".to_owned()),
         (Some(url), _) => {
             let admin = env("CERBOS_ADMIN_USER").zip(env("CERBOS_ADMIN_PASSWORD"));
             (Engine::Cerbos(Cerbos::new(&url, timeout, admin)?), format!("cerbos {url}"))
@@ -253,7 +259,14 @@ async fn run() -> Result<(), String> {
             )?;
             (Engine::OpenFga(engine), format!("openfga {url}, store {store}"))
         }
-    };
+    })
+}
+
+async fn run() -> Result<(), String> {
+    let timeout = Duration::from_millis(env_num("ENGINE_TIMEOUT_MS", 4000));
+    let concurrency = usize::try_from(env_num("CHECK_CONCURRENCY", 8)).unwrap_or(usize::MAX);
+    let poll = Duration::from_millis(env_num("INDEX_POLL_MS", 500));
+    let (engine, describe) = engine_from_env(timeout)?;
     let engine = Arc::new(engine);
     let index = env("PG_AUTH_DATABASE_URL").map(|url| {
         eprintln!("pg-auth-sidecar: permission index on, following the change feed");
@@ -284,7 +297,17 @@ async fn run() -> Result<(), String> {
         outbox::start(url.clone(), state.engine.clone(), poll, move || {
             answers.lists.clear();
             answers.checks.clear();
+            // a plan may depend on relationships too (SpiceDB's caveats, Cedar's parents)
+            answers.plans.clear();
         });
+        if state.engine.cedar().is_some() {
+            let answers = state.clone();
+            cedar::mirror(url.clone(), state.engine.clone(), Duration::from_secs(30), move || {
+                answers.lists.clear();
+                answers.checks.clear();
+                answers.plans.clear();
+            });
+        }
         // the engine's rules kept in Postgres (authz.set_rules): new rules may change any answer, plans
         // included
         let answers = state.clone();

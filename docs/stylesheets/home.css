@@ -1071,7 +1071,8 @@
 /* only the selected engine's rules are shown */
 [data-engine="openfga"] [data-engine-show]:not([data-engine-show="openfga"]),
 [data-engine="spicedb"] [data-engine-show]:not([data-engine-show="spicedb"]),
-[data-engine="cerbos"] [data-engine-show]:not([data-engine-show="cerbos"]) {
+[data-engine="cerbos"] [data-engine-show]:not([data-engine-show="cerbos"]),
+[data-engine="cedar"] [data-engine-show]:not([data-engine-show="cedar"]) {
   display: none;
 }
 

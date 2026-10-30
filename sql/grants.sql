@@ -33,6 +33,8 @@ select pg_catalog.pg_extension_config_dump('authz_internal.setups', '');
 select pg_catalog.pg_extension_config_dump('authz_internal.setups_version_seq', '');
 select pg_catalog.pg_extension_config_dump('authz_internal.outbox', '');
 select pg_catalog.pg_extension_config_dump('authz_internal.outbox_id_seq', '');
+-- what Cedar holds, as an engine holds its relationships: restored with the rest
+select pg_catalog.pg_extension_config_dump('authz_internal.entity_parents', '');
 
 revoke all on schema authz_internal, authz_sidecar from public;
 revoke all on all tables in schema authz_internal from public;
@@ -49,7 +51,7 @@ grant select, insert, update, delete on authz_internal.settings, authz_internal.
     authz_internal.hierarchies, authz_internal.rules, authz_internal.setups to authz_admin;
 grant usage on sequence authz_internal.setups_version_seq to authz_admin;
 grant select on authz_internal.permission_sets, authz_internal.permitted, authz_internal.outbox,
-    authz_internal.feed_positions to authz_admin;
+    authz_internal.feed_positions, authz_internal.entity_parents to authz_admin;
 grant execute on all functions in schema authz_internal to authz_admin;
 grant execute on function authz.set_rules(text, text, text), authz.rules(text),
     authz.configure(text, text, text, jsonb, text, text, text, int, text, text, text, jsonb),

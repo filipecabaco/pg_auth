@@ -7,7 +7,8 @@
 //!
 //! The language: `{"op": "and|or|not|eq|ne|lt|le|gt|ge|in", "args": [...]}`, an argument being
 //! `{"column": name}` (the row's attribute), `{"id": true}` (the row's id), `{"value": json}` or
-//! an expression; and `{"op": "check", "args": []}`, which asks the engine about the row with its
+//! an expression; `{"value": ..., "entity": true}` is an entity's id (Cedar), equal to a column or
+//! id whose text form it is, whatever the column's type; and `{"op": "check", "args": []}`, which asks the engine about the row with its
 //! attributes (SpiceDB: a grant whose caveat needs the row's own values). Anything else is
 //! unknown: denied.
 
@@ -47,9 +48,17 @@ fn eval(e: &Value, id: &str, attrs: &Value, check: &mut dyn FnMut() -> Option<bo
         ("or", _) => all(false),
         ("check", []) => check(),
         ("not", [a]) => eval(a, id, attrs, check).map(|b| !b),
+        ("in", [a, list]) if is_entity(list) => {
+            let a = operand(a, id, attrs).and_then(|v| as_text(&v));
+            Some(operand(list, id, attrs)?.as_array()?.iter().any(|item| a.is_some() && as_text(item) == a))
+        }
         ("in", [a, list]) => {
             let a = operand(a, id, attrs);
             Some(operand(list, id, attrs)?.as_array()?.iter().any(|item| equal(a.as_ref(), item)))
+        }
+        ("eq" | "ne", [a, b]) if is_entity(a) || is_entity(b) => {
+            let (a, b) = (operand(a, id, attrs).and_then(|v| as_text(&v)), operand(b, id, attrs).and_then(|v| as_text(&v)));
+            Some((a.is_some() && a == b) == (op == "eq"))
         }
         ("eq", [a, b]) => Some(equal(operand(a, id, attrs).as_ref(), operand(b, id, attrs).as_deref().unwrap_or(&Value::Null))),
         ("ne", [a, b]) => Some(!equal(operand(a, id, attrs).as_ref(), operand(b, id, attrs).as_deref().unwrap_or(&Value::Null))),
@@ -81,11 +90,14 @@ fn skeleton(e: &Value, values: &mut Vec<Value>) -> Value {
     match e {
         Value::Object(map) if map.contains_key("value") => {
             let v = &map["value"];
+            // an entity's id (Cedar): matched against any column by its text form
+            let entity = map.get("entity") == Some(&Value::Bool(true));
             let kind = match v {
                 Value::Array(items) => {
-                    let of = items.first().map_or("string", kind_of);
+                    let of = if entity { "entity" } else { items.first().map_or("string", kind_of) };
                     return push(values, v.clone(), serde_json::json!({"kind": "list", "of": of}));
                 }
+                _ if entity => "entity",
                 v => kind_of(v),
             };
             push(values, v.clone(), serde_json::json!({"kind": kind}))
@@ -119,6 +131,11 @@ pub fn as_text(v: &Value) -> Option<String> {
         Value::String(s) => Some(s.clone()),
         other => Some(other.to_string()),
     }
+}
+
+/// An entity's id (`{"value": ..., "entity": true}`): compared by its text form, with any value.
+fn is_entity(arg: &Value) -> bool {
+    arg.get("entity") == Some(&Value::Bool(true))
 }
 
 /// An argument's value; None when it is null or missing (unknown).

@@ -1311,6 +1311,67 @@ mod tests {
         );
     }
 
+    #[pg_test]
+    fn cedar_rules_set_up_their_tables_and_keep_the_parents_they_deliver() {
+        Spi::run(
+            "create table public.cdocs (id int primary key, owner_id text not null, folder_id text);
+             create table public.cmembers (user_id text, group_id text, primary key (user_id, group_id));
+             select authz.set_rules('cedar', 'schema', 'entity Group;
+                 // pg_auth: in from public.cmembers(user_id).group_id
+                 entity User in [Group];
+                 entity Folder in [Folder];
+                 // pg_auth: protects public.cdocs (id): read view, attributes (owner_id as owner)
+                 // pg_auth: in from public.cdocs.folder_id
+                 entity Document in [Folder] { owner: User };
+                 action view appliesTo { principal: User, resource: Document };');
+             select authz.set_rules('cedar', 'documents', 'permit (principal, action == Action::\"view\", resource) when { resource.owner == principal };');
+             insert into public.cmembers values ('anne', 'eng');
+             insert into public.cdocs values (1, 'anne', 'f1')",
+        )
+        .unwrap();
+        let attributes =
+            Spi::get_one::<String>("select attribute_map::text from authz_internal.bindings where rel = 'public.cdocs'::regclass").unwrap();
+        assert_eq!(attributes.as_deref(), Some(r#"{"owner": "owner_id"}"#));
+        let related = Spi::get_one::<String>(
+            "select string_agg(rel::text || ' ' || coalesce(object_type, '') || '#' || relation || '@' || subject_type, ', ' order by rel::text)
+             from authz_internal.relationships",
+        )
+        .unwrap();
+        assert_eq!(related.as_deref(), Some("cdocs Document#in@Folder, cmembers User#in@Group"));
+        let outbox = Spi::get_one::<String>(
+            "select string_agg(object || ' ' || relation || ' ' || subject, ', ' order by id) from authz_internal.outbox",
+        )
+        .unwrap();
+        assert_eq!(outbox.as_deref(), Some("User:anne in Group:eng, Document:1 in Folder:f1"));
+        assert_eq!(error_at_commit("select 1"), None, "the setup matches the schema");
+        assert!(
+            error_at_commit(
+                "select authz_internal.protect('public.cdocs', type => 'Document', id => 'id', read => 'view', write => 'edit')"
+            )
+            .unwrap_or_default()
+            .contains("Document has no edit in the cedar schema (it has: in, view)")
+        );
+        // every sidecar loads what the engine took: none yet, then the schema
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz_sidecar.rules_in_force('cedar')").unwrap(), Some(0));
+        Spi::run("select authz_sidecar.rules_pushed('cedar', 'schema', 1, null, 'abc')").unwrap();
+        assert_eq!(
+            Spi::get_one::<String>("select string_agg(name, ',') from authz_sidecar.rules_in_force('cedar')").unwrap().as_deref(),
+            Some("schema")
+        );
+        // the parents a delivery took, in order: written, then deleted
+        Spi::run(
+            "select authz_sidecar.entity_parents_apply(array[true, true, false], array['User:anne', 'Document:1', 'User:anne'],
+                                                    array['Group:eng', 'Folder:f1', 'Group:eng'])",
+        )
+        .unwrap();
+        assert_eq!(
+            Spi::get_one::<String>("select string_agg(child || ' in ' || parent, ', ') from authz_sidecar.entity_parents()")
+                .unwrap()
+                .as_deref(),
+            Some("Document:1 in Folder:f1")
+        );
+    }
+
     fn quote(text: &str) -> String {
         format!("'{}'", text.replace('\'', "''"))
     }
@@ -2447,7 +2508,8 @@ mod tests {
             .unwrap()
             .as_deref(),
             Some(
-                "authz_internal.bindings authz_internal.hierarchies authz_internal.outbox authz_internal.outbox_id_seq \
+                "authz_internal.bindings authz_internal.entity_parents authz_internal.hierarchies authz_internal.outbox \
+                 authz_internal.outbox_id_seq \
                  authz_internal.relationships authz_internal.rules authz_internal.settings authz_internal.setups \
                  authz_internal.setups_version_seq"
             )

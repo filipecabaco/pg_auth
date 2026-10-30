@@ -4,7 +4,9 @@
 //! `authz_internal.setup` applies (sql/rules.sql, `authz_internal.rules_apply`).
 //!
 //! A note belongs to the type it sits in: an OpenFGA `type` block, a SpiceDB `definition` (inside
-//! its braces, or in the comment just before it), the resource of a Cerbos policy. Three
+//! its braces, or in the comment just before it), the resource of a Cerbos policy, a Cedar schema's
+//! `entity` (inside its declaration, or in the comment just before it; Cedar's parents are the
+//! relation `in`: `in from memberships(user_id).group_id`, the object in the subject). Three
 //! statements, each with clauses after a colon:
 //!
 //! ```text
@@ -139,6 +141,7 @@ fn notes_in(engine: &str, body: &str) -> Result<Vec<Note>, String> {
         "openfga" => openfga_notes(body),
         "spicedb" => spicedb_notes(body),
         "cerbos" => cerbos_notes(body),
+        "cedar" => cedar_notes(body),
         _ => Err(format!("no rules for {engine}")),
     }
 }
@@ -241,6 +244,43 @@ fn cerbos_notes(body: &str) -> Result<Vec<Note>, String> {
         .as_str()
         .ok_or_else(|| format!("line {}: a note belongs in a resource policy (resourcePolicy.resource)", found[0].0))?;
     Ok(found.into_iter().map(|(line, text)| Note { owner: resource.to_owned(), text, line }).collect())
+}
+
+fn cedar_notes(text: &str) -> Result<Vec<Note>, String> {
+    let (code, comments) = crate::rules::cedar_comments(text);
+    // entity declarations: (start, end, its one type)
+    let entities: Vec<(usize, usize, Result<String, String>)> = crate::rules::cedar_statements(&code)
+        .into_iter()
+        .filter_map(|(at, s)| {
+            let rest = s.strip_prefix("entity ")?;
+            let head = rest.split(['{', '=']).next().unwrap_or_default();
+            let types = head.split(" in ").next().unwrap_or_default().split(" enum ").next().unwrap_or_default();
+            let names: Vec<&str> = types.split(',').map(str::trim).filter(|t| !t.is_empty()).collect();
+            let owner = match names.as_slice() {
+                [one] => Ok((*one).to_owned()),
+                many => Err(format!("`entity {}` declares several types: a note belongs to one, declared alone", many.join(", "))),
+            };
+            Some((at, at + s.len(), owner))
+        })
+        .collect();
+    let line_of = |pos: usize| text[..pos].matches('\n').count() + 1;
+    let mut notes = Vec::new();
+    for (pos, comment) in comments {
+        for (k, line) in comment.trim_start_matches('/').trim_end_matches('/').lines().enumerate() {
+            let Some(note) = note_text(line.trim_start_matches('*')) else { continue };
+            let line = line_of(pos) + k;
+            let owner = entities
+                .iter()
+                .find(|(start, end, _)| *start < pos && pos < *end)
+                .or_else(|| entities.iter().find(|(start, ..)| *start > pos))
+                .ok_or_else(|| {
+                    format!("line {line}: a note belongs in the Cedar schema, inside an entity's declaration or just before it")
+                })?;
+            let owner = owner.2.clone().map_err(|e| format!("line {line}: {e}"))?;
+            notes.push(Note { owner, text: note, line });
+        }
+    }
+    Ok(notes)
 }
 
 fn matching(text: &str, open: usize) -> Option<usize> {
@@ -616,6 +656,36 @@ mod tests {
         assert_eq!(d["protect"][0]["type"], "document");
         assert_eq!(d["relationships"][0]["object"], json!({"type": "document", "column": "id"}));
         assert_eq!(d["relationships"][1]["relation"], json!({"column": "role", "allowed": ["member"]}));
+    }
+
+    #[test]
+    fn notes_in_a_cedar_schema_protect_entities_and_relate_parents() {
+        let schema = "entity Group;\n\
+                      // pg_auth: in from public.memberships(user_id).group_id\n\
+                      entity User in [Group];\n\
+                      entity Folder in [Folder] {\n  // pg_auth: in from public.folders.parent_id\n  name: String };\n\
+                      // pg_auth: protects public.documents (id): read view, write edit, attributes (owner_id as owner, status)\n\
+                      // pg_auth: in from public.documents.folder_id\n\
+                      entity Document in [Folder] { owner: User, status?: String };\n\
+                      action view, edit appliesTo { principal: User, resource: Document };\n";
+        let d = document("cedar", schema).unwrap();
+        assert_eq!(
+            d["protect"],
+            json!([{"table": "public.documents", "type": "Document", "column": "id", "select": "view", "write": "edit",
+                    "attributes": {"owner": "owner_id", "status": "status"}}])
+        );
+        let r = d["relationships"].as_array().unwrap();
+        assert_eq!(r[0]["object"], json!({"type": "User", "column": "user_id"}));
+        assert_eq!((r[0]["relation"].clone(), r[0]["subject"].clone()), (json!("in"), json!({"type": "Group", "column": "group_id"})));
+        assert_eq!(
+            (r[1]["table"].clone(), r[1]["subject"].clone()),
+            (json!("public.folders"), json!({"type": "Folder", "column": "parent_id"}))
+        );
+        assert_eq!(r[2]["object"], json!({"type": "Document", "column": "id"}), "the protected id: the documents' parents");
+        let policies = "// pg_auth: protects public.documents (id): read view\npermit (principal, action, resource);";
+        assert!(document("cedar", policies).unwrap_err().contains("belongs in the Cedar schema"));
+        let shared = "// pg_auth: protects public.a (id): read view\nentity A, B;";
+        assert!(document("cedar", shared).unwrap_err().contains("declared alone"));
     }
 
     #[test]

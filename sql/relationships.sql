@@ -379,3 +379,31 @@ language sql volatile security definer set search_path = pg_catalog, pg_temp as 
     update authz_internal.outbox set error = p_error where id = p_id
 $$;
 
+-- Cedar runs in the sidecars (sidecar/query/src/cedar.rs): the relationships delivered to it, each an
+-- `in` (the object's parent is the subject), are kept here by the sidecar that delivers them, in the
+-- transaction that removes them from the outbox; every sidecar reads them when it starts and after
+-- each delivery (NOTIFY pg_auth_delivered).
+create table authz_internal.entity_parents (
+    child  text collate "C" not null,
+    parent text collate "C" not null,
+    primary key (child, parent)
+);
+
+create function authz_sidecar.entity_parents() returns table (child text, parent text)
+language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+    select p.child, p.parent from authz_internal.entity_parents p
+$$;
+
+-- Changes the sidecar delivered, in order: written (true) or deleted.
+create function authz_sidecar.entity_parents_apply(p_write boolean[], p_child text[], p_parent text[]) returns void
+language plpgsql volatile security definer set search_path = pg_catalog, pg_temp as $$
+begin
+    for i in 1 .. coalesce(array_length(p_write, 1), 0) loop
+        if p_write[i] then
+            insert into authz_internal.entity_parents values (p_child[i], p_parent[i]) on conflict do nothing;
+        else
+            delete from authz_internal.entity_parents where child = p_child[i] and parent = p_parent[i];
+        end if;
+    end loop;
+end
+$$;

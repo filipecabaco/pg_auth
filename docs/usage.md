@@ -2,8 +2,8 @@
 
 pg_auth enforces an external authorization engine's decisions inside Postgres, as row level
 security, for every client: PostgREST, application servers, ad hoc SQL. The engine decides; a
-sidecar asks it (OpenFGA, SpiceDB or Cerbos, behind the same protocol), beside Postgres or on
-another host; pg_auth's
+sidecar asks it (OpenFGA, SpiceDB or Cerbos, behind the same protocol, or runs Cedar itself),
+beside Postgres or on another host; pg_auth's
 planner hook shapes each query so that checking is cheap. Postgres 15 to 18. How it works:
 [design.md](design.md).
 
@@ -26,11 +26,11 @@ preload an extension, and running the sidecar elsewhere over HTTPS does not chan
    '{"name": "app"}'`; its `id` is `OPENFGA_STORE_ID`) and a datastore that persists. SpiceDB needs
    its HTTP gateway on, and `track_commit_timestamp` on in its Postgres datastore for the change
    feed. Cerbos needs its storage in a database with its Admin API on, to take the rules from
-   Postgres.
+   Postgres. Cedar needs none: the sidecar runs it, its policies and parents kept in Postgres.
 4. **Run the sidecar** (`sidecar/query`, see its
    [README](https://github.com/filipecabaco/pg_auth/blob/main/sidecar/query/README.md)) pointed at
    the engine: `OPENFGA_URL` and `OPENFGA_STORE_ID`, `SPICEDB_URL` and `SPICEDB_TOKEN`, or
-   `CERBOS_URL` with `CERBOS_ADMIN_USER` and `CERBOS_ADMIN_PASSWORD`. Give it
+   `CERBOS_URL` with `CERBOS_ADMIN_USER` and `CERBOS_ADMIN_PASSWORD`, or `PG_AUTH_ENGINE=cedar`. Give it
    `PG_AUTH_DATABASE_URL`, a login holding `authz_sidecar` (below): through it the sidecar pushes
    the rules stored with `authz.set_rules`, delivers relationship tables' rows, and keeps the
    permission index. Without it, none of the three happens.
@@ -149,7 +149,7 @@ When the transaction commits, the three tables are protected, the rows of `membe
 membership inserted through PostgREST then shows its org's documents to the new member, and a
 share shows until its `expires_at`.
 
-The same setup on SpiceDB, and an attribute policy on Cerbos:
+The same setup on SpiceDB, an attribute policy on Cerbos, and Cedar after them:
 
 ```sql
 select authz.set_rules('spicedb', 'schema', $$
@@ -203,6 +203,40 @@ resourcePolicy:
 $$);
 ```
 
+On Cedar, the schema is the rule named `schema`, and its notes protect and relate the tables; every
+other rule holds policies. A parent is the relation `in`: the object is in the subject. The
+subject is a `User`, since Cedar's types are capitalised, and a share carries its document's org,
+which the policy reads (the demo fills it in with a trigger, `docker/demo/sql/cedar.sql`):
+
+```sql
+select authz.configure(subject => 'jwt', subject_type => 'User');
+
+select authz.set_rules('cedar', 'schema', $$
+// pg_auth: protects memberships (org_id): read read
+entity Org;
+// pg_auth: protects memberships (org_id): read manage, write manage
+entity OrgAdmins;
+// pg_auth: in from memberships(user_id).org_id: subject Org
+// pg_auth: in from memberships(user_id).org_id: subject OrgAdmins, name admins, when role = 'admin'
+// pg_auth: in from shares(user_id).doc_id: subject Document, until expires_at
+entity User in [Org, OrgAdmins, Document];
+// pg_auth: protects documents (id): read view, write edit, attributes (org_id as org, org_id as admins)
+// pg_auth: protects shares (doc_id): read view, write edit, attributes (org_id as org, org_id as admins)
+entity Document { org: Org, admins: OrgAdmins };
+action read appliesTo { principal: User, resource: Org };
+action manage appliesTo { principal: User, resource: OrgAdmins };
+action view, edit appliesTo { principal: User, resource: Document };
+$$);
+
+select authz.set_rules('cedar', 'documents', $$
+permit (principal, action == Action::"read", resource is Org) when { principal in resource };
+permit (principal, action == Action::"manage", resource is OrgAdmins) when { principal in resource };
+permit (principal, action == Action::"view", resource is Document) when { principal in resource.org };
+permit (principal, action == Action::"view", resource is Document) when { principal in resource };
+permit (principal, action == Action::"edit", resource is Document) when { principal in resource.admins };
+$$);
+```
+
 Each note becomes a plain RLS policy on its table that only asks pg_auth
 (`authz.permits('document', 'viewer', id)`), so `pg_policies` lists them; pg_auth's planner hook
 turns them into an indexable filter or a batched check. The policies hold no rule of their own:
@@ -219,6 +253,9 @@ A note belongs to the type it sits in:
   (`/** ... */` too).
 - **Cerbos:** a `#` comment anywhere in the policy; it belongs to the policy's resource. Cerbos
   keeps no relationships: its only note is `protects`.
+- **Cedar:** a `//` comment in the schema, inside an `entity` declaration or just before it; an
+  entity declared with others (`entity A, B;`) takes none. Its relation is `in`, the object in
+  the subject (`in from memberships(user_id).org_id: subject Org`). Notes in policies are refused.
 
 ### Protecting a table: `protects`
 
@@ -350,6 +387,7 @@ shared_with from shares(doc_id).user_id                 -- document:<doc_id>#sha
     | SpiceDB | one LookupResources per subject (with the request's context): rows granted outright and rows not granted at all are decided in Postgres, by an indexable `id = ANY(...)` filter; only rows granted through a caveat that needs the row's values are checked, each with them | the cost of a list, plus one round trip per row whose grant is conditional. A subject with more than `LIST_LIMIT` objects has every row checked |
     | OpenFGA | ListObjects takes no row's values (and fails on a condition missing one), so every row read is checked with its values | one round trip per row read: fine for reads by key and small pages, slow for scans. Prefer SpiceDB for this shape, or a column the relationship can carry instead |
     | Cerbos | attributes are its own model: plans compile into filters on the columns | no round trip per row |
+    | Cedar | partial evaluation leaves conditions on the row: compiled into filters on the columns (an entity attribute among the subject's ancestors becomes `org_id = ANY(...)`, `resource in` the ids below an entity); a part outside comparisons, `in`, `has`, `&&`, `\|\|` and `!` is decided by Cedar for the rows the rest leaves | no round trip per row; the sidecar evaluates a row itself |
 - **If the engine is down,** changes wait and are delivered when it is back. A change the engine
   refuses is set aside with its reason, and `authz.doctor()` reports it; the changes after it go
   on.
@@ -402,6 +440,12 @@ select jsonb_pretty(authz_internal.setup());                         -- what the
 - **Every sidecar follows them.** The engine's id for the rules in force (OpenFGA's model, SpiceDB's
   schema revision) is kept beside them, and every sidecar asks with it from the next request, not
   only the one that pushed them.
+- **Cedar** is pushed to no server: the sidecar holding the push compiles the rules in force with the
+  new version and validates the policies against the schema (strictly); a version that does not
+  is refused with Cedar's reason, the version before kept. Every sidecar then loads the rules in
+  force, and the parents delivered (kept in `authz_internal.entity_parents`, read again after each
+  delivery). Not taken: a schema with a namespace (a subject `type:id` cannot name `App::User`),
+  policy templates, and the request's context.
 - **Cerbos** must store policies in a database with its Admin API on
   (`storage.driver: sqlite3` or `postgres`, `server.adminAPI.enabled: true`), and the sidecar needs
   its credentials (`CERBOS_ADMIN_USER`, `CERBOS_ADMIN_PASSWORD`). One `authz.set_rules` row per
@@ -579,3 +623,8 @@ written through a relationship table clears every one of them:
 - **Memory.** Each backend keeps answers of its own: up to 10,000 lists, and a million ids of loaded
   index sets.
 - **Hosted OpenFGA with OAuth** (Okta FGA): the sidecar takes a static token only.
+- **Cedar.** No namespaces, templates or request context yet; an entity's own attributes other
+  than the principal's (from its claims) and the row's are unknown to it, so a policy reading a
+  parent's attributes does not apply; the permission index does not serve it. A sidecar that did
+  not deliver a change reads the parents again after the delivery, a few milliseconds behind the
+  one that did.

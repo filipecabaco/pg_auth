@@ -1,4 +1,5 @@
 # The in-browser demo: Postgres with pg_auth, and OpenFGA, SpiceDB and Cerbos each with a sidecar,
+# and Cedar, which a sidecar runs itself,
 # driven from tmux (anne and bob side by side). Built into a static site by snowglobe
 # (https://github.com/filipecabaco/snowglobe), which boots this image on an emulated arm64 machine
 # in the visitor's tab. `mise run demo` builds it.
@@ -49,11 +50,12 @@ RUN install -d -o postgres -g postgres -m 700 "$PGDATA" && \
     su-exec postgres pg_ctl -D "$PGDATA" -w -s start && \
     psql="psql -X -q -v ON_ERROR_STOP=1 -h /run/postgresql -U postgres" && \
     $psql -f /etc/demo/sql/roles.sql && \
-    for db in openfga spicedb cerbos; do \
+    for db in openfga spicedb cerbos cedar; do \
       $psql -c "create database $db" && \
       $psql -c "alter database $db set pg_auth.sidecar_socket = '/run/pg_auth/$db.sock'" && \
       case $db in \
         cerbos) $psql -d $db -f /etc/demo/sql/cerbos.sql ;; \
+        cedar) $psql -d $db -f /etc/demo/sql/cedar.sql ;; \
         openfga) $psql -d $db -v engine=openfga -v rules_name=model -v rules_file=/etc/demo/rules/openfga.fga \
                    -f /etc/demo/sql/relationships.sql ;; \
         spicedb) $psql -d $db -v engine=spicedb -v rules_name=schema -v rules_file=/etc/demo/rules/spicedb.zed \

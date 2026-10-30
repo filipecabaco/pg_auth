@@ -2,7 +2,8 @@
 
 Answers the pg_auth extension's authorization questions by asking the source-of-truth engine:
 OpenFGA or SpiceDB, which decide on relationships, or Cerbos, which decides on a resource's
-attributes (docs/proposals/cerbos.md). It runs outside Postgres and listens on a local Unix socket, or over HTTPS
+attributes (docs/proposals/cerbos.md); or evaluates Cedar itself (`src/cedar.rs`), on attributes and
+on parents. It runs outside Postgres and listens on a local Unix socket, or over HTTPS
 for a Postgres on another host (below);
 Postgres holds no copy of the authorization data. The protocol is engine-neutral: the extension
 does not know which engine is behind the socket, and `ping` is the only answer that names it.
@@ -54,16 +55,29 @@ answer, until the cached answer reaches half its TTL (`CACHE_TTL_MS`).
 
 ## Engines
 
-The engine is Cerbos when `CERBOS_URL` is set, SpiceDB when `SPICEDB_URL` is, OpenFGA otherwise.
+The engine is Cedar when `PG_AUTH_ENGINE=cedar`, Cerbos when `CERBOS_URL` is set, SpiceDB when
+`SPICEDB_URL` is, OpenFGA otherwise.
 
-| | OpenFGA | SpiceDB | Cerbos |
-|---|---|---|---|
-| `list` | ListObjects | LookupResources, paged by its cursor | none: always `too_many` |
-| `check` | BatchCheck, 50 ids a call | CheckBulkPermissions, 1000 ids a call | CheckResources with each resource's attributes, 50 a call |
-| `plan` | none | none | PlanResources, translated |
-| fill (permission index) | StreamedListObjects | LookupResources at the latest revision (`fully_consistent`) | none |
-| change feed | ReadChanges, polled every `INDEX_POLL_MS` | Watch, streamed | none |
-| API | HTTP | the HTTP gateway (`--http-enabled`) | HTTP |
+| | OpenFGA | SpiceDB | Cerbos | Cedar |
+|---|---|---|---|---|
+| `list` | ListObjects | LookupResources, paged by its cursor | none: always `too_many` | the ids its policies name (`resource in`, `==`), else `too_many` |
+| `check` | BatchCheck, 50 ids a call | CheckBulkPermissions, 1000 ids a call | CheckResources with each resource's attributes, 50 a call | evaluated here, row by row, with its attributes and parents |
+| `plan` | none | none | PlanResources, translated | typed partial evaluation, its residuals translated |
+| fill (permission index) | StreamedListObjects | LookupResources at the latest revision (`fully_consistent`) | none | none |
+| change feed | ReadChanges, polled every `INDEX_POLL_MS` | Watch, streamed | none | none |
+| API | HTTP | the HTTP gateway (`--http-enabled`) | HTTP | none: in this process |
+
+**Cedar.** Run in the sidecar (cedar-policy, its `tpe` feature pinned to an exact version). Its
+rules come from Postgres: the rule named `schema` is the schema, the others policies, compiled and
+strictly validated together, then loaded by every sidecar (`authz_sidecar.rules_in_force`). Its
+parents are the relationship tables' `in` rows (the object in the subject): delivered here, kept
+in `authz_internal.entity_parents` in the delivery's transaction, and read again by every sidecar
+after a delivery. A plan asks which resources the principal may act on with the resource unknown;
+the residual policies become the protocol's conditions (an attribute a column, `resource in E` the
+ids below `E`, `principal in resource.org` the column among the principal's ancestors of that
+type), and a part outside the language is decided by Cedar for the rows the rest leaves. A null
+column is an absent attribute: a row missing a required one is denied, as Cedar would not take it.
+Needs `PG_AUTH_DATABASE_URL`.
 
 **Cerbos.** A principal needs at least one role; without, the request fails. A check's answers
 on attributes or a principal are not cached (they depend on more than the id); anything but an
@@ -145,7 +159,8 @@ by `src/openfga_dsl.rs`; later requests name the new model), SpiceDB's WriteSche
 API (`PUT /admin/policy`, the YAML sent as JSON, with `CERBOS_ADMIN_USER` and
 `CERBOS_ADMIN_PASSWORD`; Cerbos stores policies that do not compile and goes on with the ones
 before, so InspectPolicies is asked after, and when they do not compile the versions before are
-stored again, a new policy disabled, and the push refused). The result is recorded beside each version in the same transaction,
+stored again, a new policy disabled, and the push refused); Cedar compiles and validates them with
+the rules in force, and every sidecar loads what it took. The result is recorded beside each version in the same transaction,
 which calls `authz_sidecar.answers_changed()` and clears the sidecar's own caches when the engine took
 them. The engine's id for the rules (OpenFGA's model id, SpiceDB's schema ZedToken) is recorded
 beside them (`authz_sidecar.rules_ref`), and every sidecar asks with it from its next wake (a
@@ -178,6 +193,7 @@ the socket.
 | `OPENFGA_LIST_DEADLINE_MS` | 3000 | OpenFGA's `listObjectsDeadline`; set both together |
 | `SPICEDB_URL`, `SPICEDB_TOKEN` | required for SpiceDB | its HTTP gateway and preshared key |
 | `SPICEDB_CONSISTENCY` | `minimize_latency` | or `fully_consistent` |
+| `PG_AUTH_ENGINE` | none | `cedar`: evaluate Cedar in this process (needs `PG_AUTH_DATABASE_URL`) |
 | `CERBOS_URL` | required for Cerbos | its HTTP API (port 3592) |
 | `CERBOS_ADMIN_USER`, `CERBOS_ADMIN_PASSWORD` | none | its Admin API's credentials, to push the policies kept in Postgres |
 | `PG_AUTH_SOCKET` | `/tmp/pg_auth.sock` | created with mode 0660 |

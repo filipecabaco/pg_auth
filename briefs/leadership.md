@@ -48,7 +48,7 @@ rows", and gets hard quickly after that:
 | Grant latency | 4 to 34 ms from commit to visible, one sidecar |
 | Sidecar over HTTPS | Requests and answers signed; about 0.2 ms per round trip more than the socket, on one host, network not included |
 | Request rate, under concurrency | PostgREST-shaped requests by 1,000 random users, Postgres on 2 CPUs, almost every request asking the sidecar: 0.59x to 0.67x of best-practice RLS's throughput on the socket, 0.36x to 0.50x over HTTPS on the same host. 6.2 ms of added round trip costs 5% of throughput at 16 clients (a waiting backend uses no CPU), and is added to each request's latency once |
-| Live demo | Postgres 18, pg_auth and all three engines booting in a browser tab |
+| Live demo | Postgres 18, pg_auth and all four engines (Cedar inside its sidecar) booting in a browser tab |
 
 Persona reviews were run by AI agents playing users (a Supabase app builder, a self-hosted team, a
 security reviewer, a managed-Postgres team, a Postgres image owner). They are not user research:
@@ -78,7 +78,7 @@ they found documentation gaps and bugs, not demand.
    requests and answers, so it no longer needs the database host. Someone still has to run it
    near the database. Supabase Compute could, once pg_auth is in the image; its private alpha
    does not say yet whether a service can be reached privately or kept from suspending.
-3. **An engine.** Someone runs OpenFGA, SpiceDB or Cerbos, reachable from the sidecar, with its
+3. **An engine.** Someone runs OpenFGA, SpiceDB or Cerbos, reachable from the sidecar (or picks Cedar, which the sidecar runs), with its
    own availability: when it is down, protected queries fail.
 
 ## Alternatives

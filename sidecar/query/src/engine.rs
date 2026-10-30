@@ -1,7 +1,8 @@
 //! The source-of-truth engine behind the sidecar. The extension speaks one protocol to every
 //! sidecar and never learns which engine answers: each engine maps the same questions onto its
-//! own API (openfga.rs, spicedb.rs).
+//! own API (openfga.rs, spicedb.rs, cerbos.rs), or evaluates it itself (cedar.rs).
 
+use crate::cedar::Cedar;
 use crate::cerbos::{Cerbos, Plan};
 use crate::openfga::OpenFga;
 use crate::spicedb::SpiceDb;
@@ -23,6 +24,7 @@ pub enum Engine {
     OpenFga(OpenFga),
     SpiceDb(SpiceDb),
     Cerbos(Cerbos),
+    Cedar(Cedar),
 }
 
 /// A change to one relationship, from a relationship table (outbox.rs): written, or deleted.
@@ -89,7 +91,16 @@ impl Engine {
     pub fn written(&self) -> Option<String> {
         match self {
             Engine::SpiceDb(e) => e.written(),
-            Engine::OpenFga(_) | Engine::Cerbos(_) => None,
+            Engine::OpenFga(_) | Engine::Cerbos(_) | Engine::Cedar(_) => None,
+        }
+    }
+
+    /// Cedar, evaluated in this process: every sidecar loads the rules in force and the entities'
+    /// parents itself (rules.rs, cedar.rs), where the other engines keep their own.
+    pub fn cedar(&self) -> Option<&Cedar> {
+        match self {
+            Engine::Cedar(e) => Some(e),
+            _ => None,
         }
     }
 
@@ -103,6 +114,8 @@ impl Engine {
                 }
             }
             Engine::OpenFga(e) => e.wrote_elsewhere(),
+            // the parents another sidecar delivered: read again
+            Engine::Cedar(e) => e.stale.notify_one(),
             Engine::Cerbos(_) => {}
         }
     }
@@ -112,6 +125,7 @@ impl Engine {
             Engine::OpenFga(_) => "openfga",
             Engine::SpiceDb(_) => "spicedb",
             Engine::Cerbos(_) => "cerbos",
+            Engine::Cedar(_) => "cedar",
         }
     }
 
@@ -123,6 +137,7 @@ impl Engine {
             Engine::SpiceDb(e) => e.list(subject, permission, object_type, limit, context).await,
             // no relationships to list: rows are checked
             Engine::Cerbos(_) => Ok(Listed::TooMany),
+            Engine::Cedar(e) => e.list(subject, permission, object_type, limit),
         }
     }
 
@@ -134,6 +149,7 @@ impl Engine {
             Engine::OpenFga(e) => e.list_all(subject, permission, object_type).await,
             Engine::SpiceDb(e) => e.list_all(subject, permission, object_type).await,
             Engine::Cerbos(_) => Err("cerbos cannot list a subject's objects".into()),
+            Engine::Cedar(_) => Err("cedar cannot list a subject's objects for the permission index".into()),
         }
     }
 
@@ -145,6 +161,7 @@ impl Engine {
             Engine::OpenFga(_) => (crate::openfga::MAX_BATCH, crate::openfga::holds),
             Engine::SpiceDb(_) => (crate::spicedb::MAX_BULK, crate::spicedb::holds),
             Engine::Cerbos(_) => (crate::cerbos::MAX_RESOURCES, |_, id| !id.is_empty()),
+            Engine::Cedar(_) => (crate::cedar::MAX_BATCH, |_, id| !id.is_empty()),
         };
         let asked: Vec<usize> = (0..ids.len()).filter(|&i| holds(&key.1, &ids[i])).collect();
         let calls: Vec<_> = asked.chunks(batch).map(|chunk| self.check_call(key, ids, chunk, context)).collect();
@@ -177,6 +194,10 @@ impl Engine {
                 let attrs: Vec<Option<&Value>> = at.iter().map(|&i| context.attrs.and_then(|a| a.get(i))).collect();
                 e.check(subject, permission, object_type, &chunk, &attrs, context.principal).await
             }
+            Engine::Cedar(e) => {
+                let attrs: Vec<Option<&Value>> = at.iter().map(|&i| context.attrs.and_then(|a| a.get(i))).collect();
+                e.check(subject, permission, object_type, &chunk, &attrs, context.principal)
+            }
         }
     }
 
@@ -189,15 +210,17 @@ impl Engine {
             Engine::Cerbos(_) => {
                 return Err(CallError {
                     permanent: true,
-                    message: "cerbos keeps no relationships: relationship tables need OpenFGA or SpiceDB".into(),
+                    message: "cerbos keeps no relationships: relationship tables need OpenFGA, SpiceDB or Cedar".into(),
                 });
             }
+            // in order, in one go: kept in Postgres by the outbox's transaction too (outbox.rs)
+            Engine::Cedar(e) => return e.apply(changes),
         };
         for batch in batches(changes, max) {
             match self {
                 Engine::OpenFga(e) => e.write(batch).await?,
                 Engine::SpiceDb(e) => e.write(batch).await?,
-                Engine::Cerbos(_) => {}
+                Engine::Cerbos(_) | Engine::Cedar(_) => {}
             }
         }
         Ok(())
@@ -223,6 +246,7 @@ impl Engine {
                 e.write_schema(&rule.body).await
             }
             Engine::Cerbos(e) => e.put_policies(rules).await.map(|()| None),
+            Engine::Cedar(e) => e.push(rules).map(Some),
         }
     }
 
@@ -232,7 +256,7 @@ impl Engine {
         match self {
             Engine::OpenFga(e) => e.use_model(id),
             Engine::SpiceDb(e) => e.use_schema(id),
-            Engine::Cerbos(_) => false,
+            Engine::Cerbos(_) | Engine::Cedar(_) => false,
         }
     }
 
@@ -253,6 +277,7 @@ impl Engine {
         match self {
             Engine::Cerbos(e) => e.plan(subject, permission, object_type, principal).await,
             Engine::SpiceDb(e) => e.plan(subject, permission, object_type, limit, context).await,
+            Engine::Cedar(e) => e.plan(subject, permission, object_type, principal, limit),
             Engine::OpenFga(_) => Ok(Plan::Rows),
         }
     }
@@ -268,7 +293,7 @@ impl Engine {
             Engine::OpenFga(e) => e.follow(start, resume, poll, feed).await,
             Engine::SpiceDb(e) => e.follow(resume, poll, feed).await,
             // no change feed: and no permission index to keep fresh
-            Engine::Cerbos(_) => {}
+            Engine::Cerbos(_) | Engine::Cedar(_) => {}
         }
     }
 }
@@ -1025,7 +1050,7 @@ mod tests {
     async fn cerbos_keeps_no_relationships() {
         let server = MockServer::start().await;
         let refused = cerbos(&server).write(&[change(true, "org:1", "user:a")]).await.err().unwrap();
-        assert!(refused.permanent && refused.message.contains("need OpenFGA or SpiceDB"));
+        assert!(refused.permanent && refused.message.contains("need OpenFGA, SpiceDB or Cedar"));
     }
 
     #[tokio::test]

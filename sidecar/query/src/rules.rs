@@ -71,6 +71,22 @@ async fn push(url: &str, engine: &Engine, poll: Duration, pushed: &(impl Fn() + 
 /// Push what is pending: whether the engine took new rules, or another sidecar's are new here.
 async fn once(client: &mut Client, engine: &Engine) -> Result<bool, String> {
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
+    // Cedar runs in this process: the rules in force (taken by whichever sidecar pushed them)
+    let mut loaded = false;
+    if let Some(cedar) = engine.cedar() {
+        let rows = client.query("select name, body from authz_sidecar.rules_in_force($1)", &[&engine.name()]).await.map_err(pg)?;
+        match cedar.load(rows.iter().map(|r| (r.get(0), r.get(1))).collect()) {
+            Ok(true) => {
+                eprintln!(
+                    "pg-auth-sidecar: cedar rules in force: {}",
+                    rows.iter().map(|r| r.get::<_, String>(0)).collect::<Vec<_>>().join(", ")
+                );
+                loaded = true;
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!("pg-auth-sidecar: cedar rules in force do not load: {e}"),
+        }
+    }
     // rules another sidecar pushed: asked with from now on (OpenFGA pins its model)
     let in_force: Option<String> = client.query_one("select authz_sidecar.rules_ref($1)", &[&engine.name()]).await.map_err(pg)?.get(0);
     if let Some(id) = in_force.filter(|id| engine.use_rules(id)) {
@@ -82,7 +98,7 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<bool, String> {
         tx.query("select name, version, body, previous from authz_sidecar.rules_pending($1)", &[&engine.name()]).await.map_err(pg)?;
     if rows.is_empty() {
         tx.commit().await.map_err(pg)?;
-        return Ok(false);
+        return Ok(loaded);
     }
     let rules: Vec<Rule> = rows.iter().map(|r| Rule { name: r.get(0), body: r.get(2), previous: r.get(3) }).collect();
     let versions: Vec<(String, i32)> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();

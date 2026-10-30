@@ -20,7 +20,7 @@ database to enforce the same decisions for every client.
 ## Product Purpose
 
 pg_auth is a Postgres extension (Postgres 15 to 18) and a sidecar. An authorization engine
-(OpenFGA, SpiceDB or Cerbos) decides who may see and change each row; Postgres enforces that
+(OpenFGA, SpiceDB, Cerbos or Cedar) decides who may see and change each row; Postgres enforces that
 decision for every client as row level security. The setup is the engine's rules in its own
 syntax, stored with `authz.set_rules`: `pg_auth:` comments in them protect tables and make rows
 relationships, so access is granted and revoked by writing rows (delivered to the engine through
@@ -64,7 +64,7 @@ to GitHub Pages from `filipecabaco/pg_auth`.
 ## Evidence on Hand
 
 - Live, in-browser demo built with snowglobe (as `../pg_redis` does), running Postgres with
-  pg_auth, the sidecar and all three engines; the larger download is accepted.
+  pg_auth, the sidecar and all four engines (Cedar inside its sidecar); the larger download is accepted.
 - `bench/docker` results (35 scenarios, 489 pairs, 2026-10-29): 0.80x of best-practice RLS time
   overall (measured with OpenFGA); per-scenario figures in `docs/benchmarks.md`.
 - Correctness: parity against each engine (`compare/`), 96.8% combined line coverage, CI on

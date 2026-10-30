@@ -134,6 +134,14 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
         }
     };
     tx.execute("select authz_sidecar.outbox_done($1)", &[&done]).await.map_err(pg)?;
+    // Cedar runs in every sidecar: what it took is kept in Postgres, where each one reads it
+    if engine.cedar().is_some() {
+        let taken: Vec<&Change> = changes.iter().filter(|(id, _)| done.contains(id)).map(|(_, c)| c).collect();
+        let writes: Vec<bool> = taken.iter().map(|c| c.write).collect();
+        let children: Vec<&str> = taken.iter().map(|c| c.object.as_str()).collect();
+        let parents: Vec<&str> = taken.iter().map(|c| c.subject.as_str()).collect();
+        tx.execute("select authz_sidecar.entity_parents_apply($1, $2, $3)", &[&writes, &children, &parents]).await.map_err(pg)?;
+    }
     for (id, reason) in &refused {
         eprintln!("pg-auth-sidecar: relationship change {id} refused by the engine, set aside: {reason}");
         tx.execute("select authz_sidecar.outbox_failed($1, $2)", &[id, reason]).await.map_err(pg)?;

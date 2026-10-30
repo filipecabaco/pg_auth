@@ -220,9 +220,24 @@ mod tests {
     #[test]
     fn encodes_responses_as_one_line() {
         let ms = Duration::from_millis(2);
-        assert_eq!(encode(&Response::Ids { ids: vec!["1".into()], valid_ms: None }, ms), "{\"engine_us\":2000,\"ids\":[\"1\"]}\n");
-        assert_eq!(encode(&Response::TooMany { too_many: true, valid_ms: None }, Duration::ZERO), "{\"engine_us\":0,\"too_many\":true}\n");
-        assert_eq!(encode(&Response::Allowed { allowed: vec![true, false] }, ms), "{\"allowed\":[true,false],\"engine_us\":2000}\n");
-        assert_eq!(encode(&Response::Error { error: "x".into() }, ms), "{\"error\":\"x\"}\n");
+        // a line, whatever order its keys come in
+        let line = |r: &Response, t| {
+            let s = encode(r, t);
+            assert!(s.ends_with('\n') && s.matches('\n').count() == 1, "{s:?}");
+            serde_json::from_str::<serde_json::Value>(&s).unwrap()
+        };
+        assert_eq!(
+            line(&Response::Ids { ids: vec!["1".into()], valid_ms: None }, ms),
+            serde_json::json!({"engine_us": 2000, "ids": ["1"]})
+        );
+        assert_eq!(
+            line(&Response::TooMany { too_many: true, valid_ms: None }, Duration::ZERO),
+            serde_json::json!({"engine_us": 0, "too_many": true})
+        );
+        assert_eq!(
+            line(&Response::Allowed { allowed: vec![true, false] }, ms),
+            serde_json::json!({"allowed": [true, false], "engine_us": 2000})
+        );
+        assert_eq!(line(&Response::Error { error: "x".into() }, ms), serde_json::json!({"error": "x"}));
     }
 }

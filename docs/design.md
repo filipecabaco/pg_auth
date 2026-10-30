@@ -45,8 +45,8 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
             └──────────────────────────────────┬─────────────────┘
                                                │ JSON lines on a Unix socket, or signed HTTPS
                                      pg-auth-sidecar (sidecar/query)
-                                               │ HTTP
-                                     OpenFGA, SpiceDB or Cerbos
+                                               │ HTTP, or in the sidecar's own process
+                                     OpenFGA, SpiceDB, Cerbos, or Cedar
 ```
 
 - **Binding.** A note in the engine's rules (`# pg_auth: protects docs (org_id): read view, write

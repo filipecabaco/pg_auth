@@ -1,5 +1,5 @@
-// The live demo on the home page: Postgres with pg_auth, three engines and their sidecars, booted
-// in this tab.
+// The live demo on the home page: Postgres with pg_auth, four engines and their sidecars (Cedar run
+// by its sidecar itself), booted in this tab.
 //
 // The machine is a snowglobe build of docker/demo (`mise run demo` writes it to docs/demo/): an
 // arm64 Linux snapshot restored by armless, a CPU emulator compiled to WebAssembly. This file uses
@@ -25,11 +25,11 @@
   const steps = [...root.querySelectorAll(".pa-step")];
   const views = [...root.querySelectorAll("[data-view]")];
   const PANE = { anne: "\x1b1", bob: "\x1b2" };
-  const NAME = { openfga: "OpenFGA", spicedb: "SpiceDB", cerbos: "Cerbos" };
+  const NAME = { openfga: "OpenFGA", spicedb: "SpiceDB", cerbos: "Cerbos", cedar: "Cedar" };
   // a phone: the panes stacked (tmux alt-v) so a line is not wrapped mid-word in half the width
   const narrow = matchMedia("(max-width: 40em)");
-  // openfga and spicedb run the same relationship steps; cerbos decides on fields
-  const FAMILY = { openfga: "relationships", spicedb: "relationships", cerbos: "attributes" };
+  // openfga, spicedb and cedar run the same relationship steps; cerbos decides on fields
+  const FAMILY = { openfga: "relationships", spicedb: "relationships", cerbos: "attributes", cedar: "relationships" };
   let emulator = null;
   let started = false;
 

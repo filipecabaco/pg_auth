@@ -1,32 +1,37 @@
 #!/usr/bin/env elixir
 # The demo's rules files (docker/demo/rules), loaded as they are into a real OpenFGA, SpiceDB and
-# Cerbos: authz.set_rules stores each file, its notes (`# pg_auth: ...`) protect and relate the
+# Cerbos, and Cedar in the sidecar: authz.set_rules stores each file, its notes (`# pg_auth: ...`) protect and relate the
 # tables, the sidecar pushes the file, and the demo's story holds through row level security.
 # Nothing is protected or related by hand. Then that the engine is what decides: the policies hold
 # nothing but the call to pg_auth, rows follow the engine when it is changed behind Postgres's back
 # (and not Postgres's own tables), and with the engine or the sidecar stopped nothing gets through
 # past the sidecar's 1 s answers. See compare/README.md.
 #
-#   elixir compare/notes.exs                       # openfga, spicedb, cerbos
+#   elixir compare/notes.exs                       # openfga, spicedb, cerbos, cedar
 #   elixir compare/notes.exs --engine spicedb --no-build
 
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
 dir = Path.join(__DIR__, "lib")
-for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
+for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
 
 defmodule Notes do
   alias Compare.{Docker, Stack}
 
   @rules Path.expand("../docker/demo/rules", __DIR__)
-  @files %{"openfga" => {"model", "openfga.fga"}, "spicedb" => {"schema", "spicedb.zed"}, "cerbos" => {"resource/document", "cerbos.yaml"}}
+  @files %{
+    "openfga" => [{"model", "openfga.fga"}],
+    "spicedb" => [{"schema", "spicedb.zed"}],
+    "cerbos" => [{"resource/document", "cerbos.yaml"}],
+    "cedar" => [{"schema", "cedar.cedarschema"}, {"documents", "cedar.cedar"}]
+  }
   @bare "model\n  schema 1.1\ntype user\n"
   @deadline_ms 30_000
 
   def main(argv) do
     {opts, _} = OptionParser.parse!(argv, strict: [engine: :string, build: :boolean])
     if Keyword.get(opts, :build, true), do: Stack.build(Path.expand("..", __DIR__))
-    engines = if e = opts[:engine], do: [e], else: ["openfga", "spicedb", "cerbos"]
+    engines = if e = opts[:engine], do: [e], else: ["openfga", "spicedb", "cerbos", "cedar"]
     Process.flag(:trap_exit, true)
     results = for e <- engines, do: {e, run(e)}
     for {e, steps} <- results, {step, outcome} <- steps, do: IO.puts("#{String.pad_trailing(e, 8)} #{String.pad_trailing(step, 62)} #{outcome}")
@@ -75,6 +80,29 @@ defmodule Notes do
     store_rules(conn, "cerbos")
   end
 
+  defp setup(conn, "cedar") do
+    run_all(conn, [
+      "select authz.configure(subject_type => 'User')",
+      "create table documents (id int primary key, org_id int not null, title text not null)",
+      "create table memberships (org_id int not null, user_id text not null, role text not null, primary key (org_id, user_id))",
+      # as docker/demo/sql/cedar.sql: a share carries its document's org, filled in from the document
+      "create table shares (doc_id int not null, user_id text not null, expires_at timestamptz, org_id int, primary key (doc_id, user_id))",
+      "grant select, insert, update, delete on documents, memberships, shares to authenticated",
+      """
+      create function share_org() returns trigger language plpgsql security definer set search_path = public as $$
+      begin
+        new.org_id := (select d.org_id from documents d where d.id = new.doc_id);
+        return new;
+      end
+      $$
+      """,
+      "create trigger share_org before insert or update of doc_id on shares for each row execute function share_org()",
+      "insert into documents values (1, 1, 'Roadmap'), (2, 1, 'Budget'), (3, 1, 'Launch plan'), (4, 2, 'Hiring'), (5, 2, 'Pricing')",
+      "insert into memberships values (1, 'anne', 'admin'), (2, 'carl', 'admin')"
+    ])
+    store_rules(conn, "cedar")
+  end
+
   defp setup(conn, engine) do
     run_all(conn, [
       "create table documents (id int primary key, org_id int not null, title text not null)",
@@ -88,8 +116,11 @@ defmodule Notes do
   end
 
   defp store_rules(conn, engine) do
-    {name, file} = @files[engine]
-    Postgrex.query!(conn, "select authz.set_rules($1, $2, $3)", [engine, name, File.read!(Path.join(@rules, file))])
+    # in one transaction: Cedar's schema and policies are checked together
+    Postgrex.transaction(conn, fn c ->
+      for {name, file} <- @files[engine],
+          do: Postgrex.query!(c, "select authz.set_rules($1, $2, $3)", [engine, name, File.read!(Path.join(@rules, file))])
+    end)
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.rules() where pushed_at is null", []).rows == [[0]] end) ||
       raise("rules not pushed")
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz_internal.outbox where not_before is null", []).rows == [[0]] end) ||
@@ -105,6 +136,39 @@ defmodule Notes do
         as(conn, "anne", "update documents set status = 'published' where id = 2") == 1 and eventually(fn -> visible(conn, "bob") == [1, 2, 4] end)
       end),
       check("bob cannot edit anne's document: 0 rows", fn -> as(conn, "bob", "update documents set title = 'Mine' where id = 1") == 0 end)
+    ]
+  end
+
+  defp steps(conn, "cedar") do
+    [
+      check("the notes protected the three tables", fn ->
+        policies(conn) |> Enum.map(&hd(String.split(&1))) |> Enum.uniq() == ["documents", "memberships", "shares"]
+      end),
+      check("the policies became filters on the columns: org_id among anne's orgs", fn ->
+        {:ok, plan} = as_result(conn, "anne", "explain (costs off) select id from documents")
+        Enum.any?(plan.rows, fn [line] -> line =~ "org_id = ANY" end) or raise(inspect(plan.rows))
+      end),
+      check("anne, org 1's admin, sees its documents; bob sees none", fn ->
+        eventually(fn -> visible(conn, "anne") == [1, 2, 3] end) and visible(conn, "bob") == []
+      end),
+      check("anne adds bob to org 1: bob sees its documents", fn ->
+        as(conn, "anne", "insert into memberships values (1, 'bob', 'member')") == 1 and eventually(fn -> visible(conn, "bob") == [1, 2, 3] end)
+      end),
+      check("bob, a member, cannot add members", fn -> refused?(conn, "bob", "insert into memberships values (1, 'dan', 'member')") end),
+      check("carl shares document 4 with bob: bob sees it", fn ->
+        as(conn, "carl", "insert into shares values (4, 'bob', null)") == 1 and eventually(fn -> visible(conn, "bob") == [1, 2, 3, 4] end)
+      end),
+      check("bob cannot share carl's document 5 with himself", fn -> refused?(conn, "bob", "insert into shares values (5, 'bob', null)") end),
+      check("a share with an end shows until then and goes after", fn ->
+        as(conn, "carl", "insert into shares values (5, 'bob', now() + interval '4 seconds')") == 1 and
+          eventually(fn -> visible(conn, "bob") == [1, 2, 3, 4, 5] end) and
+          eventually(fn -> visible(conn, "bob") == [1, 2, 3, 4] end)
+      end),
+      check("anne creates a document in org 1; dan, in no org, cannot", fn ->
+        as(conn, "anne", "insert into documents values (6, 1, 'Plan')") == 1 and
+          refused?(conn, "dan", "insert into documents values (7, 1, 'Plan B')") and
+          eventually(fn -> visible(conn, "anne") == [1, 2, 3, 6] end)
+      end)
     ]
   end
 
@@ -166,17 +230,12 @@ defmodule Notes do
   defp engine_decides(conn, engine, stack) do
     [check("the policies hold no rule of their own, only the call to pg_auth", fn -> policies_only_ask(conn) end)] ++
       engine_changes(conn, engine, stack) ++
+      engine_stopped(conn, engine, stack) ++
       [
-        check("the engine stopped: past the sidecar's 1 s answers, every read fails", fn ->
-          System.cmd("docker", ["stop", "-t", "0", stack.engine.container], stderr_to_stdout: true)
-          Process.sleep(1100)
-          results = for u <- ~w(anne bob carl dan), do: as_result(conn, u, "select id from documents")
-          Enum.all?(results, &match?({:error, %Postgrex.Error{}}, &1)) or raise(inspect(Enum.map(results, &elem(&1, 0))))
-        end),
         # an answer the sidecar gave is kept by the backend for the time the sidecar says it holds
         # (its own 1 s cache); past it every statement has to ask, and fails
         check("the sidecar stopped: past its 1 s answers, every read fails", fn ->
-          System.cmd("docker", ["stop", "-t", "0", sidecar(stack)], stderr_to_stdout: true)
+          System.cmd("docker", ["stop", "-t", "0" | sidecars(stack)], stderr_to_stdout: true)
           Process.sleep(1100)
           Enum.all?(~w(anne bob carl dan), &match?({:error, %Postgrex.Error{postgres: %{code: :connection_failure}}}, as_result(conn, &1, "select id from documents")))
         end),
@@ -184,6 +243,20 @@ defmodule Notes do
           match?({:error, %Postgrex.Error{postgres: %{code: :connection_failure}}}, as_result(conn, "carl", "update documents set title = title where id = 4"))
         end)
       ]
+  end
+
+  # Cedar runs in the sidecar: there is no engine to stop apart from it
+  defp engine_stopped(_conn, "cedar", _stack), do: []
+
+  defp engine_stopped(conn, _engine, stack) do
+    [
+      check("the engine stopped: past the sidecar's 1 s answers, every read fails", fn ->
+        System.cmd("docker", ["stop", "-t", "0", stack.engine.container], stderr_to_stdout: true)
+        Process.sleep(1100)
+        results = for u <- ~w(anne bob carl dan), do: as_result(conn, u, "select id from documents")
+        Enum.all?(results, &match?({:error, %Postgrex.Error{}}, &1)) or raise(inspect(Enum.map(results, &elem(&1, 0))))
+      end)
+    ]
   end
 
   defp engine_changes(conn, "cerbos", stack) do
@@ -200,6 +273,29 @@ defmodule Notes do
         %{status: 200} = Req.put!(stack.engine.req, url: "/admin/policy", auth: {:basic, "cerbos:cerbosAdmin"}, json: %{policies: [owner_only]})
         # each subject's earlier answer holds for up to the sidecar's 1 s
         eventually(fn -> visible(conn, "bob") == [] and visible(conn, "anne") == [1, 2, 3] and visible(conn, "carl") == [4, 5] end)
+      end)
+    ]
+  end
+
+  defp engine_changes(conn, "cedar", _stack) do
+    # as a delivery does: the change, and the notice the sidecars read again on, at its commit
+    delivered = fn sql ->
+      {:ok, _} = Postgrex.transaction(conn, fn c ->
+        Postgrex.query!(c, sql, [])
+        Postgrex.query!(c, "select pg_notify('pg_auth_delivered', '')", [])
+      end)
+    end
+
+    [
+      check("a parent written straight where the sidecars read Cedar's: dan sees document 5", fn ->
+        nothing_in_postgres = Postgrex.query!(conn, "select count(*) from shares where user_id = 'dan'", []).rows == [[0]]
+        delivered.("insert into authz_internal.entity_parents values ('User:dan', 'Document:5')")
+        nothing_in_postgres and eventually(fn -> visible(conn, "dan") == [5] end)
+      end),
+      check("parents deleted there: anne sees none of org 1", fn ->
+        still_in_postgres = Postgrex.query!(conn, "select role from memberships where org_id = 1 and user_id = 'anne'", []).rows == [["admin"]]
+        delivered.("delete from authz_internal.entity_parents where child = 'User:anne'")
+        still_in_postgres and eventually(fn -> visible(conn, "anne") == [] end)
       end)
     ]
   end
@@ -240,9 +336,10 @@ defmodule Notes do
       Enum.all?(rows, fn [expr] -> expr =~ "authz." and not (expr =~ ~r/memberships|shares|select|\s(=|<>|in|and|or)\s/i) end)
   end
 
-  defp sidecar(stack) do
+  # every one: a step before may have started a second
+  defp sidecars(stack) do
     {out, 0} = System.cmd("docker", ["ps", "-q", "--filter", "name=#{stack.id}-sidecar"])
-    String.trim(out)
+    String.split(out, "\n", trim: true)
   end
 
   defp policies(conn) do

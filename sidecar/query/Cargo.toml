@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
-description = "Answers pg_auth's authorization questions from an external engine (OpenFGA, SpiceDB, Cerbos) over a local Unix socket"
+description = "Answers pg_auth's authorization questions from an authorization engine (OpenFGA, SpiceDB, Cerbos, or Cedar in-process) over a local Unix socket"
 
 [dependencies]
+# Cedar evaluated in the sidecar (no engine server); `tpe` (typed partial evaluation, for SQL
+# filters) is experimental, so the version is pinned exactly
+cedar-policy = { version = "=4.13.0", features = ["tpe"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 hmac = "0.13"
 http-body-util = "0.1"

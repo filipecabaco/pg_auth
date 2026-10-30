@@ -93,10 +93,11 @@ impl<'a> Compiler<'_, 'a> {
             "or" => boolean(pg_sys::BoolExprType::OR_EXPR, negated),
             "not" if args.len() == 1 => boolean(pg_sys::BoolExprType::NOT_EXPR, !negated),
             "in" if args.len() == 2 => {
-                let column = self.row_expr(&args[0])?;
                 let list = &args[1];
+                let entity = list["of"].as_str() == Some("entity");
+                let column = if entity { self.row_expr_as_is(&args[0])? } else { self.row_expr(&args[0])? };
                 let typ = catalog::expr_type(column);
-                if list["kind"].as_str() != Some("list") || list["of"].as_str() != Some(kind_of_type(typ)) {
+                if list["kind"].as_str() != Some("list") || !(entity || list["of"].as_str() == Some(kind_of_type(typ))) {
                     // no value of another kind equals the column's
                     return Some(m.bool_const(false, false));
                 }
@@ -108,12 +109,15 @@ impl<'a> Compiler<'_, 'a> {
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 2 => {
                 // the row's side on the left: a value on the left turns the comparison around
                 let (row, param, op) = match (self.row_expr(&args[0]), self.row_expr(&args[1])) {
-                    (Some(r), None) => (r, &args[1], op),
-                    (None, Some(r)) => (r, &args[0], mirror(op)),
+                    (Some(_), None) => (&args[0], &args[1], op),
+                    (None, Some(_)) => (&args[1], &args[0], mirror(op)),
                     _ => return None,
                 };
+                // an entity's id matches the column whatever its type, by the column's text form
+                let entity = param["kind"].as_str() == Some("entity") && matches!(op, "eq" | "ne");
+                let row = if entity { self.row_expr_as_is(row)? } else { self.row_expr(row)? };
                 let typ = catalog::expr_type(row);
-                if param["kind"].as_str() != Some(kind_of_type(typ)) {
+                if !entity && param["kind"].as_str() != Some(kind_of_type(typ)) {
                     // values of different kinds: unequal, and without order
                     return Some(match op {
                         "eq" => m.bool_const(false, false),
@@ -143,6 +147,15 @@ impl<'a> Compiler<'_, 'a> {
             }
             _ => None,
         }
+    }
+
+    /// The same, the id as the policy has it (not cast to text): compared with an entity's id,
+    /// itself read as the id's type (an id not valid for it matches no row), so its index is used.
+    fn row_expr_as_is(&self, arg: &serde_json::Value) -> Option<Node<'a>> {
+        if arg.get("id").is_some() {
+            return Some(self.m.copy(self.g.policy.key));
+        }
+        self.row_expr(arg)
     }
 
     /// The row's side of a comparison: an attribute's column, or the row's id; None for a value.

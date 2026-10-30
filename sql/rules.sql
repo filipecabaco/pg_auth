@@ -1,16 +1,20 @@
 -- The engine's rules, kept in Postgres in the engine's own language: the OpenFGA model (its DSL),
--- the SpiceDB schema, the Cerbos policies (YAML). Each change is a new version, kept for review
--- and history; the sidecar pushes the latest to the engine and records whether it took it.
+-- the SpiceDB schema, the Cerbos policies (YAML), Cedar's schema and policies. Each change is a new
+-- version, kept for review and history; the sidecar pushes the latest to the engine and records
+-- whether it took it (Cedar: whether they compile and validate; every sidecar then loads them).
 --
 --   select authz.set_rules('openfga', 'model', $$ model ... $$);
 --   select authz.set_rules('cerbos', 'resource/expense', $$ apiVersion: api.cerbos.dev/v1 ... $$);
+--   select authz.set_rules('cedar', 'schema', $$ entity User in [Group]; ... $$);
+--   select authz.set_rules('cedar', 'documents', $$ permit (principal, action, resource) when { ... }; $$);
 --   select name, version, pushed_at, error from authz.rules();
 --
 -- OpenFGA and SpiceDB have one model or schema: one name. Cerbos has a policy per file: one name
--- each, as you would name the files. Optional: rules managed in the engine itself stay there.
+-- each, as you would name the files; so has Cedar, whose rule named `schema` is its schema.
+-- Optional: rules managed in the engine itself stay there.
 
 create table authz_internal.rules (
-    engine     text not null check (engine in ('openfga', 'spicedb', 'cerbos')),
+    engine     text not null check (engine in ('openfga', 'spicedb', 'cerbos', 'cedar')),
     name       text not null,
     version    int not null,
     body       text not null,
@@ -34,8 +38,8 @@ declare
     latest authz_internal.rules;
     other text;
 begin
-    if engine not in ('openfga', 'spicedb', 'cerbos') then
-        raise exception 'rules are for openfga, spicedb or cerbos (got %)', engine;
+    if engine not in ('openfga', 'spicedb', 'cerbos', 'cedar') then
+        raise exception 'rules are for openfga, spicedb, cerbos or cedar (got %)', engine;
     end if;
     if engine in ('openfga', 'spicedb') then
         select r.name into other from authz_internal.rules r where r.engine = set_rules.engine and r.name <> set_rules.name limit 1;
@@ -141,6 +145,15 @@ language sql volatile security definer set search_path = pg_catalog, pg_temp as 
     select pg_notify('pg_auth_rules', p_engine);
 $$;
 
+-- For a sidecar running the engine itself (Cedar): the latest version of each rule the engine
+-- took, which every sidecar loads.
+create function authz_sidecar.rules_in_force(p_engine text) returns table (name text, body text)
+language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+    select distinct on (r.name) r.name, r.body from authz_internal.rules r
+    where r.engine = p_engine and r.pushed_at is not null
+    order by r.name, r.version desc
+$$;
+
 -- For the sidecar: the engine's id for the rules in force (OpenFGA's model id), or null.
 create function authz_sidecar.rules_ref(p_engine text) returns text
 language sql stable security definer set search_path = pg_catalog, pg_temp as $$
@@ -167,7 +180,8 @@ begin
     if eng is null then
         return;
     end if;
-    rules := case eng when 'openfga' then 'the openfga model' when 'spicedb' then 'the spicedb schema' else 'the cerbos policies' end;
+    rules := case eng when 'openfga' then 'the openfga model' when 'spicedb' then 'the spicedb schema'
+                      when 'cedar' then 'the cedar schema' else 'the cerbos policies' end;
     select jsonb_agg(to_jsonb(n)) into names from authz.rules() r, authz_internal.rules_names(r.engine, r.body) n;
     if jsonb_path_exists(names, '$[*] ? (@.kind == "unreadable")') then
         return;  -- the engine says what is wrong with them (authz.doctor)

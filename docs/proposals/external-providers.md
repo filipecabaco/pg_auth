@@ -64,9 +64,19 @@ question, JSON in and out:
 Cost: one new engine module and a contract test. It can be built and tested now, with a provider
 written for the test, and is useful without Compute.
 
-## Part 2: the extension reaching a sidecar over the network
+## Part 2: a sidecar next to Postgres, or an external service
 
-What a sidecar away from Postgres needs:
+The goal (2026-10-30): the extension reaches its sidecar either next to Postgres, on a Unix socket
+as now, or as an external service over the network, chosen by a setting
+(`pg_auth.sidecar_socket`, or `pg_auth.sidecar_url` with its token). One protocol either way.
+What answers at the URL decides what keeps working:
+
+| behind the URL | what works |
+|---|---|
+| pg_auth's sidecar, run elsewhere (Compute, a VM) | everything: its answer cache, the permission index, delivering relationship rows, rules pushed from Postgres |
+| any service implementing the extension's protocol | decisions on rows (`list`, `check`, `plan`). The index, the outbox and pushing rules are the sidecar's work through its own Postgres connection: such a service answers `fill` with `{"queued":false}` and leaves relationship tables and `set_rules` out |
+
+What an external sidecar needs:
 
 - **Framing.** Compute exposes HTTP services, so each request becomes an HTTPS POST over a
   connection kept per backend, from a synchronous client inside Postgres (`ureq` with rustls; no
@@ -96,6 +106,23 @@ sidecar (a TCP relay inserting 0.5, 1 and 2 ms, the extension speaking TCP), and
 ratios against best-practice row level security per scenario, as `docs/benchmarks.md` does. That
 says which workloads a remote sidecar suits.
 
+## Cerbos
+
+- **Nothing to resume.** Cerbos keeps no relationships, so there is no permission index or change
+  feed: its decisions are plans compiled into filters on the row's columns, and a restart loses
+  only the sidecar's plans kept for a second.
+- **The best fit for a remote sidecar.** One plan per subject and action, which Postgres then
+  applies to every row itself: the network is paid per statement, not per row, except for a
+  condition outside the filter language, checked per row.
+- **Its storage must survive restarts.** The sidecar pushes a version of the rules once, when it
+  is stored. A Cerbos on in-memory storage (the demo's) that restarts has no policies and denies
+  everything until a new version is stored: on Compute, where idle services suspend, it needs its
+  `postgres` storage driver (the project's own database can hold it) or a file that persists. The
+  sidecar could also push the version in force again when Cerbos does not have it.
+- **Cerbos Hub** manages the policies itself and gives its PDPs a read-only store: the rules stay
+  in Hub, so `authz.set_rules` and its notes do not apply, and tables are set up with
+  `authz_internal.protect`.
+
 ## Questions for Supabase
 
 - Can a Compute service be reached only from the project's network, and over TCP as well as
@@ -106,6 +133,6 @@ says which workloads a remote sidecar suits.
 ## Phases
 
 1. The HTTP provider (Part 1), with its contract and an end-to-end check like the engines'.
-2. The latency measurement, with a TCP transport behind a setting.
+2. The latency measurement, with a network transport behind `pg_auth.sidecar_url`.
 3. If the numbers hold and Supabase answers yes: HTTPS framing, the token, TLS to Postgres, and a
    deployment guide for Compute.

@@ -30,7 +30,7 @@ insert into memberships values (1, 'anne', 'admin'), (2, 'carl', 'admin');
 \set policies `cat /etc/demo/rules/cedar.cedar`
 \set mapping `cat /etc/demo/mappings/cedar.yaml`
 begin;
-select authz.set_rules('cedar', 'schema', :'schema', mapping => :'mapping');
+select authz.set_rules('cedar', 'schema', mapping => :'mapping', body => :'schema');
 select authz.set_rules('cedar', 'documents', :'policies');
 commit;
 

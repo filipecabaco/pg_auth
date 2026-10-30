@@ -13,7 +13,7 @@ insert into documents values (1, 'Roadmap', 'anne', 'published'), (2, 'Budget', 
 -- their own drafts, and only the owner edits
 \set rules `cat /etc/demo/rules/cerbos.yaml`
 \set mapping `cat /etc/demo/mappings/cerbos.yaml`
-select authz.set_rules('cerbos', 'resource/document', :'rules', mapping => :'mapping');
+select authz.set_rules('cerbos', 'resource/document', mapping => :'mapping', body => :'rules');
 
 -- The page calls this when the demo boots and when a visitor switches engines: every table back as
 -- the demo starts (rows added removed, rows deleted put back), so each visit tells the same story.

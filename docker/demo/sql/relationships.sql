@@ -16,7 +16,7 @@ insert into memberships values (1, 'anne', 'admin'), (2, 'carl', 'admin');
 -- hold, what a row asks, and which rows are relationships (the Dockerfile passes the files)
 \set rules `cat :rules_file`
 \set mapping `cat :mapping_file`
-select authz.set_rules(:'engine', :'rules_name', :'rules', mapping => :'mapping');
+select authz.set_rules(:'engine', :'rules_name', mapping => :'mapping', body => :'rules');
 
 -- The page calls this when the demo boots and when a visitor switches engines: every table back as
 -- the demo starts (rows added removed, rows deleted put back), so each visit tells the same story.

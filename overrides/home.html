@@ -78,24 +78,8 @@ documents: {read: view, write: edit, attributes: [org_id as org, org_id as admin
 <pre data-engine-show="openfga"><code><span class="c">-- who is asking: the token's sub, as PostgREST sets it</span>
 select authz.configure(subject => 'jwt');
 
-<span class="c">-- the model, in OpenFGA's own syntax, and the mapping of the tables it decides on</span>
-select authz.set_rules('openfga', 'model', $$
-model
-  schema 1.1
-type user
-type org
-  relations
-    define admin: [user]
-    define member: [user]
-    define can_read: member or admin
-    define can_manage: admin
-type document
-  relations
-    define org: [org]
-    define shared_with: [user]
-    define viewer: shared_with or can_read from org
-    define editor: can_manage from org
-$$, mapping => $$
+<span class="c">-- the tables the model decides on, then the model in OpenFGA's own syntax</span>
+select authz.set_rules('openfga', 'model', mapping => $$
 <span class="n">memberships:
   type: org
   id: org_id
@@ -115,12 +99,48 @@ shares:
   write: editor
   relations:
     shared_with: {subject: user_id, until: expires_at}</span>
+$$, body => $$
+model
+  schema 1.1
+type user
+type org
+  relations
+    define admin: [user]
+    define member: [user]
+    define can_read: member or admin
+    define can_manage: admin
+type document
+  relations
+    define org: [org]
+    define shared_with: [user]
+    define viewer: shared_with or can_read from org
+    define editor: can_manage from org
 $$);</code></pre>
 <pre data-engine-show="spicedb"><code><span class="c">-- who is asking: the token's sub, as PostgREST sets it</span>
 select authz.configure(subject => 'jwt');
 
-<span class="c">-- the schema, in SpiceDB's own syntax, and the mapping of the tables it decides on</span>
-select authz.set_rules('spicedb', 'schema', $$
+<span class="c">-- the tables the schema decides on, then the schema in SpiceDB's own syntax</span>
+select authz.set_rules('spicedb', 'schema', mapping => $$
+<span class="n">memberships:
+  type: org
+  id: org_id
+  read: can_read
+  write: can_manage
+  rows: {object: org_id, relation: role, subject: user_id}
+documents:
+  read: viewer
+  write: editor
+  insert: org#can_manage from org_id
+  relations:
+    org: org_id
+shares:
+  type: document
+  id: doc_id
+  read: viewer
+  write: editor
+  relations:
+    shared_with: {subject: user_id, until: expires_at}</span>
+$$, body => $$
 use expiration
 
 definition user {}
@@ -138,32 +158,17 @@ definition document {
   permission viewer = shared_with + org-&gt;can_read
   permission editor = org-&gt;can_manage
 }
-$$, mapping => $$
-<span class="n">memberships:
-  type: org
-  id: org_id
-  read: can_read
-  write: can_manage
-  rows: {object: org_id, relation: role, subject: user_id}
-documents:
-  read: viewer
-  write: editor
-  insert: org#can_manage from org_id
-  relations:
-    org: org_id
-shares:
-  type: document
-  id: doc_id
-  read: viewer
-  write: editor
-  relations:
-    shared_with: {subject: user_id, until: expires_at}</span>
 $$);</code></pre>
 <pre data-engine-show="cerbos"><code><span class="c">-- who is asking: the token's sub, its role claim as the role</span>
 select authz.configure(subject => 'jwt');
 
-<span class="c">-- the policy, in Cerbos's own syntax, and the mapping of the table it decides on</span>
-select authz.set_rules('cerbos', 'resource/document', $$
+<span class="c">-- the table the policy decides on, then the policy in Cerbos's own syntax</span>
+select authz.set_rules('cerbos', 'resource/document', mapping => $$
+<span class="n">documents:
+  read: view
+  write: edit
+  attributes: [owner, status]</span>
+$$, body => $$
 apiVersion: api.cerbos.dev/v1
 resourcePolicy:
   version: default
@@ -186,30 +191,13 @@ resourcePolicy:
       condition:
         match:
           expr: request.resource.attr.owner == request.principal.id
-$$, mapping => $$
-<span class="n">documents:
-  read: view
-  write: edit
-  attributes: [owner, status]</span>
 $$);</code></pre>
 <pre data-engine-show="cedar"><code><span class="c">-- who is asking: the token's sub, a Cedar User</span>
 select authz.configure(subject => 'jwt', subject_type => 'User');
 
 <span class="c">-- the schema and the policies, in Cedar's own syntax, which the sidecar runs itself;</span>
-<span class="c">-- the schema is stored with the mapping of the tables they decide on</span>
-select authz.set_rules('cedar', 'schema', $$
-<span class="c">// The demo's organisations in Cedar, which the sidecar runs itself: no engine server. Stored as the</span>
-<span class="c">// rule named `schema`, with the mapping of its tables (docker/demo/mappings/cedar.yaml).</span>
-
-entity Org;
-entity OrgAdmins;
-entity User in [Org, OrgAdmins, Document];
-entity Document { org: Org, admins: OrgAdmins };
-
-action read appliesTo { principal: User, resource: Org };
-action manage appliesTo { principal: User, resource: OrgAdmins };
-action view, edit appliesTo { principal: User, resource: Document };
-$$, mapping => $$
+<span class="c">-- the schema is stored with the tables they decide on</span>
+select authz.set_rules('cedar', 'schema', mapping => $$
 <span class="c"># The demo's tables on Cedar, stored with its schema: a membership row puts its user in the org,</span>
 <span class="c"># and in the org's admins when its role is admin; a share puts its user in the document.</span>
 <span class="n">memberships:
@@ -239,6 +227,18 @@ shares:
   - type: User
     relations:
       in: {object: user_id, subject: doc_id, subject_type: Document, until: expires_at}</span>
+$$, body => $$
+<span class="c">// The demo's organisations in Cedar, which the sidecar runs itself: no engine server. Stored as the</span>
+<span class="c">// rule named `schema`, with the mapping of its tables (docker/demo/mappings/cedar.yaml).</span>
+
+entity Org;
+entity OrgAdmins;
+entity User in [Org, OrgAdmins, Document];
+entity Document { org: Org, admins: OrgAdmins };
+
+action read appliesTo { principal: User, resource: Org };
+action manage appliesTo { principal: User, resource: OrgAdmins };
+action view, edit appliesTo { principal: User, resource: Document };
 $$);
 
 select authz.set_rules('cedar', 'documents', $$

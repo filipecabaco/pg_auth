@@ -1328,7 +1328,9 @@
   font: 0.56rem/1.55 var(--pa-mono);
   font-variant-ligatures: none;
   color: #d7f5e6;
-  white-space: pre;
+  /* the panel is narrow: a long line wraps rather than scrolls sideways */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .pa-demo__setup .c {
@@ -1375,11 +1377,6 @@
 
   .pa-home.is-running[data-view="setup"] .pa-demo__screen .xterm {
     display: none;
-  }
-
-  .pa-demo__setup pre {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
   }
 }
 

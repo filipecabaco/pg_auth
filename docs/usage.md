@@ -561,6 +561,9 @@ written through a relationship table clears every one of them:
 
 - **Upgrades.** There are no extension update scripts: a new version is `drop extension` and
   `create extension` again, which drops pg_auth's policies, so the rules are stored again after.
+  They start with the first release: from then on each schema change ships an update script, and
+  CI installs the last release, adds data, runs `alter extension pg_auth update` and compares
+  every object with a fresh install.
 - **Restoring next to another engine.** A logical dump carries pg_auth's configuration, its rules
   and the changes not yet delivered (`compare/dump.exs`); the permission index is made again. Restored
   next to the same engine it goes on as before. Next to an empty one, the rules and the

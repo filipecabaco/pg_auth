@@ -63,7 +63,8 @@ they found documentation gaps and bugs, not demand.
   measured on one host with network delay added; not yet on two hosts, nor with the engine away
   from the sidecar. Over HTTPS the TLS client runs inside Postgres and costs its CPU under heavy
   concurrency.
-- **Operations a platform needs:** extension upgrade scripts. (Logical backups keep pg_auth's
+- **Operations a platform needs:** extension upgrade scripts, which start with the first release
+  (there is nothing installed to upgrade before it), checked in CI against a fresh install. (Logical backups keep pg_auth's
   configuration, a statement waiting on the sidecar gives way to a cancel, and the sidecar's own
   connection to Postgres is encrypted and checked, as of October 30.)
 - **A license, and an owner** for the code.

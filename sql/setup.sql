@@ -104,6 +104,7 @@ begin
             execute format('drop policy %I on %s', pol, part);
         end loop;
     end loop;
+    execute format('drop trigger if exists %I on %s', binding || '_parent', setup_unprotect.rel);
     delete from authz_internal.bindings b where b.rel = setup_unprotect.rel and b.name = binding;
 end
 $$;

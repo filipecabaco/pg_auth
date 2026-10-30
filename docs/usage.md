@@ -423,6 +423,8 @@ select * from authz.last_statement_advice();
 select * from authz.stats();          -- this backend's round trips, ids checked, engine time
 select authz.can('viewer', 'document:42');                 -- the current subject
 select authz.check('user:anne', 'viewer', 'document:42');  -- any subject (administrators)
+--  on Cerbos or Cedar both read the row's attributes; give check the roles the token would carry:
+select authz.check('user:anne', 'view', 'expense:7', subject_roles => array['manager']);
 select * from authz.lint();           -- hand-written RLS policies scored against common issues
 ```
 

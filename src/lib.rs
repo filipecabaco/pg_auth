@@ -85,6 +85,9 @@ mod tests {
         ("user:alice", "org", "view", &["1"], false),
         ("user:dana", "org", "view", &["1"], false),
         ("user:dana", "org", "edit", &["1"], false),
+        // a ticket dana may read and edit, whose org she may not move it out of
+        ("user:dana", "ticket", "view", &["9"], false),
+        ("user:dana", "ticket", "edit", &["9"], false),
         ("user:bob", "org", "view", &["2"], false),
         ("user:carol", "org", "view", &["2"], false),
         ("user:both", "org", "view", &["1", "2"], false),
@@ -2382,6 +2385,63 @@ public.cmembers: {type: User, relations: {in: {object: user_id, subject: group_i
                 .unwrap()
                 .unwrap_or_default();
         assert!(status.contains("document#view via doc_id") && status.contains("insert org#edit via org_id"), "{status}");
+    }
+
+    #[pg_test]
+    fn a_row_moved_to_another_parent_is_checked_as_created_there() {
+        fixture();
+        Spi::run(
+            "create table public.tickets (id int primary key, org_id int not null, title text);
+             insert into public.tickets values (9, 1, 'a');
+             select authz_internal.protect('public.tickets', 'ticket', 'id', 'view', 'edit',
+                                  insert_type => 'org', insert_id => 'org_id', insert_permission => 'edit');
+             grant select, insert, update on public.tickets to authz_test_user",
+        )
+        .unwrap();
+        let updated = |sql: &str| count(&format!("with u as ({sql} returning 1) select count(*) from u"));
+        as_subject("dana");
+        // an edit that keeps its org: the update policy alone
+        assert_eq!(updated("update public.tickets set title = 'b' where id = 9"), 1);
+        // into org 2, where dana may not create a ticket: refused, though she may edit this one
+        let moved = error_of("update public.tickets set org_id = 2 where id = 9").unwrap_or_default();
+        assert!(moved.contains("moving a row of public.tickets to org:2 needs edit"), "{moved}");
+        // naming the column without changing it is no move
+        assert_eq!(updated("update public.tickets set org_id = 1 where id = 9"), 1);
+        reset_role();
+        // a role row level security does not apply to moves it, as it reads every row
+        Spi::run("update public.tickets set org_id = 2 where id = 9").unwrap();
+        // the check goes with the protection
+        Spi::run("select authz_internal.unbind('public.tickets')").unwrap();
+        assert_eq!(count("select count(*) from pg_trigger where tgrelid = 'public.tickets'::regclass and tgname like 'pg_auth%parent'"), 0);
+    }
+
+    #[pg_test]
+    fn can_and_check_decide_on_a_rows_attributes() {
+        fixture();
+        Spi::run(
+            "create table public.memos (id int primary key, owner text, status text);
+             insert into public.memos values (1, 'alice', 'draft'), (2, 'bob', 'draft'), (3, 'bob', 'published');
+             select authz_internal.protect('public.memos', 'memo', 'id', 'read', attributes => array['owner', 'status'])",
+        )
+        .unwrap();
+        // the current subject: the row's attributes and the token's roles, as the table's policy
+        Spi::run("set local pg_auth.subject_roles = 'user'").unwrap();
+        as_subject("alice");
+        let can = |object: &str| Spi::get_one::<bool>(&format!("select authz.can('read', '{object}')")).unwrap();
+        assert_eq!(can("memo:1"), Some(true), "her own");
+        assert_eq!(can("memo:2"), Some(false), "bob's draft");
+        assert_eq!(can("memo:3"), Some(true), "published");
+        assert_eq!(can("memo:7"), Some(false), "no such row allows nothing");
+        reset_role();
+        // any subject, with the roles its token would carry
+        let check = |subject: &str, roles: &str| {
+            Spi::get_one::<bool>(&format!("select authz.check('{subject}', 'read', 'memo:2', subject_roles => array['{roles}'])")).unwrap()
+        };
+        assert_eq!(check("user:bob", "user"), Some(true));
+        assert_eq!(check("user:bob", "guest"), Some(false), "the plan follows the roles given");
+        // and the session's own settings are put back
+        assert_eq!(Spi::get_one::<String>("select current_setting('pg_auth.subject_roles', true)").unwrap().unwrap_or_default(), "user");
+        assert_eq!(Spi::get_one::<String>("select current_setting('pg_auth.as_subject', true)").unwrap().unwrap_or_default(), "");
     }
 
     #[pg_test]

@@ -143,6 +143,12 @@ defmodule Demo do
       check("the mapping protected the table: pg_auth's policies on it", fn -> policies(conn) == ["documents pg_auth_delete", "documents pg_auth_insert", "documents pg_auth_select", "documents pg_auth_update"] end),
       check("anne sees her documents and the published ones", fn -> eventually(fn -> visible(conn, "anne") == [1, 2, 3, 4] end) end),
       check("bob sees only the published ones", fn -> visible(conn, "bob") == [1, 4] end),
+      check("authz.can answers as the policy, on the row's attributes: bob may view 1, not anne's draft 2", fn ->
+        can?(conn, "bob", "view", "document:1") and not can?(conn, "bob", "view", "document:2")
+      end),
+      check("authz.check answers for any subject with its token's roles", fn ->
+        checked?(conn, "user:bob", "view", "document:4", ["authenticated"]) and not checked?(conn, "user:bob", "view", "document:2", ["authenticated"])
+      end),
       check("anne publishes a draft: bob sees it", fn ->
         as(conn, "anne", "update documents set status = 'published' where id = 2") == 1 and eventually(fn -> visible(conn, "bob") == [1, 2, 4] end)
       end),
@@ -161,6 +167,10 @@ defmodule Demo do
       end),
       check("anne, org 1's admin, sees its documents; bob sees none", fn ->
         eventually(fn -> visible(conn, "anne") == [1, 2, 3] end) and visible(conn, "bob") == []
+      end),
+      check("authz.can and authz.check answer as the policies, on the rows' attributes", fn ->
+        can?(conn, "anne", "view", "Document:1") and not can?(conn, "bob", "view", "Document:1") and
+          not checked?(conn, "User:anne", "view", "Document:4", [])
       end),
       check("anne adds bob to org 1: bob sees its documents", fn ->
         as(conn, "anne", "insert into memberships values (1, 'bob', 'member')") == 1 and eventually(fn -> visible(conn, "bob") == [1, 2, 3] end)
@@ -420,6 +430,17 @@ defmodule Demo do
   end
 
   defp refused?(conn, user, sql), do: match?({:error, %Postgrex.Error{}}, as_result(conn, user, sql))
+
+  # the user's own check, as a request would make it
+  defp can?(conn, user, permission, object) do
+    {:ok, r} = as_result(conn, user, "select authz.can('#{permission}', '#{object}')")
+    r.rows == [[true]]
+  end
+
+  # an administrator's check for any subject, with the roles its token would carry
+  defp checked?(conn, subject, permission, object, roles) do
+    Postgrex.query!(conn, "select authz.check($1, $2, $3, subject_roles => $4)", [subject, permission, object, roles]).rows == [[true]]
+  end
 
   defp visible(conn, user) do
     {:ok, r} = as_result(conn, user, "select id from documents order by id")

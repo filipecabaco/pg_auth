@@ -445,7 +445,7 @@ begin
 end
 $$;
 
-revoke execute on function authz.check(text, text, text) from public;
+revoke execute on function authz.check(text, text, text, text[]) from public;
 revoke execute on function authz.status() from public;
 revoke execute on function authz.why(regclass, text, text, name, text[], text) from public;
 revoke execute on function authz.doctor() from public;

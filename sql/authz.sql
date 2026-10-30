@@ -56,6 +56,68 @@ begin
     for pol in select polname from pg_policy where polrelid = p_rel and polname like 'pg\_auth\_%' loop
         execute format('drop policy %I on %s', pol, p_rel);
     end loop;
+    -- the parent checks (a partition's clone goes with its parent's)
+    for pol in select tgname from pg_trigger where tgrelid = p_rel and tgname like 'pg\_auth%\_parent' and tgparentid = 0 loop
+        execute format('drop trigger %I on %s', pol, p_rel);
+    end loop;
+end
+$$;
+
+-- The SQL building a row's attributes for binding b, `jsonb_build_object('name', column, ...)`:
+-- each attribute a column, under its own name or the one attribute_map gives it. Null: the
+-- binding sends none.
+create function authz_internal.attributes_sql(b authz_internal.bindings) returns text
+language sql immutable as $$
+    select case when b.attributes is not null or b.attribute_map is not null then
+        format('jsonb_build_object(%s)', (select string_agg(format('%L, %I', k, c), ', ') from (
+               select a, a from unnest(b.attributes) a union all select e.key, e.value from jsonb_each_text(b.attribute_map) e) p(k, c)))
+    end
+$$;
+
+-- The attributes of object `p_type:p_id` as its row holds them, for authz.can and authz.check on
+-- an engine that decides on them (Cerbos, Cedar): null when no table sends attributes for that
+-- type (the engine is asked about the id alone), false when such tables have no row with that id
+-- (nothing to allow). The first table, by name, holding the row answers.
+create function authz_internal.row_attributes(p_type text, p_id text) returns jsonb
+language plpgsql stable as $$
+declare
+    b authz_internal.bindings;
+    found jsonb;
+    bound boolean := false;
+begin
+    for b in select * from authz_internal.bindings where object_type = p_type
+             and (attributes is not null or attribute_map is not null) order by rel::text, name loop
+        bound := true;
+        execute format('select %s from %s where (%s)::text = $1 limit 1', authz_internal.attributes_sql(b), b.rel,
+                       coalesce(quote_ident(b.column_name), b.key_expr))
+            into found using p_id;
+        if found is not null then
+            return found;
+        end if;
+    end loop;
+    return case when bound then 'false'::jsonb end;
+end
+$$;
+
+-- An UPDATE moving a row to another parent (`insert: <type>#<permission> from <column>`) is
+-- checked as an INSERT under that parent would be: the update policy asks about the row's own
+-- object, which the engine still knows under its old parent, so without this a writer could move
+-- a row where they may not create one (an org's editor moving a document into another org).
+-- Roles row level security does not apply to (superusers, BYPASSRLS) are not checked, as for the
+-- policies.
+create function authz_internal.parent_moved() returns trigger
+language plpgsql set search_path = pg_catalog, pg_temp as $$
+declare
+    before_value text;
+    after_value text;
+begin
+    execute format('select ($1).%1$I::text, ($2).%1$I::text', tg_argv[2]) into before_value, after_value using old, new;
+    if after_value is distinct from before_value and row_security_active(tg_relid)
+       and not authz.permits(tg_argv[0], tg_argv[1], after_value) then
+        raise exception 'pg_auth: moving a row of % to %:% needs % on it', tg_relid::regclass, tg_argv[0], after_value, tg_argv[1]
+            using errcode = 'insufficient_privilege';
+    end if;
+    return new;
 end
 $$;
 
@@ -116,8 +178,7 @@ begin
                    where not exists (select 1 from pg_attribute where attrelid = p_part and attname = c.col and attnum > 0 and not attisdropped)) then
             raise exception 'the attributes name a column % does not have: % %', p_part, b.attributes, b.attribute_map;
         end if;
-        attrs := format('jsonb_build_object(%s)', (select string_agg(format('%L, %I', k, c), ', ') from (
-                   select a, a from unnest(b.attributes) a union all select e.key, e.value from jsonb_each_text(b.attribute_map) e) p(k, c)));
+        attrs := authz_internal.attributes_sql(b);
     end if;
 
     -- The engine decides, through the sidecar. The planner hook turns this into an indexable
@@ -139,6 +200,15 @@ begin
     if b.insert_object_type is not null then
         execute format('create policy %I on %s for insert with check (authz.permits(%L, %L, %I::text))',
                        b.name || '_insert', p_part, b.insert_object_type, b.insert_permission, b.insert_column);
+    end if;
+    -- moving a row to another parent is checked as creating it there; a partitioned table's
+    -- trigger is cloned onto its partitions by Postgres
+    if not (select c.relispartition from pg_class c where c.oid = p_part) then
+        execute format('drop trigger if exists %I on %s', b.name || '_parent', p_part);
+        if b.insert_object_type is not null then
+            execute format('create trigger %I before update of %I on %s for each row execute function authz_internal.parent_moved(%L, %L, %L)',
+                           b.name || '_parent', b.insert_column, p_part, b.insert_object_type, b.insert_permission, b.insert_column);
+        end if;
     end if;
 end
 $$;

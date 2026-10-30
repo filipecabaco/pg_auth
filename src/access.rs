@@ -368,22 +368,64 @@ fn uuid_bytes(s: &str) -> Option<[u8; 16]> {
 }
 
 /// Does `subject` ('user:anne') have `permission` on `object` ('document:1')? Asks the engine, for
-/// debugging protected tables. Restricted to administrators: it answers for any subject.
+/// debugging protected tables. Restricted to administrators: it answers for any subject. On an
+/// engine that decides on a row's attributes (Cerbos, Cedar) the object's row gives them, and
+/// `subject_roles` are the roles the subject's token would carry, as authz.why takes them.
 #[pg_extern(volatile, security_definer)]
 #[search_path(pg_catalog, pg_temp)]
-fn check(subject: &str, permission: &str, object: &str) -> bool {
+#[expect(clippy::needless_pass_by_value, reason = "pgrx hands an array argument over by value")]
+fn check(subject: &str, permission: &str, object: &str, subject_roles: default!(Option<Vec<String>>, "NULL")) -> bool {
     let (object_type, id) = split_ref(object);
     split_ref(subject);
+    if let Some(attrs) = row_attributes(object_type, id) {
+        return as_subject(subject, subject_roles.as_deref(), || decide(object_type, permission, id, attrs));
+    }
     // the engine itself: the index and declared hierarchies answer for the current subject
     !sidecar::filter(subject, object_type, permission, vec![id.to_string()]).unwrap_or_else(|e| fail(&e)).is_empty()
 }
 
-/// The current subject's own check; safe for everyone.
+/// The current subject's own check; safe for everyone. On an engine that decides on a row's
+/// attributes (Cerbos, Cedar), the object's row gives them and the subject's token its roles, as
+/// the table's policy would; asked about the id alone, those engines could not answer.
 #[pg_extern(stable, parallel_restricted, security_definer)]
 #[search_path(pg_catalog, pg_temp)]
 fn can(permission: &str, object: &str) -> bool {
     let (object_type, id) = split_ref(object);
-    permits(object_type, permission, Some(id))
+    match row_attributes(object_type, id) {
+        Some(attrs) => decide(object_type, permission, id, attrs),
+        None => permits(object_type, permission, Some(id)),
+    }
+}
+
+/// The attributes of `object_type:id` as its row holds them (authz_internal.row_attributes): None
+/// when no protected table sends attributes for the type, `false` when none has the row.
+fn row_attributes(object_type: &str, id: &str) -> Option<pgrx::JsonB> {
+    crate::ffi::read_one::<pgrx::JsonB>("SELECT authz_internal.row_attributes($1, $2)", &[object_type.into(), id.into()])
+}
+
+/// The decision on a row given its attributes: no such row allows nothing.
+fn decide(object_type: &str, permission: &str, id: &str, attrs: pgrx::JsonB) -> bool {
+    if attrs.0 == serde_json::Value::Bool(false) {
+        return false;
+    }
+    permits_resource(object_type, permission, Some(id), attrs)
+}
+
+/// Run `f` as `subject` with `roles`, as authz.why does (pg_auth.as_subject and
+/// pg_auth.subject_roles, transaction-local), and put the session's own values back.
+fn as_subject<T>(subject: &str, roles: Option<&[String]>, f: impl FnOnce() -> T) -> T {
+    let set = |name: &str, value: &str| {
+        Spi::run_with_args("SELECT set_config($1, $2, true)", &[name.into(), value.into()]).unwrap_or_else(|e| fail(&e.to_string()));
+    };
+    let previous = (crate::ffi::config_option("pg_auth.as_subject"), crate::ffi::config_option("pg_auth.subject_roles"));
+    set("pg_auth.as_subject", subject);
+    if let Some(roles) = roles {
+        set("pg_auth.subject_roles", &roles.join(","));
+    }
+    let out = f();
+    set("pg_auth.as_subject", previous.0.as_deref().unwrap_or(""));
+    set("pg_auth.subject_roles", previous.1.as_deref().unwrap_or(""));
+    out
 }
 
 /// This backend's round trips to the sidecar since it started: how many, how many ids were sent

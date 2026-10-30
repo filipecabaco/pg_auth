@@ -53,7 +53,11 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
   write: edit}`), compiled into the internal `authz_internal.protect('public.docs', 'org', 'org_id',
   'view', 'edit')` (table, object type, id column, read permission, optional write
   permission), installs the policy `authz.permits('<type>', '<permission>', column::text)` on the table and on
-  every partition, now and later.
+  every partition, now and later. An update checks the write permission on the row before and
+  after; with an insert parent (`insert: org#edit from org_id`), a trigger also checks an update
+  that changes that column as an insert under the new parent, since the engine still knows the row
+  under its old one (`authz_internal.parent_moved`; roles row level security does not apply to
+  are not checked).
 - **Schemas and roles.** `authz` holds what every role reaches: the functions policies and the
   planner hook call (run as the querying role), and the user-facing ones, whose admin functions
   are granted to `authz_admin`. `authz_sidecar` holds the sidecar's functions (role
@@ -319,7 +323,9 @@ conditional is denied. Subjects may be usersets (`group:eng#member`).
   `pg_auth.sidecar_secret_file`, `pg_auth.sidecar_ca_file` and `pg_auth.sidecar_timeout_ms` are
   superuser-only; the socket is created 0660 for the Postgres OS group. The secret file is read by
   the Postgres OS user, so a superuser, or a role reading server files, can read the secret. `authz.check` answers for
-  any subject and is revoked from `public`; `authz.can` answers for the current subject only.
+  any subject and is revoked from `public`; `authz.can` answers for the current subject only. On
+  an engine deciding on attributes, both read the object's row (`authz_internal.row_attributes`)
+  and ask as its table's policy does, with the subject's roles.
 - **Consistency.** Within a transaction a subject gets one answer per (type, permission). Across
   transactions answers are as fresh as the engine, minus the sidecar's cache TTL (1 s by default).
   The engine's own freshness: OpenFGA's caches (10 s TTL when on); SpiceDB's default

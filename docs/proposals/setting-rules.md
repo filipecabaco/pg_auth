@@ -1,6 +1,8 @@
 # Setting rules: how usable is it for complex systems?
 
-Status: evaluation and proposal, October 2026. Nothing here is built yet.
+Status: evaluation and proposal, October 2026. Superseded (2026-10-30): tables are set up by a
+mapping stored with the rules, the same YAML for every engine ([Getting started](../usage.md#3-the-rules-and-their-mapping));
+the `authz.relate` and `authz.protect` calls below are what a mapping compiles into, now internal.
 
 Three research passes took the most complex published setups for each engine and wrote them out
 as a backend-less app would set them up under pg_auth: the app's tables, the `authz.relate` and

@@ -5,7 +5,9 @@ Status: phases A and B implemented (2026-10-28): the permission index (`sql/inde
 heavy queries (`src/advice.rs`: `authz.last_statement_advice()`, `pg_auth.warn_ms`,
 `authz.explain`'s advice). Phase C is not started. How they work now is in
 [design.md](../design.md); this file keeps the reasoning. Background:
-`docs/research/broad-subjects-at-scale.md`.
+`docs/research/broad-subjects-at-scale.md`. A declared hierarchy is now set in the mapping
+(`tree: folders(id, parent_id) from viewer_direct`, [Getting started](../usage.md#the-mapping)); the
+`authz.protect` calls below are what it compiles into.
 
 ## Problem
 

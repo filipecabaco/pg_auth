@@ -111,13 +111,39 @@ why.
 
 ## 3. The rules and their mapping
 
-The setup is the engine's rules, in the engine's own syntax, and the mapping of the tables they
-decide on, both kept in Postgres with `authz.set_rules`. The mapping says, in YAML, which tables
-hold which types, what reading and writing a row asks, and which tables' rows are relationships;
-the rules go to the engine as they are. This is the whole setup of the demo on the home page, on
-OpenFGA:
+The setup is two things, both kept in Postgres with `authz.set_rules`, usually in a migration:
+
+- **The rules**, in the engine's own language: an OpenFGA model, a SpiceDB schema, Cerbos
+  policies, a Cedar schema and policies. pg_auth does not change them; the sidecar pushes them to
+  the engine.
+- **The mapping**, in YAML: which tables hold which of the rules' types, what reading and writing
+  a row asks, and which tables' rows are relationships. This is the only part pg_auth reads, and
+  it is the same shape for every engine.
 
 ```sql
+select authz.set_rules(engine, name, rules, mapping => yaml);
+-- the same call, the mapping first (named arguments go in any order)
+select authz.set_rules(engine, name, mapping => yaml, body => rules);
+```
+
+When the transaction commits, each table the mapping names gets plain RLS policies that ask
+pg_auth (`authz.permits('document', 'viewer', id)`, listed in `pg_policies`), and each
+relationship table a trigger that delivers its rows to the engine. The policies hold no rule of
+their own: the engine decides every row (`compare/demo.exs` changes the engine behind Postgres's
+back and the rows follow).
+
+The four examples below are the home page's demo (`docker/demo/rules` and
+`docker/demo/mappings`): documents belong to an org, a membership makes a user an admin or a
+member of it, and a share gives one user one document, until a date.
+
+### OpenFGA
+
+The model's types and relations are what the mapping names. A table's type defaults to its name
+(`documents` is `document`), and a relationship's subject type comes from the relation (`org`
+takes `[org]`), so the mapping only says what the table's name does not.
+
+```sql
+-- who is asking: the token's sub
 select authz.configure(subject => 'jwt');
 
 select authz.set_rules('openfga', 'model', $fga$
@@ -137,6 +163,62 @@ type document
     define viewer: shared_with or can_read from org
     define editor: can_manage from org
 $fga$, mapping => $yaml$
+# an org's members (org:<org_id>#<role>@user:<user_id>); only admins change them
+memberships:
+  type: org
+  id: org_id
+  read: can_read
+  write: can_manage
+  rows: {object: org_id, relation: role, subject: user_id}
+# type document, its id the primary key; a new document is checked on its org
+documents:
+  read: viewer
+  write: editor
+  insert: org#can_manage from org_id
+  relations:
+    org: org_id
+# document:<doc_id>#shared_with@user:<user_id>, until expires_at
+shares:
+  type: document
+  id: doc_id
+  read: viewer
+  write: editor
+  relations:
+    shared_with: {subject: user_id, until: expires_at}
+$yaml$);
+```
+
+A membership inserted through PostgREST then shows its org's documents to the new member, and a
+share shows until its `expires_at`. Rows write relations (`admin`, `shared_with`); tables are
+read by permissions computed from them (`viewer`). A role column naming a relation the model does
+not have fails the insert itself (`check_violation`).
+
+### SpiceDB
+
+The same mapping, word for word, with the schema in SpiceDB's language. A relationship that ends
+(`until`) needs a relation that takes an expiration (`use expiration`, `user with expiration`):
+SpiceDB then ends it itself, even with the sidecar down.
+
+```sql
+select authz.set_rules('spicedb', 'schema', $zed$
+use expiration
+
+definition user {}
+
+definition org {
+  relation admin: user
+  relation member: user
+  permission can_read = member + admin
+  permission can_manage = admin
+}
+
+definition document {
+  relation org: org
+  relation shared_with: user | user with expiration
+  permission viewer = shared_with + org->can_read
+  permission editor = org->can_manage
+}
+$zed$, mapping => $yaml$
 memberships:
   type: org
   id: org_id
@@ -159,22 +241,27 @@ shares:
 $yaml$);
 ```
 
-When the transaction commits, the three tables are protected, the rows of `memberships`,
-`documents` and `shares` are relationships in OpenFGA, and the sidecar sends it the model. A
-membership inserted through PostgREST then shows its org's documents to the new member, and a
-share shows until its `expires_at`.
+SpiceDB only takes writes to relations, never to permissions; the mapping refuses a permission
+as a relation when the rules are stored.
 
-The mapping is the same for every engine. On SpiceDB it is this one, word for word, with the
-schema in SpiceDB's syntax (`docker/demo/mappings/spicedb.yaml`). An attribute policy on Cerbos
-maps its table and the attributes it reads:
+### Cerbos
+
+Cerbos decides on the row's own fields, so there are no relationship tables: the mapping names the
+table a resource policy covers, the actions reading and writing a row ask, and the columns sent as
+the resource's attributes. The type is the policy's `resource:` (`document`, from `documents`).
+Store one rule per policy, named as you would name its file.
 
 ```sql
+-- who is asking: the token's sub, its role claim the principal's role
+select authz.configure(subject => 'jwt');
+
 select authz.set_rules('cerbos', 'resource/document', $cerbos$
 apiVersion: api.cerbos.dev/v1
 resourcePolicy:
   version: default
   resource: document
   rules:
+    # anyone signed in reads published documents and their own drafts
     - actions: ["view"]
       effect: EFFECT_ALLOW
       roles: ["authenticated"]
@@ -184,6 +271,7 @@ resourcePolicy:
             of:
               - expr: request.resource.attr.owner == request.principal.id
               - expr: request.resource.attr.status == "published"
+    # only the owner edits
     - actions: ["edit"]
       effect: EFFECT_ALLOW
       roles: ["authenticated"]
@@ -194,16 +282,26 @@ $cerbos$, mapping => $yaml$
 documents:
   read: view
   write: edit
+  # sent as request.resource.attr.owner and .status
   attributes: [owner, status]
 $yaml$);
 ```
 
-On Cedar, the rule named `schema` is the schema and carries the mapping; every other rule holds
-policies. A relationship is the relation `in`: the object is in the subject. The subject is a
-`User`, since Cedar's types are capitalised, and a share carries its document's org, which the
-policy reads (the demo fills it in with a trigger, `docker/demo/sql/cedar.sql`):
+The policy's plan for the subject becomes a filter on those columns (`owner = 'anne' or status =
+'published'`), which indexes serve as they serve RLS. A column named differently from the
+attribute is `owner_id as owner`. Cerbos needs its Admin API on to take pushed policies
+([Versions, pushes and checks](#versions-pushes-and-checks)).
+
+### Cedar
+
+Cedar runs inside the sidecar: no engine server. The rule named `schema` is Cedar's schema and
+carries the mapping; any other rule holds policies. Types are the schema's entity types
+(capitalised: `Document` from `documents`), and a relationship is Cedar's `in`: the row puts its
+object in its subject, the parent the policies test with `principal in ...`. Attributes are the
+entity's, read by the policies as `resource.org`.
 
 ```sql
+-- who is asking: the token's sub, a Cedar User
 select authz.configure(subject => 'jwt', subject_type => 'User');
 
 select authz.set_rules('cedar', 'schema', $cedar$
@@ -215,6 +313,7 @@ action read appliesTo { principal: User, resource: Org };
 action manage appliesTo { principal: User, resource: OrgAdmins };
 action view, edit appliesTo { principal: User, resource: Document };
 $cedar$, mapping => $yaml$
+# a membership puts its user in the org, and in OrgAdmins when its role is admin
 memberships:
   - {type: Org, id: org_id, read: read}
   - {type: OrgAdmins, id: org_id, read: manage, write: manage}
@@ -223,37 +322,55 @@ memberships:
       in: {object: user_id, subject: org_id, subject_type: Org}
   - type: User
     relations:
-      in: {object: user_id, subject: org_id, subject_type: OrgAdmins, when: "role = 'admin'"}
+      in:
+        object: user_id
+        subject: org_id
+        subject_type: OrgAdmins
+        when: "role = 'admin'"
 documents:
   read: view
   write: edit
   attributes: [org_id as org, org_id as admins]
+# a share puts its user in the document, until expires_at
 shares:
-  - {type: Document, id: doc_id, read: view, write: edit, attributes: [org_id as org, org_id as admins]}
+  - type: Document
+    id: doc_id
+    read: view
+    write: edit
+    attributes: [org_id as org, org_id as admins]
   - type: User
     relations:
-      in: {object: user_id, subject: doc_id, subject_type: Document, until: expires_at}
+      in:
+        object: user_id
+        subject: doc_id
+        subject_type: Document
+        until: expires_at
 $yaml$);
 
 select authz.set_rules('cedar', 'documents', $cedar$
-permit (principal, action == Action::"read", resource is Org) when { principal in resource };
-permit (principal, action == Action::"manage", resource is OrgAdmins) when { principal in resource };
-permit (principal, action == Action::"view", resource is Document) when { principal in resource.org };
-permit (principal, action == Action::"view", resource is Document) when { principal in resource };
-permit (principal, action == Action::"edit", resource is Document) when { principal in resource.admins };
+// an org's members read its memberships; its admins change them
+permit (principal, action == Action::"read", resource is Org)
+  when { principal in resource };
+permit (principal, action == Action::"manage", resource is OrgAdmins)
+  when { principal in resource };
+// a document is read by its org's members and by whoever it is shared with
+permit (principal, action == Action::"view", resource is Document)
+  when { principal in resource.org };
+permit (principal, action == Action::"view", resource is Document)
+  when { principal in resource };
+// and written, or shared, by its org's admins
+permit (principal, action == Action::"edit", resource is Document)
+  when { principal in resource.admins };
 $cedar$);
 ```
 
-Each protected table gets plain RLS policies that only ask pg_auth
-(`authz.permits('document', 'viewer', id)`), so `pg_policies` lists them; pg_auth's planner hook
-turns them into an indexable filter or a batched check. The policies hold no rule of their own:
-the engine decides every row (`compare/demo.exs` changes the engine behind Postgres's back and
-the rows follow).
+A table protected twice (`memberships` as `Org` and as `OrgAdmins`) is a list of entries. Partial
+evaluation turns the policies into filters on the columns: `principal in resource.org` becomes
+`org_id = ANY(the subject's orgs)`. A share carries its document's org, which the policy reads (the
+demo fills it in with a trigger, `docker/demo/sql/cedar.sql`).
 
-**Rules kept in the engine itself** (Cerbos Hub, a model managed elsewhere) are stored without a
-body: `authz.set_rules('openfga', 'model', null, mapping => ...)` sets up the tables and pushes
-nothing. pg_auth cannot read such rules, so the mapping names every type and every subject type
-(`type:`, `subject_type:`).
+Rules managed in the engine itself, not stored by pg_auth, take a mapping alone:
+[Rules managed in the engine itself](#4-rules-managed-in-the-engine-itself).
 
 ### The mapping
 
@@ -323,7 +440,8 @@ shares:
 
 - `rows` reads the relation from a column. The relations a row may name are the ones in the rules
   that take the subject; a row naming another fails at once (`check_violation`), where the app sees
-  it, instead of the engine refusing it after the commit.
+  it, instead of the engine refusing it after the commit. `allowed: [reader, writer]` narrows them,
+  and names them for rules kept in the engine, which pg_auth cannot read.
 - `relations` writes one relation per entry. The object is the entry's `id`, or `object`, else the
   table's single-column primary key.
 - The subject's type comes from the rules (the relation's one directly related type). A
@@ -485,12 +603,13 @@ docs:
   write: editor
 memberships:
   type: org
-  rows: {object: org_id, relation: role, subject: user_id, subject_type: user}
+  rows: {object: org_id, relation: role, allowed: [admin, member], subject: user_id, subject_type: user}
 $yaml$);
 ```
 
-pg_auth cannot read rules it does not keep, so the mapping names every type (`type:`) and every
-relationship's subject type (`subject_type:`), and the commit-time check against the rules is the
+pg_auth cannot read rules it does not keep, so the mapping names every type (`type:`), every
+relationship's subject type (`subject_type:`), and the relations a row may name (`allowed:`, else
+any, for the engine to refuse after the commit); the commit-time check against the rules is the
 engine's to make when it is asked. Store the engine's rules before declaring tables that write
 their relations: the engine refuses a relationship whose relation its model does not have yet.
 

@@ -1,6 +1,8 @@
 # Proposal: attribute rules from Cerbos
 
-Status: phases 1–3 done; planning cost of compiled filters open · 2026-10-29
+Status: phases 1–3 done; planning cost of compiled filters open · 2026-10-29. Since 2026-10-30 a
+table is protected by the mapping stored with the policies (`documents: {read: view, attributes:
+[owner, status]}`, [Getting started](../usage.md#cerbos)); `authz.protect` below is what it compiles into.
 
 ## Why
 

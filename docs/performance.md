@@ -58,6 +58,54 @@ comparing with a published table ([benchmarks](benchmarks.md)).
 - **Writes.** Updates and deletes by a broad subject find their rows through the permission
   index; single-row writes are one check.
 
+## Under load, and with the sidecar on another host
+
+The benchmarks above time single statements. `bench/remote/run.exs` measures request rate
+instead: concurrent clients making requests as PostgREST makes them (claims and role set in a
+transaction, then one read: a page of an organisation's documents or one document), as 1,000
+users drawn at random over 100 organisations and 100,000 documents. OpenFGA decides, on its
+Postgres datastore; Postgres is held to 2 CPUs and 2 GB. Best-practice RLS runs on a copy of the
+same tables, its policy an indexed membership lookup.
+
+A random user rarely repeats within the half second a backend keeps an answer, so almost every
+request asks the sidecar once (0.93 to 0.98 round trips per request): the case where pg_auth's
+answers are reused least. 2026-10-30, 20 s per row:
+
+| setup | clients | requests/s | vs RLS | p50 ms | p99 ms |
+|---|---|---|---|---|---|
+| best-practice RLS | 4 | 3070 | | 1.27 | 1.84 |
+| | 16 | 5377 | | 2.93 | 4.20 |
+| | 64 | 6267 | | 7.12 | 206 |
+| pg_auth, Unix socket | 4 | 1804 | 0.59x | 1.92 | 7.61 |
+| | 16 | 3616 | 0.67x | 3.72 | 20.9 |
+| | 64 | 3687 | 0.59x | 7.22 | 210 |
+| pg_auth, HTTPS, same host | 4 | 1509 | 0.49x | 2.21 | 9.44 |
+| | 16 | 2688 | 0.50x | 4.25 | 33.8 |
+| | 64 | 2272 | 0.36x | 26.3 | 67.2 |
+| pg_auth, HTTPS, 6.2 ms more per round trip | 4 | 646 | 0.21x | 5.73 | 13.5 |
+| | 16 | 2556 | 0.48x | 5.92 | 13.5 |
+| | 64 | 2533 | 0.40x | 21.5 | 68.2 |
+
+What it shows:
+
+- **A request pays one network round trip** when its subject's answer is not kept: the ask is one
+  exchange on a kept connection (a packet capture shows the request's two packets sent together
+  and the answer's one), so latency added between Postgres and the sidecar is added to the
+  request once. In one region that is 0.3 to 1 ms.
+- **Concurrency hides the wait.** A backend waiting on the network uses no CPU, so with 16 clients
+  a 6.2 ms round trip costs 5% of the throughput HTTPS on the same host has (2556 against 2688
+  requests/s). With 4 clients each waits its turn, and throughput follows latency.
+- **HTTPS costs Postgres CPU.** TLS and a request thread per backend run inside Postgres: with 64
+  clients on 2 CPUs, HTTPS on the same host gives 2272 requests/s against the socket's 3687.
+- **This is not the 0.80x above.** Those are single statements, timed with answers kept; this is
+  a stream of requests by subjects not seen in the last half second. Requests by the same users
+  again and again (a session's page loads) reuse answers and ask the sidecar less.
+
+The latency comes from a relay whose packets Linux's `netem` delays. On Docker Desktop's VM it
+delays by several times its setting (1 ms each way asked, 3 to 5 ms seen in a capture), so the
+benchmark reports the round trip it actually added: a trip's time beyond the engine with the
+relay, less without it.
+
 ## Tuning
 
 | what | how |
@@ -73,5 +121,7 @@ comparing with a published table ([benchmarks](benchmarks.md)).
 
 `bench/docker/run.exs` runs the benchmark scenarios on fresh containers, and
 `bench/docker/planning.exs` times one query's planning after idle gaps of different lengths, with
-the sidecar calls and engine time each statement caused. Profiling a backend or the sidecar with
+the sidecar calls and engine time each statement caused. `bench/remote/run.exs` measures request
+rate under concurrency over the socket, over HTTPS, and over HTTPS with latency added
+(`--clients 4,16,64 --latency 1`); its results go to `bench/remote/results/`. Profiling a backend or the sidecar with
 samply is in [development.md](development.md).

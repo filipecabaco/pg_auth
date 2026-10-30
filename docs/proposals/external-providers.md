@@ -101,12 +101,23 @@ What an external sidecar needs:
   point a fresh set depends on (the restart work of 2026-10-30) makes a resumed sidecar catch up,
   and the extension would wait for that before using a set.
 
-### Measuring first
+### Measured under load (2026-10-30)
 
-Before any Compute work: run the benchmarks with latency added between the extension and the
-sidecar (a TCP relay inserting 0.5, 1 and 2 ms, the extension speaking TCP), and publish the
-ratios against best-practice row level security per scenario, as `docs/benchmarks.md` does. That
-says which workloads a remote sidecar suits.
+`bench/remote/run.exs`: PostgREST-shaped requests by 1,000 users drawn at random, OpenFGA on its
+Postgres datastore, Postgres on 2 CPUs, against best-practice row level security on the same data
+([performance](../performance.md#under-load-and-with-the-sidecar-on-another-host)). Almost every
+request asks the sidecar once, the case where answers are reused least.
+
+| clients | RLS requests/s | socket | HTTPS, same host | HTTPS, 6.2 ms more per round trip |
+|---|---|---|---|---|
+| 4 | 3070 | 0.59x | 0.49x | 0.21x |
+| 16 | 5377 | 0.67x | 0.50x | 0.48x |
+| 64 | 6267 | 0.59x | 0.36x | 0.40x |
+
+A request pays the network's round trip once. With enough concurrent clients the wait costs
+little throughput (5% at 16 clients for 6.2 ms), since a waiting backend uses no CPU; the TLS
+client inside Postgres does use it, which is what costs most at 64 clients on 2 CPUs. Still to
+measure: two hosts on a real network, and the engine away from the sidecar.
 
 ### Transport and authentication (decided 2026-10-30)
 
@@ -140,7 +151,8 @@ its name, `/v1/ask`, whatever path a proxy forwards it under.
 **Measured** (`compare/remote.exs`, one host, no network between): a round trip beyond the
 engine's own time is about 250 µs over HTTPS, its connection kept and its wait cancellable,
 against about 30 µs over the socket.
-A deployment adds its network's round trip, 0.3 to 1 ms in one region.
+A deployment adds its network's round trip, 0.3 to 1 ms in one region, once per request that
+asks (see "Measured under load").
 
 **The sidecar.** `PG_AUTH_LISTEN=host:port` opens the network listener (the socket can stay
 beside it). `PG_AUTH_SECRET_FILE` is required: one secret per line, any of them accepted, so a

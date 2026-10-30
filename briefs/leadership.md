@@ -47,6 +47,7 @@ rows", and gets hard quickly after that:
 | Tests | 103 extension tests on Postgres 15 to 18 in CI; end-to-end suites against real engines run locally |
 | Grant latency | 4 to 34 ms from commit to visible, one sidecar |
 | Sidecar over HTTPS | Requests and answers signed; about 0.2 ms per round trip more than the socket, on one host, network not included |
+| Request rate, under concurrency | PostgREST-shaped requests by 1,000 random users, Postgres on 2 CPUs, almost every request asking the sidecar: 0.59x to 0.67x of best-practice RLS's throughput on the socket, 0.36x to 0.50x over HTTPS on the same host. 6.2 ms of added round trip costs 5% of throughput at 16 clients (a waiting backend uses no CPU), and is added to each request's latency once |
 | Live demo | Postgres 18, pg_auth and all three engines booting in a browser tab |
 
 Persona reviews were run by AI agents playing users (a Supabase app builder, a self-hosted team, a
@@ -58,8 +59,10 @@ they found documentation gaps and bugs, not demand.
 - **Evidence of demand:** no users or design partners. Sizing it needs fleet data (projects with
   many policies, `security definer` helpers in policies, the RLS advisor's warnings) and support
   and sales requests for relationship-based access.
-- **The setup a platform would run, measured:** a remote sidecar and an engine in or across
-  regions, under concurrency.
+- **The setup a platform would run, measured on real hosts:** request rate and latency are
+  measured on one host with network delay added; not yet on two hosts, nor with the engine away
+  from the sidecar. Over HTTPS the TLS client runs inside Postgres and costs its CPU under heavy
+  concurrency.
 - **Operations a platform needs:** extension upgrade scripts. (Logical backups keep pg_auth's
   configuration, a statement waiting on the sidecar gives way to a cancel, and the sidecar's own
   connection to Postgres is encrypted and checked, as of October 30.)

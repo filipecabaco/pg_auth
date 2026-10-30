@@ -30,16 +30,19 @@ defmodule Dump do
     name = "dump-#{System.pid()}"
     {_, 0} = System.cmd("docker", ~w(run -d --rm --label pg_auth_compare=1 --name #{name} -e POSTGRES_PASSWORD=dump #{@image}))
 
-    try do
-      wait(name)
-      steps = setup(name) ++ round_trip(name) ++ not_ours(name)
-      for {step, outcome} <- steps, do: IO.puts("#{String.pad_trailing(step, 58)} #{outcome}")
-      ok = Enum.all?(steps, fn {_, o} -> not String.starts_with?(o, "FAILED") end)
-      IO.puts(if ok, do: "All steps passed.", else: "Failures.")
-      if not ok, do: System.halt(1)
-    after
-      System.cmd("docker", ["stop", name], stderr_to_stdout: true)
-    end
+    # halting skips `after`: the container is stopped first
+    ok =
+      try do
+        wait(name)
+        steps = setup(name) ++ round_trip(name) ++ not_ours(name)
+        for {step, outcome} <- steps, do: IO.puts("#{String.pad_trailing(step, 58)} #{outcome}")
+        Enum.all?(steps, fn {_, o} -> not String.starts_with?(o, "FAILED") end)
+      after
+        System.cmd("docker", ["stop", name], stderr_to_stdout: true)
+      end
+
+    IO.puts(if ok, do: "All steps passed.", else: "Failures.")
+    if not ok, do: System.halt(1)
   end
 
   defp setup(c) do

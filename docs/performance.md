@@ -2,9 +2,10 @@
 
 pg_auth asks an engine outside Postgres who may see what, and still competes with row level
 security written by hand and tuned: over the 489 query and subject pairs of the
-[benchmarks](benchmarks.md) (35 scenarios, 2026-10-29), it takes 0.80x the time of best-practice
-RLS, planning and execution together, and is faster in 201 of them, with OpenFGA deciding;
-0.78x and faster in 192 with SpiceDB. How the pieces work is in
+[benchmarks](benchmarks.md) (35 scenarios, 2026-10-30), it takes 0.79x the time of best-practice
+RLS, planning and execution together, and is faster in 190 of them, with OpenFGA deciding;
+0.93x and faster in 196 with SpiceDB. Cerbos (0.69x) and Cedar (0.79x) run the scenarios their
+rules express. How the pieces work is in
 [the implementation](design.md); this page is what they cost and how to tune them.
 
 ## Where it wins and where it loses

@@ -22,7 +22,7 @@ database to enforce the same decisions for every client.
 pg_auth is a Postgres extension (Postgres 15 to 18) and a sidecar. An authorization engine
 (OpenFGA, SpiceDB, Cerbos or Cedar) decides who may see and change each row; Postgres enforces that
 decision for every client as row level security. The setup is the engine's rules in its own
-syntax, stored with `authz.set_rules`: `pg_auth:` comments in them protect tables and make rows
+syntax, stored with `authz.set_rules` beside a YAML mapping that protects tables and makes rows
 relationships, so access is granted and revoked by writing rows (delivered to the engine through
 an outbox), and `authz.why` / `authz.doctor` explain a hidden row or a broken
 setup. Success: an app with no backend gets authorization it would otherwise need a service for,

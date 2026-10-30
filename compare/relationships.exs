@@ -10,7 +10,7 @@
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
 dir = Path.join(__DIR__, "lib")
-for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
+for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
 
 defmodule Relationships do
   alias Compare.{Docker, Stack}
@@ -62,7 +62,7 @@ defmodule Relationships do
       # production cache settings: answers cached a second, refreshed while active
       stack = Stack.start_engine(stack, @model, [default: 1000], engine: engine, sidecar_cache_ms: nil, sidecar_env: [{"PG_AUTH_DATABASE_URL", url}])
       conn = start_postgres(stack)
-      setup(conn)
+      setup(conn, engine)
       steps(conn, stack)
     catch
       kind, reason ->
@@ -95,10 +95,43 @@ defmodule Relationships do
     end
   end
 
+  # Which tables hold which types, and which rows are relationships: a document belongs to its org;
+  # a membership makes a user an admin or a member; a share names a user, or a team's members. Only
+  # an org's admins manage its members, and anyone who can see a document can share it.
+  @mapping """
+  app.documents:
+    type: document
+    id: id
+    read: viewer
+    write: viewer
+    relations:
+      org: {subject: org_id, subject_type: org}
+  app.memberships:
+    type: org
+    id: org_id
+    read: can_read
+    write: can_manage
+    rows: {object: org_id, relation: role, subject: user_id, subject_type: user}
+  app.team_members:
+    type: team
+    relations:
+      member: {object: team, subject: user_id, subject_type: user}
+  app.shares:
+    - type: document
+      id: doc_id
+      read: viewer
+      write: viewer
+      relations:
+        shared_with: {subject: user_id, subject_type: user}
+    - type: document
+      relations:
+        shared_with: {object: doc_id, subject: team, subject_type: team, subject_relation: member}
+  """
+
   # The application's schema, as its migrations would write it: documents belong to an org, orgs
   # have members with a role, documents can be shared with a user or a team. Each table's rows are
   # relationships; reads and writes go through pg_auth.
-  defp setup(conn) do
+  defp setup(conn, engine) do
     for sql <- [
           "create role app_user nologin",
           "create schema app",
@@ -108,23 +141,14 @@ defmodule Relationships do
           "create table app.team_members (team text not null, user_id text not null, primary key (team, user_id))",
           "create table app.shares (doc_id int not null, user_id text, team text)",
           "grant select, insert, delete on all tables in schema app to app_user",
-          # a document belongs to its org; a membership makes a user an admin or a member
-          "select authz_internal.relate('app.documents', object_type => 'document', object_column => 'id', relation => 'org', subject_type => 'org', subject_column => 'org_id')",
-          "select authz_internal.relate('app.memberships', object_type => 'org', object_column => 'org_id', relation_column => 'role', subject_type => 'user', subject_column => 'user_id')",
-          "select authz_internal.relate('app.team_members', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'user', subject_column => 'user_id')",
-          # a share names a user, or a team's members
-          "select authz_internal.relate('app.shares', name => 'with_user', object_type => 'document', object_column => 'doc_id', relation => 'shared_with', subject_type => 'user', subject_column => 'user_id')",
-          "select authz_internal.relate('app.shares', name => 'with_team', object_type => 'document', object_column => 'doc_id', relation => 'shared_with', subject_type => 'team', subject_column => 'team', subject_relation => 'member')",
-          # who may read and write what: only an org's admins manage its members, anyone who can
-          # see a document can share it
-          "select authz_internal.protect('app.documents', type => 'document', id => 'id', read => 'viewer', write => 'viewer')",
-          "select authz_internal.protect('app.memberships', type => 'org', id => 'org_id', read => 'can_read', write => 'can_manage')",
-          "select authz_internal.protect('app.shares', type => 'document', id => 'doc_id', read => 'viewer', write => 'viewer')",
           # bootstrap, as a migration would: two orgs' documents, and org 1's first admin
           "insert into app.documents select i, 1 + (i > 4)::int, 'doc ' || i from generate_series(1, 6) i",
           "insert into app.memberships values (1, 'anne', 'admin')"
         ],
         do: Postgrex.query!(conn, sql, [])
+
+    # the model is in the engine already: the mapping alone, which names every type
+    Postgrex.query!(conn, "select authz.set_rules($1, $2, null, mapping => $3)", [engine, if(engine == "openfga", do: "model", else: "schema"), @mapping])
   end
 
   defp steps(conn, stack) do

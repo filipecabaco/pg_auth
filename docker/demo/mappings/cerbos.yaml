@@ -1,0 +1,6 @@
+# The demo's table on Cerbos, stored with its policy: the documents, decided on their owner and
+# status.
+documents:
+  read: view
+  write: edit
+  attributes: [owner, status]

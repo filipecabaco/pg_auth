@@ -20,15 +20,28 @@ defmodule CedarParity do
 
   @schema """
   entity Role in [Role];
-  // pg_auth: in from memberships(user_id).group_id: subject Group
   entity User in [Group, Role] { level: Long };
   entity Group;
-  // pg_auth: in from folders(id).parent_id: subject Folder
   entity Folder in [Folder];
-  // pg_auth: protects docs (id): read view, attributes (owner_id as owner, status, size, public, approved_by, org_id as org, embargo)
-  // pg_auth: in from docs(id).folder_id: subject Folder
   entity Doc in [Folder] { owner: User, status?: String, size: Long, public: Bool, approved_by?: User, org: Group, embargo?: Role };
   action view appliesTo { principal: User, resource: Doc };
+  """
+
+  # a membership puts its user in the group, a folder in its parent, a doc in its folder
+  @mapping """
+  memberships:
+    type: User
+    relations:
+      in: {object: user_id, subject: group_id, subject_type: Group}
+  folders:
+    relations:
+      in: {object: id, subject: parent_id, subject_type: Folder}
+  docs:
+    type: Doc
+    read: view
+    attributes: [owner_id as owner, status, size, public, approved_by, org_id as org, embargo]
+    relations:
+      in: folder_id
   """
 
   @policies """
@@ -51,20 +64,24 @@ defmodule CedarParity do
     Process.flag(:trap_exit, true)
     stack = Stack.new("cedar", "pg_auth_compare=1")
 
-    try do
-      url = "postgres://sidecar:cedar@#{stack.id}-postgres:5432/postgres"
-      stack = Stack.start_engine(stack, "", [default: 1000], engine: "cedar", sidecar_env: [{"PG_AUTH_DATABASE_URL", url}])
-      conn = start_postgres(stack)
-      setup(conn, Keyword.get(opts, :rows, 300))
-      report(compare(conn))
-    catch
-      kind, reason ->
-        for {c, log} <- Stack.logs(stack), do: IO.puts(:stderr, "---- #{c}\n#{String.slice(log, -3000, 3000)}")
-        IO.puts("FAILED: " <> Exception.format(kind, reason, __STACKTRACE__))
-        System.halt(1)
-    after
-      Stack.stop(stack)
-    end
+    # halting skips `after`: the stack is stopped first
+    ok =
+      try do
+        url = "postgres://sidecar:cedar@#{stack.id}-postgres:5432/postgres"
+        stack = Stack.start_engine(stack, "", [default: 1000], engine: "cedar", sidecar_env: [{"PG_AUTH_DATABASE_URL", url}])
+        conn = start_postgres(stack)
+        setup(conn, Keyword.get(opts, :rows, 300))
+        report(compare(conn))
+      catch
+        kind, reason ->
+          for {c, log} <- Stack.logs(stack), do: IO.puts(:stderr, "---- #{c}\n#{String.slice(log, -3000, 3000)}")
+          IO.puts("FAILED: " <> Exception.format(kind, reason, __STACKTRACE__))
+          false
+      after
+        Stack.stop(stack)
+      end
+
+    if not ok, do: System.halt(1)
   end
 
   # users 1..6 with levels and groups, roles in the token; folders f1 > f2 > f3, f4 apart
@@ -83,7 +100,7 @@ defmodule CedarParity do
     run_all(conn, ["update memberships set group_id = substr(group_id, 2)"])
     {:ok, _} =
       Postgrex.transaction(conn, fn c ->
-        Postgrex.query!(c, "select authz.set_rules('cedar', 'schema', $1)", [@schema])
+        Postgrex.query!(c, "select authz.set_rules('cedar', 'schema', $1, mapping => $2)", [@schema, @mapping])
         Postgrex.query!(c, "select authz.set_rules('cedar', 'policies', $1)", [@policies])
       end)
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.rules() where pushed_at is null", []).rows == [[0]] end) ||
@@ -135,8 +152,8 @@ defmodule CedarParity do
     end
     shown = results |> Enum.map(fn {_, c, _} -> length(c) end) |> Enum.sum()
     IO.puts("#{length(results)} subjects, #{shown} rows shown in all, #{length(bad)} mismatched")
-    if bad != [], do: System.halt(1)
-    IO.puts("Compiled filters and per-row evaluation agree.")
+    if bad == [], do: IO.puts("Compiled filters and per-row evaluation agree.")
+    bad == []
   end
 
   # the rows a subject sees, with its plans compiled (on) or evaluated per row (off)

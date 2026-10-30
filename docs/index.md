@@ -31,22 +31,22 @@ the rows the engine allows. Grants written as rows reach the engine through an o
 
 ```sql
 select authz.configure(subject => 'jwt');   -- the JWT's sub, as Supabase and PostgREST set it
-select authz.set_rules('openfga', 'model', $$
-...
-type org
-  # pg_auth: rows of memberships (org_id, role, user_id)
-  ...
-type document
-  # pg_auth: protects documents (id): read viewer, write editor
-  # pg_auth: org from documents.org_id
-  ...
-$$);
+select authz.set_rules('openfga', 'model', $fga$ ... $fga$, mapping => $yaml$
+memberships:
+  type: org
+  rows: {object: org_id, relation: role, subject: user_id}
+documents:
+  read: viewer
+  write: editor
+  relations:
+    org: org_id
+$yaml$);
 -- share by writing a row: bob sees org 1's documents
 insert into memberships values (1, 'bob', 'member');
 ```
 
-The rules stay in the engine's own syntax, kept in Postgres with your migrations; their
-`pg_auth:` comments protect and relate the tables.
+The rules stay in the engine's own syntax, kept in Postgres with your migrations; the mapping
+beside them protects and relates the tables.
 
 ## Ask why a row is hidden {#why}
 
@@ -63,7 +63,7 @@ connection: each checked in the RLS issues catalogue.
 ## What to expect {#cost}
 
 About the time of a best-practice policy overall (the benchmarks); grants written as rows show
-within tens of milliseconds, and a share with an end date (`until` in its note) disappears when
+within tens of milliseconds, and a share with an end date (`until` in its mapping) disappears when
 it ends; queries fail when the engine is down; the sidecar runs beside Postgres or over HTTPS;
 experimental.
 

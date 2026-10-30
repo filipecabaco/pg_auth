@@ -1,0 +1,22 @@
+# The demo's tables on SpiceDB (the same as on OpenFGA), stored with its schema (authz.set_rules(..., mapping => ...)):
+# which tables hold which types, what reading and writing a row asks, and which rows are
+# relationships.
+memberships:
+  type: org
+  id: org_id
+  read: can_read
+  write: can_manage
+  rows: {object: org_id, relation: role, subject: user_id}
+documents:
+  read: viewer
+  write: editor
+  insert: org#can_manage from org_id
+  relations:
+    org: org_id
+shares:
+  type: document
+  id: doc_id
+  read: viewer
+  write: editor
+  relations:
+    shared_with: {subject: user_id, until: expires_at}

@@ -49,9 +49,9 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
                                      OpenFGA, SpiceDB, Cerbos, or Cedar
 ```
 
-- **Binding.** A note in the engine's rules (`# pg_auth: protects docs (org_id): read view, write
-  edit`, in the `org` type), or the lower-level `authz_internal.protect('public.docs', 'org', 'org_id',
-  'view', 'edit')` it compiles into (table, object type, id column, read permission, optional write
+- **Binding.** The mapping stored with the engine's rules (`docs: {type: org, id: org_id, read: view,
+  write: edit}`), compiled into the internal `authz_internal.protect('public.docs', 'org', 'org_id',
+  'view', 'edit')` (table, object type, id column, read permission, optional write
   permission), installs the policy `authz.permits('<type>', '<permission>', column::text)` on the table and on
   every partition, now and later.
 - **Schemas and roles.** `authz` holds what every role reaches: the functions policies and the
@@ -234,7 +234,7 @@ the comparison waits for the end of the next statement. `pg_auth.replan_on_bread
 plans as built (parity's cached-plan modes do, to check those answers).
 
 **Attribute rules** (docs/proposals/cerbos.md). A table protected by its rows' attributes
-(`authz_internal.protect(..., attributes => array[...])`, for an engine that decides on them: Cerbos)
+(`attributes: [...]` in the mapping, for an engine that decides on them: Cerbos, Cedar)
 has the policy `authz.permits_resource(kind, action, id::text, jsonb_build_object(...))`. The
 engine's plan for the subject (always, never, or a condition on the attributes) is compiled into
 a filter on the row's columns, which indexes and partition pruning serve; each of the plan's
@@ -262,8 +262,7 @@ saying, before running, whether a table will be answered from the index or from 
 
 **Declared hierarchies** (`sql/hierarchy.sql`). When a permission is inherited down a tree the
 app already stores (`viewer: viewer_direct or viewer from parent`, with the parent edge being a
-folder's `parent_id`), `authz_internal.protect(..., hierarchy => 'app.folders(id, parent_id)', direct
-=> 'viewer_direct')` keeps a transitive closure of that table, maintained by triggers on it, as
+folder's `parent_id`), `tree: app.folders(id, parent_id) from viewer_direct` in the mapping keeps a transitive closure of that table, maintained by triggers on it, as
 Zanzibar's Leopard does. The engine is then asked only for the subject's direct grants, usually a
 handful even for a subject who sees most of the tree, and Postgres expands them. A small
 expansion is listed ids. A large one becomes the subject's index set for AuthzBatch, with no fill

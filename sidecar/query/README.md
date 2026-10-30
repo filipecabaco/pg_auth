@@ -136,7 +136,7 @@ extension then answers from Postgres instead of asking the engine per row.
 ## Relationship tables
 
 With `PG_AUTH_DATABASE_URL` set, the sidecar also delivers relationship tables' changes
-(`authz_internal.relate`, sql/relationships.sql) to OpenFGA or SpiceDB (`src/outbox.rs`). It listens for
+(the mapping's `rows` and `relations`, sql/relationships.sql) to OpenFGA or SpiceDB (`src/outbox.rs`). It listens for
 the trigger's `NOTIFY`, claims the oldest changes (one sidecar at a time, an advisory lock), writes
 them (OpenFGA's Write with `on_duplicate`/`on_missing: ignore`, up to 100 tuples a call; SpiceDB's
 WriteRelationships with TOUCH and DELETE, up to 1000), and removes them by id in the same
@@ -145,7 +145,7 @@ A failure the engine may get over (unreachable, 5xx, 429) is retried every `INDE
 change it refuses for good (another 4xx) is set aside in the outbox with its reason, and the others
 go on. Afterwards reads skip the engine's caches: OpenFGA with `HIGHER_CONSISTENCY` for 10 s,
 SpiceDB at least as fresh as the write's ZedToken. A change shows within tens of milliseconds.
-A relationship that ends (a note's `until`) is written with its end, which SpiceDB takes as the
+A relationship that ends (`until` in its mapping) is written with its end, which SpiceDB takes as the
 relationship's expiration (`optional_expires_at`); its delete waits in the outbox until it is due,
 and is delivered like any other change, on both engines.
 
@@ -165,7 +165,7 @@ which calls `authz_sidecar.answers_changed()` and clears the sidecar's own cache
 them. The engine's id for the rules (OpenFGA's model id, SpiceDB's schema ZedToken) is recorded
 beside them (`authz_sidecar.rules_ref`), and every sidecar asks with it from its next wake (a
 `NOTIFY`, or `INDEX_POLL_MS`): OpenFGA requests pin that model, SpiceDB reads are at least as
-fresh as that schema. A relationship written with a condition (`authz_internal.relate condition =>`)
+fresh as that schema. A relationship written with a condition (a relation's `condition` in the mapping)
 carries it: OpenFGA's tuple `condition`, SpiceDB's `optional_caveat`, with the row's values. Rules the engine refuses are recorded with its reason and not retried; an unreachable engine
 is retried every `INDEX_POLL_MS`.
 
@@ -249,7 +249,7 @@ available beside it.
 - **Several replicas.** Each keeps its own answer cache, and the one that delivers a change tells
   the others (`NOTIFY pg_auth_delivered`, with SpiceDB's ZedToken): each forgets what it cached
   and reads the engine at least as fresh, so a revocation shows through all of them at once
-  (`compare/notes.exs`). Each remembers the requests it has seen on its own.
+  (`compare/demo.exs`). Each remembers the requests it has seen on its own.
 - **Try it.** `docker/remote` runs Postgres, SpiceDB and the sidecar in separate containers with
   `docker compose`, the sidecar reached only over HTTPS.
 - **Cost.** About 0.2 ms a round trip more than the socket, measured on one host

@@ -13,12 +13,13 @@
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
 dir = Path.expand("../../compare/lib", __DIR__)
-for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
+for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
 
 defmodule Remote.Bench do
   alias Compare.{Docker, Stack}
 
   @rules Path.expand("../../docker/demo/rules/openfga.fga", __DIR__)
+  @mapping Path.expand("../../docker/demo/mappings/openfga.yaml", __DIR__)
   @bare "model\n  schema 1.1\ntype user\n"
   @host "sidecar.pg-auth.test"
   @proxy "proxy.pg-auth.test"
@@ -194,7 +195,7 @@ defmodule Remote.Bench do
     members = Enum.map_join(1..@users, ",", fn u -> "(#{org_of(u)}, 'u#{u}', '#{if rem(u, 10) == 0, do: "admin", else: "member"}')" end)
     run_all(conn, ["insert into memberships values #{members}", "insert into memberships_rls values #{members}",
                    "analyze documents", "analyze documents_rls", "analyze memberships", "analyze memberships_rls"])
-    Postgrex.query!(conn, "select authz.set_rules('openfga', 'model', $1)", [File.read!(@rules)], timeout: :infinity)
+    Postgrex.query!(conn, "select authz.set_rules('openfga', 'model', $1, mapping => $2)", [File.read!(@rules), File.read!(@mapping)], timeout: :infinity)
     IO.puts(:stderr, "delivering #{length(docs) + @users} relationships to OpenFGA")
     wait_until(fn -> Postgrex.query!(conn, "select count(*) from authz_internal.outbox where not_before is null", []).rows == [[0]] end, 1_800_000) ||
       raise "relationships not delivered"

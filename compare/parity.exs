@@ -8,7 +8,7 @@
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
 dir = Path.join(__DIR__, "lib")
-for f <- ~w(engine docker scenario loaders/random engines/openfga engines/spicedb engines/cerbos stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
+for f <- ~w(engine docker scenario loaders/random engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
 
 defmodule Parity.Stack do
   @moduledoc """

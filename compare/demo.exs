@@ -1,29 +1,30 @@
 #!/usr/bin/env elixir
-# The demo's rules files (docker/demo/rules), loaded as they are into a real OpenFGA, SpiceDB and
-# Cerbos, and Cedar in the sidecar: authz.set_rules stores each file, its notes (`# pg_auth: ...`) protect and relate the
-# tables, the sidecar pushes the file, and the demo's story holds through row level security.
-# Nothing is protected or related by hand. Then that the engine is what decides: the policies hold
+# The demo's rules files (docker/demo/rules) and their mappings (docker/demo/mappings), loaded as
+# they are into a real OpenFGA, SpiceDB and Cerbos, and Cedar in the sidecar: authz.set_rules stores
+# each file with its mapping, which protects and relates the tables, the sidecar pushes the file,
+# and the demo's story holds through row level security. Nothing is protected or related by hand. Then that the engine is what decides: the policies hold
 # nothing but the call to pg_auth, rows follow the engine when it is changed behind Postgres's back
 # (and not Postgres's own tables), and with the engine or the sidecar stopped nothing gets through
 # past the sidecar's 1 s answers. See compare/README.md.
 #
-#   elixir compare/notes.exs                       # openfga, spicedb, cerbos, cedar
-#   elixir compare/notes.exs --engine spicedb --no-build
+#   elixir compare/demo.exs                        # openfga, spicedb, cerbos, cedar
+#   elixir compare/demo.exs --engine spicedb --no-build
 
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
 dir = Path.join(__DIR__, "lib")
 for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
 
-defmodule Notes do
+defmodule Demo do
   alias Compare.{Docker, Stack}
 
-  @rules Path.expand("../docker/demo/rules", __DIR__)
+  @demo Path.expand("../docker/demo", __DIR__)
+  # each rule: its name, its file, and the mapping stored with it
   @files %{
-    "openfga" => [{"model", "openfga.fga"}],
-    "spicedb" => [{"schema", "spicedb.zed"}],
-    "cerbos" => [{"resource/document", "cerbos.yaml"}],
-    "cedar" => [{"schema", "cedar.cedarschema"}, {"documents", "cedar.cedar"}]
+    "openfga" => [{"model", "rules/openfga.fga", "mappings/openfga.yaml"}],
+    "spicedb" => [{"schema", "rules/spicedb.zed", "mappings/spicedb.yaml"}],
+    "cerbos" => [{"resource/document", "rules/cerbos.yaml", "mappings/cerbos.yaml"}],
+    "cedar" => [{"schema", "rules/cedar.cedarschema", "mappings/cedar.yaml"}, {"documents", "rules/cedar.cedar", nil}]
   }
   @bare "model\n  schema 1.1\ntype user\n"
   @deadline_ms 30_000
@@ -41,11 +42,11 @@ defmodule Notes do
   end
 
   defp run(engine) do
-    stack = Stack.new("notes", "pg_auth_compare=1")
+    stack = Stack.new("demo", "pg_auth_compare=1")
 
     try do
       # the sidecar as an ordinary login holding only the authz_sidecar role
-      url = "postgres://sidecar:notes@#{stack.id}-postgres:5432/postgres"
+      url = "postgres://sidecar:demo@#{stack.id}-postgres:5432/postgres"
       env = [{"PG_AUTH_DATABASE_URL", url}]
 
       stack =
@@ -118,8 +119,10 @@ defmodule Notes do
   defp store_rules(conn, engine) do
     # in one transaction: Cedar's schema and policies are checked together
     Postgrex.transaction(conn, fn c ->
-      for {name, file} <- @files[engine],
-          do: Postgrex.query!(c, "select authz.set_rules($1, $2, $3)", [engine, name, File.read!(Path.join(@rules, file))])
+      for {name, file, mapping} <- @files[engine] do
+        mapping = if mapping, do: File.read!(Path.join(@demo, mapping))
+        Postgrex.query!(c, "select authz.set_rules($1, $2, $3, mapping => $4)", [engine, name, File.read!(Path.join(@demo, file)), mapping])
+      end
     end)
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.rules() where pushed_at is null", []).rows == [[0]] end) ||
       raise("rules not pushed")
@@ -129,7 +132,7 @@ defmodule Notes do
 
   defp steps(conn, "cerbos") do
     [
-      check("the note protected the table: pg_auth's policies on it", fn -> policies(conn) == ["documents pg_auth_delete", "documents pg_auth_insert", "documents pg_auth_select", "documents pg_auth_update"] end),
+      check("the mapping protected the table: pg_auth's policies on it", fn -> policies(conn) == ["documents pg_auth_delete", "documents pg_auth_insert", "documents pg_auth_select", "documents pg_auth_update"] end),
       check("anne sees her documents and the published ones", fn -> eventually(fn -> visible(conn, "anne") == [1, 2, 3, 4] end) end),
       check("bob sees only the published ones", fn -> visible(conn, "bob") == [1, 4] end),
       check("anne publishes a draft: bob sees it", fn ->
@@ -141,7 +144,7 @@ defmodule Notes do
 
   defp steps(conn, "cedar") do
     [
-      check("the notes protected the three tables", fn ->
+      check("the mapping protected the three tables", fn ->
         policies(conn) |> Enum.map(&hd(String.split(&1))) |> Enum.uniq() == ["documents", "memberships", "shares"]
       end),
       check("the policies became filters on the columns: org_id among anne's orgs", fn ->
@@ -174,7 +177,7 @@ defmodule Notes do
 
   defp steps(conn, _relationships) do
     [
-      check("the notes protected the three tables", fn ->
+      check("the mapping protected the three tables", fn ->
         policies(conn) |> Enum.map(&hd(String.split(&1))) |> Enum.uniq() == ["documents", "memberships", "shares"]
       end),
       check("anne, org 1's admin, sees its documents; bob sees none", fn ->
@@ -351,16 +354,16 @@ defmodule Notes do
     pg = Stack.track(stack, "#{stack.id}-postgres")
     {^pg, port} =
       Docker.run(pg, Stack.pg_image(), 5432, ["-c", "fsync=off"],
-        Stack.pg_docker_args(stack) ++ Docker.coverage_args("postgres") ++ ["-e", "POSTGRES_PASSWORD=notes"])
+        Stack.pg_docker_args(stack) ++ Docker.coverage_args("postgres") ++ ["-e", "POSTGRES_PASSWORD=demo"])
     Stack.wait(fn -> match?({_, 0}, System.cmd("docker", ["exec", pg, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"])) end, pg)
     {:ok, conn} =
-      retry(fn -> Postgrex.start_link(hostname: "127.0.0.1", port: port, username: "postgres", password: "notes", database: "postgres", pool_size: 1) end, 20)
+      retry(fn -> Postgrex.start_link(hostname: "127.0.0.1", port: port, username: "postgres", password: "demo", database: "postgres", pool_size: 1) end, 20)
     run_all(conn, [
       "create extension pg_auth",
       "alter system set pg_auth.sidecar_socket = '#{Stack.socket("default")}'",
       "select pg_reload_conf()",
       "create role authenticated nologin",
-      "create role sidecar login password 'notes' in role authz_sidecar",
+      "create role sidecar login password 'demo' in role authz_sidecar",
       "select authz.configure(subject => 'jwt')"
     ])
     conn
@@ -428,4 +431,4 @@ defmodule Notes do
   end
 end
 
-Notes.main(System.argv())
+Demo.main(System.argv())

@@ -1,4 +1,3 @@
-# pg_auth: protects documents (id): read view, write edit, attributes (owner, status)
 apiVersion: api.cerbos.dev/v1
 resourcePolicy:
   version: default

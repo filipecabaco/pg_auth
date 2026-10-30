@@ -13,8 +13,8 @@ mod explain;
 mod ffi;
 mod jwt;
 mod lint;
+mod mapping;
 mod nodetree;
-mod notes;
 #[allow(unsafe_code)]
 mod pg;
 mod remote;
@@ -52,7 +52,7 @@ extension_sql_file!("../sql/setup.sql", name = "authz_setup", requires = ["authz
 extension_sql_file!(
     "../sql/rules.sql",
     name = "authz_rules",
-    requires = ["authz_schema", "authz_relationships", rules::rules_names, notes::rules_document]
+    requires = ["authz_schema", "authz_relationships", rules::rules_names, mapping::mapping_document]
 );
 extension_sql_file!("../sql/lint.sql", name = "authz_lint", requires = ["authz_schema", lint::lint_policies]);
 extension_sql_file!("../sql/index.sql", name = "authz_index", requires = ["authz_schema", subject::subject_id, subject::subject_type]);
@@ -1177,7 +1177,7 @@ mod tests {
     }
 
     #[pg_test]
-    fn notes_in_the_rules_protect_and_relate_the_tables() {
+    fn a_mapping_protects_and_relates_the_tables() {
         // the outbox's claim takes its lock without waiting: wait for another test holding it
         Spi::run("select pg_advisory_xact_lock(hashtext('pg_auth.outbox'))").unwrap();
         Spi::run(
@@ -1187,44 +1187,60 @@ mod tests {
              insert into public.nmembers values (1, 'anne', 'admin')",
         )
         .unwrap();
-        let model = |notes: &str| {
-            format!(
-                "model\n  schema 1.1\ntype user\ntype org\n  # pg_auth: rows of public.nmembers (org_id, role, user_id)\n  relations\n    \
-                 define admin: [user]\n    define member: [user]\n    define can_read: member or admin\n    define can_manage: admin\n\
-                 type document\n{notes}  relations\n    define org: [org]\n    define viewer: can_read from org\n    define editor: can_manage from org\n"
-            )
+        let model = "model\n  schema 1.1\ntype user\ntype org\n  relations\n    define admin: [user]\n    define member: [user]\n    \
+                     define can_read: member or admin\n    define can_manage: admin\ntype document\n  relations\n    define org: [org]\n    \
+                     define viewer: can_read from org\n    define editor: can_manage from org\n";
+        let members = "public.nmembers: {type: org, rows: {object: org_id, relation: role, subject: user_id}}";
+        let set = |mapping: &str| {
+            Spi::get_one_with_args::<i32>("select authz.set_rules('openfga', 'model', $1, mapping => $2)", &[model.into(), mapping.into()])
+                .unwrap()
         };
-        let both = "  # pg_auth: protects public.ndocs (id): read viewer, write editor\n  # pg_auth: org from public.ndocs.org_id\n";
-        Spi::get_one_with_args::<i32>("select authz.set_rules('openfga', 'model', $1)", &[model(both).into()]).unwrap();
+        assert_eq!(
+            set(&format!("public.ndocs: {{type: document, read: viewer, write: editor, relations: {{org: org_id}}}}\n{members}")),
+            Some(1)
+        );
         let declared = || {
             Spi::get_one::<String>(
                 "select concat_ws(' | ',
                    (select string_agg(rel::text || ' ' || object_type || '#' || permission || coalesce('/' || write_permission, ''), ', ' order by rel::text) from authz_internal.bindings),
-                   (select string_agg(concat_ws(' ', rel::text, name, coalesce(relation, '(' || relation_column || ')'), array_to_string(relations, '|')), ', ' order by name) from authz_internal.relationships))",
+                   (select string_agg(concat_ws(' ', rel::text, name, object_column, coalesce(relation, '(' || relation_column || ')'), array_to_string(relations, '|')), ', ' order by name) from authz_internal.relationships))",
             )
             .unwrap()
             .unwrap_or_default()
         };
-        assert_eq!(declared(), "ndocs document#viewer/editor | ndocs document_org org, nmembers org_rows (role) admin|member");
+        // the relationship's object: the table's primary key, which the mapping left to it
+        assert_eq!(declared(), "ndocs document#viewer/editor | ndocs document_org id org, nmembers org_rows org_id (role) admin|member");
         // the rows already there wait for the rules they need
         let claimed = || Spi::get_one::<i64>("select count(*) from authz_sidecar.outbox_claim(10, 'openfga')").unwrap();
         assert_eq!(claimed(), Some(0));
         Spi::run("select authz_sidecar.rules_pushed('openfga', 'model', 1)").unwrap();
         assert_eq!(claimed(), Some(2));
-        // the next version drops a note: what it declared goes
-        Spi::get_one_with_args::<i32>(
-            "select authz.set_rules('openfga', 'model', $1)",
-            &[model("  # pg_auth: protects public.ndocs (id): read viewer\n").into()],
-        )
-        .unwrap();
-        assert_eq!(declared(), "ndocs document#viewer | nmembers org_rows (role) admin|member");
-        // a note naming no object column for a table without a single-column key says so
+        // the next version drops a relation: what it declared goes; the model, unchanged, is as
+        // the engine took it
+        assert_eq!(set(&format!("public.ndocs: {{type: document, read: viewer}}\n{members}")), Some(2));
+        assert_eq!(declared(), "ndocs document#viewer | nmembers org_rows org_id (role) admin|member");
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz_sidecar.rules_pending('openfga')").unwrap(), Some(0));
+        // new rules alone keep the mapping: the tables stay as they are
+        let renamed = model.replace("define can_manage: admin", "define can_manage: admin\n    define can_audit: admin");
+        assert_eq!(
+            Spi::get_one_with_args::<i32>("select authz.set_rules('openfga', 'model', $1)", &[renamed.as_str().into()]).unwrap(),
+            Some(3)
+        );
+        assert_eq!(declared(), "ndocs document#viewer | nmembers org_rows org_id (role) admin|member");
+        // a relation naming no object column on a table without a single-column key says so
         let error = error_of(&format!(
-            "select authz.set_rules('openfga', 'model', {})",
-            quote(&model("  # pg_auth: org from public.nmembers.user_id\n"))
+            "select authz.set_rules('openfga', 'model', {}, mapping => 'public.nmembers: {{type: document, relations: {{org: org_id}}}}')",
+            quote(model)
         ))
         .unwrap_or_default();
         assert!(error.contains("has no single-column primary key"), "{error}");
+        // rules kept in the engine: the mapping alone, naming its types, nothing to push
+        Spi::run("select authz.set_rules('spicedb', 'schema', null, mapping => 'public.ndocs: {type: document, id: id, read: viewer}')")
+            .unwrap();
+        assert_eq!(Spi::get_one::<i64>("select count(*) from authz_sidecar.rules_pending('spicedb')").unwrap(), Some(0));
+        let missing =
+            error_of("select authz.set_rules('spicedb', 'schema', null, mapping => 'public.ndocs: {read: viewer}')").unwrap_or_default();
+        assert!(missing.contains("name its type"), "{missing}");
     }
 
     #[pg_test]
@@ -1244,14 +1260,14 @@ mod tests {
 
         // every role: what its queries call, and nothing else
         assert!(runs("authz_test_app", "authz.permits(text, text, text)"));
-        assert!(!runs("authz_test_app", "authz.set_rules(text, text, text)"));
+        assert!(!runs("authz_test_app", "authz.set_rules(text, text, text, text)"));
         assert!(!schema("authz_test_app", "authz_internal") && !schema("authz_test_app", "authz_sidecar"));
         assert!(!reaches("authz_test_app", "select has_table_privilege($role, 'authz_internal.bindings', 'select')"));
         // the sidecar: its schema only
         assert!(schema("authz_test_daemon", "authz_sidecar") && runs("authz_test_daemon", "authz_sidecar.outbox_claim(int, text)"));
-        assert!(!schema("authz_test_daemon", "authz_internal") && !runs("authz_test_daemon", "authz.set_rules(text, text, text)"));
+        assert!(!schema("authz_test_daemon", "authz_internal") && !runs("authz_test_daemon", "authz.set_rules(text, text, text, text)"));
         // migrations: the rules, the setup and the lower level, but not the sidecar's
-        assert!(runs("authz_test_migrator", "authz.set_rules(text, text, text)") && schema("authz_test_migrator", "authz_internal"));
+        assert!(runs("authz_test_migrator", "authz.set_rules(text, text, text, text)") && schema("authz_test_migrator", "authz_internal"));
         assert!(!schema("authz_test_migrator", "authz_sidecar"));
         // it writes the configuration, and only reads what pg_auth derives
         let table = |t: &str, p: &str| reaches("authz_test_migrator", &format!("select has_table_privilege($role, '{t}', '{p}')"));
@@ -1317,13 +1333,12 @@ mod tests {
             "create table public.cdocs (id int primary key, owner_id text not null, folder_id text);
              create table public.cmembers (user_id text, group_id text, primary key (user_id, group_id));
              select authz.set_rules('cedar', 'schema', 'entity Group;
-                 // pg_auth: in from public.cmembers(user_id).group_id
                  entity User in [Group];
                  entity Folder in [Folder];
-                 // pg_auth: protects public.cdocs (id): read view, attributes (owner_id as owner)
-                 // pg_auth: in from public.cdocs.folder_id
                  entity Document in [Folder] { owner: User };
-                 action view appliesTo { principal: User, resource: Document };');
+                 action view appliesTo { principal: User, resource: Document };',
+                 mapping => 'public.cdocs: {type: Document, read: view, attributes: [owner_id as owner], relations: {in: folder_id}}
+public.cmembers: {type: User, relations: {in: {object: user_id, subject: group_id}}}');
              select authz.set_rules('cedar', 'documents', 'permit (principal, action == Action::\"view\", resource) when { resource.owner == principal };');
              insert into public.cmembers values ('anne', 'eng');
              insert into public.cdocs values (1, 'anne', 'f1')",

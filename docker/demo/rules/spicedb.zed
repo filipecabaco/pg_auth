@@ -3,8 +3,6 @@ use expiration
 definition user {}
 
 definition org {
-  // pg_auth: rows of memberships (org_id, role, user_id)
-  // pg_auth: protects memberships (org_id): read can_read, write can_manage
   relation admin: user
   relation member: user
   permission can_read = member + admin
@@ -12,10 +10,6 @@ definition org {
 }
 
 definition document {
-  // pg_auth: protects documents (id): read viewer, write editor, insert org#can_manage from org_id
-  // pg_auth: protects shares (doc_id): read viewer, write editor
-  // pg_auth: org from documents.org_id
-  // pg_auth: shared_with from shares(doc_id).user_id: until expires_at
   relation org: org
   relation shared_with: user | user with expiration
   permission viewer = shared_with + org->can_read

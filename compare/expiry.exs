@@ -1,10 +1,10 @@
 #!/usr/bin/env elixir
-# Relationships that end (authz_internal.relate expires_column), end to end on a real OpenFGA and SpiceDB:
+# Relationships that end (a relation's `until` in the mapping), end to end on a real OpenFGA and SpiceDB:
 # a share shows until its end and not after (and how long after its end it took to go), an end
 # moved later keeps it, one moved earlier ends it, a renewal brings it back, and the expiries the
 # outbox holds are not changes waiting. SpiceDB also gets the end as the relationship's
-# expiration: the engine ends it itself with the sidecar stopped, within its revision window. The rules come from Postgres
-# (authz.set_rules). See compare/README.md and docs/usage.md.
+# expiration: the engine ends it itself with the sidecar stopped, within its revision window. The rules and their mapping
+# come from Postgres (authz.set_rules). See compare/README.md and docs/usage.md.
 #
 #   elixir compare/expiry.exs                       # openfga, then spicedb
 #   elixir compare/expiry.exs --engine spicedb --no-build
@@ -12,7 +12,7 @@
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
 dir = Path.join(__DIR__, "lib")
-for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
+for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
 
 defmodule Expiry do
   alias Compare.{Docker, Stack}
@@ -23,6 +23,15 @@ defmodule Expiry do
     "openfga" => {"model", "model\n  schema 1.1\ntype user\ntype doc\n  relations\n    define viewer: [user]\n"},
     "spicedb" => {"schema", "use expiration\n\ndefinition user {}\n\ndefinition doc {\n  relation viewer: user | user with expiration\n}\n"}
   }
+
+  # a share is a viewer until its end
+  @mapping """
+  app.docs: {read: viewer}
+  app.shares:
+    type: doc
+    relations:
+      viewer: {object: doc_id, subject: user_id, until: expires_at}
+  """
 
   # how long a share lasts in these steps, and how long after its end it may still show
   @lasts_s 3
@@ -72,13 +81,8 @@ defmodule Expiry do
       "grant select on app.docs to app_user",
       "insert into app.docs select generate_series(1, 6)"
     ])
-    Postgrex.query!(conn, "select authz.set_rules($1, $2, $3)", [engine, name, rules])
+    Postgrex.query!(conn, "select authz.set_rules($1, $2, $3, mapping => $4)", [engine, name, rules, @mapping])
     eventually(fn -> Postgrex.query!(conn, "select pushed_at is not null from authz.rules()", []).rows == [[true]] end) || raise("rules not pushed")
-    run_all(conn, [
-      "select authz_internal.relate('app.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
-                           subject_type => 'user', subject_column => 'user_id', expires_column => 'expires_at')",
-      "select authz_internal.protect('app.docs', type => 'doc', id => 'id', read => 'viewer')"
-    ])
   end
 
   defp steps(conn, engine, stack) do

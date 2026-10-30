@@ -398,7 +398,7 @@ begin
             status := 'fail';
             detail := 'the engine refused ' || (select string_agg(format('%s %s version %s (%s)', r.engine, r.name, r.version, r.error), '; ')
                                                 from authz.rules() r where r.error is not null) || ': it keeps the version before';
-            fix := 'correct the rules and store them again with authz.set_rules(engine, name, body)';
+            fix := 'correct the rules and store them again with authz.set_rules(engine, name, body, mapping => ...)';
         elsif exists (select 1 from authz.rules() r where r.pushed_at is null) then
             status := 'warn';
             detail := 'not pushed yet: ' || (select string_agg(r.engine || ' ' || r.name, ', ') from authz.rules() r where r.pushed_at is null)

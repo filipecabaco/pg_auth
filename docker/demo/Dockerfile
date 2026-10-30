@@ -18,9 +18,11 @@ COPY --from=openfga /openfga /usr/local/bin/openfga
 COPY --from=spicedb /usr/local/bin/spicedb /usr/local/bin/spicedb
 COPY --from=cerbos /cerbos /usr/local/bin/cerbos
 
-# each engine's rules, in its own language, with pg_auth's notes: stored in Postgres at build and
-# pushed to the engines by their sidecars at boot (the page's Setup view shows these files)
+# each engine's rules, in its own language, and the mapping of the tables they decide on: stored in
+# Postgres at build and pushed to the engines by their sidecars at boot (the page's Setup view
+# shows these files)
 COPY rules/ /etc/demo/rules/
+COPY mappings/ /etc/demo/mappings/
 COPY cerbos/conf.yaml /etc/demo/cerbos/conf.yaml
 COPY sql/ /etc/demo/sql/
 COPY train/ /etc/demo/train/
@@ -57,8 +59,10 @@ RUN install -d -o postgres -g postgres -m 700 "$PGDATA" && \
         cerbos) $psql -d $db -f /etc/demo/sql/cerbos.sql ;; \
         cedar) $psql -d $db -f /etc/demo/sql/cedar.sql ;; \
         openfga) $psql -d $db -v engine=openfga -v rules_name=model -v rules_file=/etc/demo/rules/openfga.fga \
+                   -v mapping_file=/etc/demo/mappings/openfga.yaml \
                    -f /etc/demo/sql/relationships.sql ;; \
         spicedb) $psql -d $db -v engine=spicedb -v rules_name=schema -v rules_file=/etc/demo/rules/spicedb.zed \
+                   -v mapping_file=/etc/demo/mappings/spicedb.yaml \
                    -f /etc/demo/sql/relationships.sql ;; \
       esac || exit 1; \
     done && \

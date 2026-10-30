@@ -1,6 +1,6 @@
 #!/usr/bin/env elixir
 # OpenFGA conditions and SpiceDB caveats, end to end: relationships written with a condition and
-# the row's values for it (authz_internal.relate condition, condition_context), and each request giving it
+# the row's values for it (a relation's `condition` in the mapping), and each request giving it
 # the rest (authz.configure context: a token's claim, the time asked). A share in some regions
 # shows to a token from one of them; a share until a deadline shows until then; a row's new
 # values change what shows; a request without a value a condition needs is not let in. A
@@ -15,12 +15,38 @@
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
 dir = Path.join(__DIR__, "lib")
-for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
+for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
 
 defmodule Conditions do
   alias Compare.{Docker, Stack}
 
   @bare "model\n  schema 1.1\ntype user\n"
+
+  # each share a viewer, under the condition its table gives values to; each report gives its level
+  @mapping """
+  app.docs: {read: viewer}
+  app.region_shares:
+    type: doc
+    relations:
+      viewer: {object: doc_id, subject: user_id, condition: {name: in_region, with: {allowed: regions}}}
+  app.deadline_shares:
+    type: doc
+    relations:
+      viewer: {object: doc_id, subject: user_id, condition: {name: before_deadline, with: {deadline: deadline}}}
+  app.shares:
+    type: doc
+    relations:
+      viewer: {object: doc_id, subject: user_id}
+  app.reports: {read: viewer, attributes: [level]}
+  app.clearances:
+    type: report
+    relations:
+      viewer: {object: report_id, subject: user_id, condition: {name: cleared, with: {clearance: clearance}}}
+  app.report_shares:
+    type: report
+    relations:
+      viewer: {object: report_id, subject: user_id}
+  """
 
   @rules %{
     "openfga" => {"model", """
@@ -128,26 +154,8 @@ defmodule Conditions do
       "insert into app.clearances select r, 'anne', 3 from generate_series(1, 4) r",
       "insert into app.report_shares values (6, 'anne')"
     ])
-    Postgrex.query!(conn, "select authz.set_rules($1, $2, $3)", [engine, name, rules])
+    Postgrex.query!(conn, "select authz.set_rules($1, $2, $3, mapping => $4)", [engine, name, rules, @mapping])
     eventually(fn -> Postgrex.query!(conn, "select pushed_at is not null from authz.rules()", []).rows == [[true]] end) || raise("rules not pushed")
-    run_all(conn, [
-      ~s|select authz_internal.relate('app.region_shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
-                             subject_type => 'user', subject_column => 'user_id',
-                             condition => 'in_region', condition_context => '{"allowed": "regions"}')|,
-      ~s|select authz_internal.relate('app.deadline_shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
-                             subject_type => 'user', subject_column => 'user_id',
-                             condition => 'before_deadline', condition_context => '{"deadline": "deadline"}')|,
-      "select authz_internal.relate('app.shares', object_type => 'doc', object_column => 'doc_id', relation => 'viewer',
-                           subject_type => 'user', subject_column => 'user_id')",
-      "select authz_internal.protect('app.docs', type => 'doc', id => 'id', read => 'viewer')",
-      ~s|select authz_internal.relate('app.clearances', object_type => 'report', object_column => 'report_id', relation => 'viewer',
-                             subject_type => 'user', subject_column => 'user_id',
-                             condition => 'cleared', condition_context => '{"clearance": "clearance"}')|,
-      "select authz_internal.relate('app.report_shares', object_type => 'report', object_column => 'report_id', relation => 'viewer',
-                           subject_type => 'user', subject_column => 'user_id')",
-      # each row gives the condition its level
-      "select authz_internal.protect('app.reports', type => 'report', id => 'id', read => 'viewer', attributes => array['level'])"
-    ])
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz_internal.outbox", []).rows == [[0]] end) || raise("relationships not delivered")
   end
 

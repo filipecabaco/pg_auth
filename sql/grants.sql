@@ -53,7 +53,7 @@ grant usage on sequence authz_internal.setups_version_seq to authz_admin;
 grant select on authz_internal.permission_sets, authz_internal.permitted, authz_internal.outbox,
     authz_internal.feed_positions, authz_internal.entity_parents to authz_admin;
 grant execute on all functions in schema authz_internal to authz_admin;
-grant execute on function authz.set_rules(text, text, text), authz.rules(text),
+grant execute on function authz.set_rules(text, text, text, text), authz.rules(text),
     authz.configure(text, text, text, jsonb, text, text, text, int, text, text, text, jsonb),
     authz.check(text, text, text), authz.status(), authz.why(regclass, text, text, name, text[], text),
     authz.doctor(), authz.lint() to authz_admin;

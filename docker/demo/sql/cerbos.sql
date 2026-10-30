@@ -9,10 +9,11 @@ grant select, insert, update, delete on documents to authenticated;
 insert into documents values (1, 'Roadmap', 'anne', 'published'), (2, 'Budget', 'anne', 'draft'),
   (3, 'Launch plan', 'anne', 'draft'), (4, 'Hiring', 'carl', 'published'), (5, 'Pricing', 'carl', 'draft');
 
--- the policy, with a note protecting this table: anyone signed in reads published documents and
+-- the policy, and the mapping protecting this table: anyone signed in reads published documents and
 -- their own drafts, and only the owner edits
 \set rules `cat /etc/demo/rules/cerbos.yaml`
-select authz.set_rules('cerbos', 'resource/document', :'rules');
+\set mapping `cat /etc/demo/mappings/cerbos.yaml`
+select authz.set_rules('cerbos', 'resource/document', :'rules', mapping => :'mapping');
 
 -- The page calls this when the demo boots and when a visitor switches engines: every table back as
 -- the demo starts (rows added removed, rows deleted put back), so each visit tells the same story.

@@ -29,7 +29,7 @@ rows", and gets hard quickly after that:
 
 ## What it does
 
-- **A comment per table.** `# pg_auth: protects documents (id): read viewer`, in the engine's own
+- **A line per table.** `documents: {read: viewer}`, in the mapping stored beside the engine's own
   rules, installs the policies; the planner turns the engine's answer into an indexable filter.
 - **Grants are rows.** Inserting into a memberships table delivers the relationship to the engine;
   the change showed 4 to 34 ms after commit in tests against OpenFGA and SpiceDB.

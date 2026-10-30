@@ -20,22 +20,26 @@
       </p>
       <div class="pa-setup">
         <p>The rules live in an authorization engine (here <b data-engine-name>OpenFGA</b>), in its own
-          syntax. One comment in them protects the <code>documents</code> table:</p>
+          syntax. A few lines of YAML stored beside them protect the <code>documents</code> table:</p>
 <pre data-engine-show="openfga"><code>type document
-  <span class="n"># pg_auth: protects documents (id): read viewer, write editor</span>
   relations
-    define viewer: shared_with or can_read from org</code></pre>
+    define viewer: shared_with or can_read from org
+<span class="n"># the mapping
+documents: {read: viewer, write: editor}</span></code></pre>
 <pre data-engine-show="spicedb"><code>definition document {
-  <span class="n">// pg_auth: protects documents (id): read viewer, write editor</span>
   permission viewer = shared_with + org-&gt;can_read
-}</code></pre>
-<pre data-engine-show="cerbos"><code><span class="n"># pg_auth: protects documents (id): read view, write edit, attributes (owner, status)</span>
-resourcePolicy:
-  resource: document</code></pre>
-<pre data-engine-show="cedar"><code><span class="n">// pg_auth: protects documents (id): read view, write edit, attributes (org_id as org, org_id as admins)</span>
-entity Document { org: Org, admins: OrgAdmins };
+}
+<span class="n"># the mapping
+documents: {read: viewer, write: editor}</span></code></pre>
+<pre data-engine-show="cerbos"><code>resourcePolicy:
+  resource: document
+<span class="n"># the mapping
+documents: {read: view, write: edit, attributes: [owner, status]}</span></code></pre>
+<pre data-engine-show="cedar"><code>entity Document { org: Org, admins: OrgAdmins };
 permit (principal, action == Action::"view", resource)
-  when { principal in resource.org };</code></pre>
+  when { principal in resource.org };
+<span class="n"># the mapping
+documents: {read: view, write: edit, attributes: [org_id as org, org_id as admins]}</span></code></pre>
         <p data-for="relationships">The rules: an organisation's members read its documents, and only its admins edit
           them. Anne is the admin of org 1, which owns three documents. Bob is in no org yet.</p>
         <p data-for="attributes">The rule: everyone reads published documents and their own drafts, and only the owner
@@ -66,51 +70,62 @@ permit (principal, action == Action::"view", resource)
         <em class="pa-demo__status" role="status">not started</em>
       </div>
       <div class="pa-demo__screen">
-        {#- Setup: the whole of it, exactly as docker/demo loads it (sql/*.sql stores rules/openfga.fga,
-            rules/spicedb.zed, rules/cerbos.yaml and rules/cedar.* with authz.set_rules): change them there and here
-            together -#}
+        {#- Setup: the whole of it, exactly as docker/demo loads it (sql/*.sql stores rules/* with their
+            mappings/*.yaml through authz.set_rules): change them there and here together -#}
         <div class="pa-demo__setup" role="tabpanel" aria-label="The permission setup for this engine">
           <div>
             <b>The whole setup, run once in Postgres</b>
 <pre data-engine-show="openfga"><code><span class="c">-- who is asking: the token's sub, as PostgREST sets it</span>
 select authz.configure(subject => 'jwt');
 
-<span class="c">-- the model, in OpenFGA's own syntax; its pg_auth: notes protect and relate the tables</span>
+<span class="c">-- the model, in OpenFGA's own syntax, and the mapping of the tables it decides on</span>
 select authz.set_rules('openfga', 'model', $$
 model
   schema 1.1
 type user
 type org
-  <span class="n"># pg_auth: rows of memberships (org_id, role, user_id)</span>
-  <span class="n"># pg_auth: protects memberships (org_id): read can_read, write can_manage</span>
   relations
     define admin: [user]
     define member: [user]
     define can_read: member or admin
     define can_manage: admin
 type document
-  <span class="n"># pg_auth: protects documents (id): read viewer, write editor, insert org#can_manage from org_id</span>
-  <span class="n"># pg_auth: protects shares (doc_id): read viewer, write editor</span>
-  <span class="n"># pg_auth: org from documents.org_id</span>
-  <span class="n"># pg_auth: shared_with from shares(doc_id).user_id: until expires_at</span>
   relations
     define org: [org]
     define shared_with: [user]
     define viewer: shared_with or can_read from org
     define editor: can_manage from org
+$$, mapping => $$
+<span class="n">memberships:
+  type: org
+  id: org_id
+  read: can_read
+  write: can_manage
+  rows: {object: org_id, relation: role, subject: user_id}
+documents:
+  read: viewer
+  write: editor
+  insert: org#can_manage from org_id
+  relations:
+    org: org_id
+shares:
+  type: document
+  id: doc_id
+  read: viewer
+  write: editor
+  relations:
+    shared_with: {subject: user_id, until: expires_at}</span>
 $$);</code></pre>
 <pre data-engine-show="spicedb"><code><span class="c">-- who is asking: the token's sub, as PostgREST sets it</span>
 select authz.configure(subject => 'jwt');
 
-<span class="c">-- the schema, in SpiceDB's own syntax; its pg_auth: notes protect and relate the tables</span>
+<span class="c">-- the schema, in SpiceDB's own syntax, and the mapping of the tables it decides on</span>
 select authz.set_rules('spicedb', 'schema', $$
 use expiration
 
 definition user {}
 
 definition org {
-  <span class="n">// pg_auth: rows of memberships (org_id, role, user_id)</span>
-  <span class="n">// pg_auth: protects memberships (org_id): read can_read, write can_manage</span>
   relation admin: user
   relation member: user
   permission can_read = member + admin
@@ -118,22 +133,37 @@ definition org {
 }
 
 definition document {
-  <span class="n">// pg_auth: protects documents (id): read viewer, write editor, insert org#can_manage from org_id</span>
-  <span class="n">// pg_auth: protects shares (doc_id): read viewer, write editor</span>
-  <span class="n">// pg_auth: org from documents.org_id</span>
-  <span class="n">// pg_auth: shared_with from shares(doc_id).user_id: until expires_at</span>
   relation org: org
   relation shared_with: user | user with expiration
   permission viewer = shared_with + org-&gt;can_read
   permission editor = org-&gt;can_manage
 }
+$$, mapping => $$
+<span class="n">memberships:
+  type: org
+  id: org_id
+  read: can_read
+  write: can_manage
+  rows: {object: org_id, relation: role, subject: user_id}
+documents:
+  read: viewer
+  write: editor
+  insert: org#can_manage from org_id
+  relations:
+    org: org_id
+shares:
+  type: document
+  id: doc_id
+  read: viewer
+  write: editor
+  relations:
+    shared_with: {subject: user_id, until: expires_at}</span>
 $$);</code></pre>
 <pre data-engine-show="cerbos"><code><span class="c">-- who is asking: the token's sub, its role claim as the role</span>
 select authz.configure(subject => 'jwt');
 
-<span class="c">-- the policy, in Cerbos's own syntax; its pg_auth: note protects the table</span>
+<span class="c">-- the policy, in Cerbos's own syntax, and the mapping of the table it decides on</span>
 select authz.set_rules('cerbos', 'resource/document', $$
-<span class="n"># pg_auth: protects documents (id): read view, write edit, attributes (owner, status)</span>
 apiVersion: api.cerbos.dev/v1
 resourcePolicy:
   version: default
@@ -156,36 +186,59 @@ resourcePolicy:
       condition:
         match:
           expr: request.resource.attr.owner == request.principal.id
+$$, mapping => $$
+<span class="n">documents:
+  read: view
+  write: edit
+  attributes: [owner, status]</span>
 $$);</code></pre>
 <pre data-engine-show="cedar"><code><span class="c">-- who is asking: the token's sub, a Cedar User</span>
 select authz.configure(subject => 'jwt', subject_type => 'User');
 
 <span class="c">-- the schema and the policies, in Cedar's own syntax, which the sidecar runs itself;</span>
-<span class="c">-- the schema's pg_auth: notes protect and relate the tables</span>
+<span class="c">-- the schema is stored with the mapping of the tables they decide on</span>
 select authz.set_rules('cedar', 'schema', $$
 <span class="c">// The demo's organisations in Cedar, which the sidecar runs itself: no engine server. Stored as the</span>
-<span class="c">// rule named `schema`; its notes (`pg_auth: ...`) protect and relate the tables. A membership row</span>
-<span class="c">// puts a user in its org, and in the org's admins when its role is admin; a share puts a user in</span>
-<span class="c">// the document.</span>
+<span class="c">// rule named `schema`, with the mapping of its tables (docker/demo/mappings/cedar.yaml).</span>
 
-<span class="n">// pg_auth: protects memberships (org_id): read read</span>
 entity Org;
-
-<span class="n">// pg_auth: protects memberships (org_id): read manage, write manage</span>
 entity OrgAdmins;
-
-<span class="n">// pg_auth: in from memberships(user_id).org_id: subject Org</span>
-<span class="n">// pg_auth: in from memberships(user_id).org_id: subject OrgAdmins, name admins, when role = 'admin'</span>
-<span class="n">// pg_auth: in from shares(user_id).doc_id: subject Document, until expires_at</span>
 entity User in [Org, OrgAdmins, Document];
-
-<span class="n">// pg_auth: protects documents (id): read view, write edit, attributes (org_id as org, org_id as admins)</span>
-<span class="n">// pg_auth: protects shares (doc_id): read view, write edit, attributes (org_id as org, org_id as admins)</span>
 entity Document { org: Org, admins: OrgAdmins };
 
 action read appliesTo { principal: User, resource: Org };
 action manage appliesTo { principal: User, resource: OrgAdmins };
 action view, edit appliesTo { principal: User, resource: Document };
+$$, mapping => $$
+<span class="c"># The demo's tables on Cedar, stored with its schema: a membership row puts its user in the org,</span>
+<span class="c"># and in the org's admins when its role is admin; a share puts its user in the document.</span>
+<span class="n">memberships:
+  - type: Org
+    id: org_id
+    read: read
+  - type: OrgAdmins
+    id: org_id
+    read: manage
+    write: manage
+  - type: User
+    relations:
+      in: {object: user_id, subject: org_id, subject_type: Org}
+  - type: User
+    relations:
+      in: {object: user_id, subject: org_id, subject_type: OrgAdmins, when: "role = 'admin'"}
+documents:
+  read: view
+  write: edit
+  attributes: [org_id as org, org_id as admins]
+shares:
+  - type: Document
+    id: doc_id
+    read: view
+    write: edit
+    attributes: [org_id as org, org_id as admins]
+  - type: User
+    relations:
+      in: {object: user_id, subject: doc_id, subject_type: Document, until: expires_at}</span>
 $$);
 
 select authz.set_rules('cedar', 'documents', $$
@@ -205,9 +258,9 @@ permit (principal, action == Action::"view", resource is Document) when { princi
 permit (principal, action == Action::"edit", resource is Document) when { principal in resource.admins };
 $$);</code></pre>
           </div>
-          <p class="pa-demo__setup-note">The rules stay in the engine's own syntax: pg_auth reads only the
-            <code>pg_auth:</code> notes, and the sidecar gives the rest to <span data-engine-name>OpenFGA</span> as it is.
-            Each note becomes a plain RLS policy that asks the engine, so <code>pg_policies</code> lists it.</p>
+          <p class="pa-demo__setup-note">The rules stay in the engine's own syntax, and the sidecar gives them to
+            <span data-engine-name>OpenFGA</span> as they are; pg_auth reads only the mapping. Each table in it gets a
+            plain RLS policy that asks the engine, so <code>pg_policies</code> lists it.</p>
         </div>
         {#- Before boot: step 1 as the demo printed it (OpenFGA), recorded from docker/demo; the rest
             is the visitor's to run -#}
@@ -360,19 +413,19 @@ $$);</code></pre>
     define <b>viewer</b>: shared_with or member from org</code></pre>
         </li>
         <li>
-          <p>Name the table it protects, in a comment beside it:</p>
-<pre class="pa-code"><code>type document
-  # pg_auth: protects documents (id): read <b>viewer</b></code></pre>
+          <p>Name the table it protects, in the mapping stored beside it:</p>
+<pre class="pa-code"><code>documents:
+  read: <b>viewer</b></code></pre>
         </li>
       </ol>
     </div>
   </div>
   <p class="pa-proof">
     Sharing with a team or adding a role is a change to the model, or a row in a table: there is no
-    policy to edit. The model lives with your migrations: <code>authz.set_rules</code> stores it,
-    its notes protect the tables, the sidecar sends it to the engine, and a note naming a
-    permission the model does not define fails to commit.
-    <a href="{{ 'usage/#3-the-rules-and-their-notes' | url }}">The rules and their notes</a>
+    policy to edit. The model lives with your migrations: <code>authz.set_rules</code> stores it
+    with its mapping, which protects the tables; the sidecar sends the model to the engine, and a
+    mapping naming a permission the model does not define fails to commit.
+    <a href="{{ 'usage/#3-the-rules-and-their-mapping' | url }}">The rules and their mapping</a>
   </p>
 </section>
 
@@ -421,45 +474,45 @@ $$);</code></pre>
 </section>
 
 {# bench:stats:start #}
-{% set bench = {"ratio": 0.80, "pairs": 489, "scenarios": 35} %}
+{% set bench = {"ratio": 0.79, "pairs": 489, "scenarios": 35} %}
 {# bench:stats:end #}
 {# bench:rows:start #}
 {% set rows = [
-  ("hierarchical-permissions", 0.21, 0),
-  ("nested-rls-chain", 0.22, 1),
+  ("nested-rls-chain", 0.20, 0),
   ("order-by-limit-selective-policy", 0.24, 0),
-  ("supabase-storage-paths", 0.34, 0),
-  ("secdef-helper-oracle", 0.38, 0),
-  ("large-membership-array-overhead", 0.39, 1),
-  ("supabase-owner-or-role", 0.46, 0),
-  ("saas-project-hierarchy", 0.54, 0),
-  ("marketplace-two-party-orders", 0.59, 0),
-  ("large-events-timeseries", 0.71, 0),
-  ("larger-than-memory", 0.79, 0),
-  ("rls-write-path", 0.85, 0),
-  ("membership-subplan-no-pullup", 0.87, 1),
-  ("jwt-claims-parsed-per-row", 0.90, 2),
-  ("drive-nested-group-sharing", 0.92, 0),
-  ("supabase-chat-rooms", 0.93, 3),
-  ("partitioned-rls-no-pruning", 0.94, 1),
-  ("prepared-plan-role-revalidation", 0.97, 2),
-  ("large-fulltext-search", 0.98, 4),
-  ("update-delete-bulk-rls-cost", 1.04, 0),
-  ("non-leakproof-operators-lose-index", 1.05, 1),
-  ("per-row-function-in-policy", 1.06, 2),
-  ("policy-recursion-42p17", 1.06, 3),
-  ("rls-bypass-paths", 1.06, 4),
-  ("org-membership", 1.07, 5),
-  ("leaky-function-and-leakproof-marking", 1.17, 0),
-  ("join-two-rls-tables", 1.23, 1),
-  ("supabase-claims-rbac", 1.32, 0),
-  ("view-owner-bypass", 1.33, 1),
-  ("rls-best-case-tenant-column", 1.38, 2),
-  ("pool-session-state-leak", 1.56, 0),
-  ("update-select-coupling", 1.60, 1),
-  ("partition-direct-access", 1.64, 2),
-  ("tenant-skew-bad-estimates", 1.68, 0),
-  ("missing-policy-index", 1.70, 3),
+  ("hierarchical-permissions", 0.25, 1),
+  ("large-membership-array-overhead", 0.31, 0),
+  ("supabase-storage-paths", 0.35, 0),
+  ("secdef-helper-oracle", 0.45, 0),
+  ("saas-project-hierarchy", 0.47, 1),
+  ("supabase-owner-or-role", 0.47, 2),
+  ("marketplace-two-party-orders", 0.63, 0),
+  ("large-events-timeseries", 0.68, 0),
+  ("larger-than-memory", 0.70, 1),
+  ("rls-write-path", 0.78, 0),
+  ("membership-subplan-no-pullup", 0.81, 1),
+  ("drive-nested-group-sharing", 0.91, 0),
+  ("supabase-chat-rooms", 0.95, 1),
+  ("large-fulltext-search", 0.96, 2),
+  ("partitioned-rls-no-pruning", 0.97, 3),
+  ("prepared-plan-role-revalidation", 0.98, 0),
+  ("view-owner-bypass", 0.98, 4),
+  ("org-membership", 1.01, 5),
+  ("rls-bypass-paths", 1.08, 0),
+  ("update-delete-bulk-rls-cost", 1.09, 1),
+  ("non-leakproof-operators-lose-index", 1.13, 2),
+  ("leaky-function-and-leakproof-marking", 1.15, 3),
+  ("policy-recursion-42p17", 1.15, 4),
+  ("rls-best-case-tenant-column", 1.28, 0),
+  ("update-select-coupling", 1.33, 1),
+  ("supabase-claims-rbac", 1.35, 2),
+  ("per-row-function-in-policy", 1.36, 3),
+  ("missing-policy-index", 1.51, 0),
+  ("pool-session-state-leak", 1.60, 1),
+  ("partition-direct-access", 1.61, 2),
+  ("jwt-claims-parsed-per-row", 1.73, 0),
+  ("join-two-rls-tables", 1.81, 1),
+  ("tenant-skew-bad-estimates", 1.87, 0),
 ] %}
 {# bench:rows:end #}
 <section class="pa-section pa-expect" id="cost">
@@ -470,8 +523,9 @@ $$);</code></pre>
       <p>
         Overall, {{ '%.2f' | format(bench.ratio) }}x the time of a best-practice policy, planning and
         execution together: {{ bench.scenarios }} scenarios taken from problems people hit with row
-        level security, {{ bench.pairs }} query and subject pairs, measured with OpenFGA (0.78x with
-        SpiceDB). Statements
+        level security, {{ bench.pairs }} query and subject pairs, measured with OpenFGA (0.93x with
+        SpiceDB; 0.69x with Cerbos and 0.79x with Cedar on the scenarios their rules express).
+        Statements
         that finish in well under a millisecond pay for pg_auth's planning work, so expect those to
         take somewhat longer. A rule on a row's own values (a report's level against a reader's
         clearance) is checked row by row on OpenFGA: fine for reads by key, slow for scans.
@@ -557,7 +611,7 @@ $$);</code></pre>
     <h2 class="pa-h2">Try it on your own Postgres</h2>
     <p class="pa-sub">
       Build the extension, preload it, run the sidecar pointed at your engine (beside Postgres, or on
-      its own host over HTTPS), and store your rules with a note naming the table they protect.
+      its own host over HTTPS), and store your rules with a mapping naming the tables they protect.
     </p>
     <a class="pa-btn pa-btn--primary" href="{{ 'usage/' | url }}">Getting started</a>
   </div>
@@ -570,10 +624,8 @@ create extension pg_auth;
 alter system set pg_auth.sidecar_socket = '/run/pg_auth/default.sock';
 select pg_reload_conf();
 select authz.configure(subject => 'jwt');
-select authz.set_rules('openfga', 'model', $$
-type document
-  # pg_auth: protects documents (id): read viewer, write editor
-  ...
+select authz.set_rules('openfga', 'model', $$ ... $$, mapping => $$
+documents: {read: viewer, write: editor}
 $$);</code></pre>
 </section>
 {% endblock %}

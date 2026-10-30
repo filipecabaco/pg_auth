@@ -10,7 +10,7 @@
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
 dir = Path.join(__DIR__, "lib")
-for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
+for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
 
 defmodule Remote do
   alias Compare.{Docker, Stack}
@@ -440,7 +440,8 @@ defmodule Remote do
     ])
 
     {name, file} = @files["cerbos"]
-    Postgrex.query!(conn, "select authz.set_rules($1, $2, $3)", ["cerbos", name, File.read!(Path.join(@rules, file))])
+    Postgrex.query!(conn, "select authz.set_rules($1, $2, $3, mapping => $4)",
+      ["cerbos", name, File.read!(Path.join(@rules, file)), File.read!(Path.join(@rules, "../mappings/cerbos.yaml"))])
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.rules() where pushed_at is null", []).rows == [[0]] end) ||
       raise("rules not pushed")
   end
@@ -456,7 +457,7 @@ defmodule Remote do
     ])
 
     {name, file} = @files[engine]
-    Postgrex.query!(conn, "select authz.set_rules($1, $2, $3)", [engine, name, File.read!(Path.join(@rules, file))])
+    Postgrex.query!(conn, "select authz.set_rules($1, $2, $3, mapping => $4)", [engine, name, File.read!(Path.join(@rules, file)), File.read!(Path.join(@rules, "../mappings/#{engine}.yaml"))])
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.rules() where pushed_at is null", []).rows == [[0]] end) ||
       raise("rules not pushed")
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz_internal.outbox where not_before is null", []).rows == [[0]] end) ||

@@ -24,12 +24,13 @@ create trigger share_org before insert or update of doc_id on shares for each ro
 insert into documents values (1, 1, 'Roadmap'), (2, 1, 'Budget'), (3, 1, 'Launch plan'), (4, 2, 'Hiring'), (5, 2, 'Pricing');
 insert into memberships values (1, 'anne', 'admin'), (2, 'carl', 'admin');
 
--- the schema and the policies, in Cedar's own syntax: the schema's notes protect these tables and
--- make their rows parents (a member in an org, a user in a shared document)
+-- the schema and the policies, in Cedar's own syntax, and with the schema the mapping that
+-- protects these tables and makes their rows parents (a member in an org, a user in a document)
 \set schema `cat /etc/demo/rules/cedar.cedarschema`
 \set policies `cat /etc/demo/rules/cedar.cedar`
+\set mapping `cat /etc/demo/mappings/cedar.yaml`
 begin;
-select authz.set_rules('cedar', 'schema', :'schema');
+select authz.set_rules('cedar', 'schema', :'schema', mapping => :'mapping');
 select authz.set_rules('cedar', 'documents', :'policies');
 commit;
 

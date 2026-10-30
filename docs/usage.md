@@ -62,7 +62,7 @@ them (roles belong to the cluster: a second database finds them, and `drop exten
 |---|---|---|
 | `authz` | what queries call (`permits` and the helpers the planner writes into them), and what people call: `set_rules`, `configure`, `why`, `doctor`, `status`, `check`, `lint`, `can`, `current_subject`, `explain` | every role; its admin functions only by `authz_admin` |
 | `authz_sidecar` | the sidecar's functions: claiming relationship changes, pushing rules, filling the permission index | `authz_sidecar` |
-| `authz_internal` | the tables, and the lower-level setup the notes compile into (`protect`, `relate`, `setup`, section 4) | `authz_admin` |
+| `authz_internal` | the tables, and what a mapping compiles into (internal: `set_rules` calls it as the migrating role, which must own the tables it protects) | `authz_admin` |
 
 ```sql
 grant authz_admin to migrations;                                       -- stores the rules, configures pg_auth
@@ -109,39 +109,54 @@ select authz.configure(subject => 'guc');      -- pg_auth.subject_id, set by a t
 No subject means no rows. `select * from authz.current_subject()` says who pg_auth sees and
 why.
 
-## 3. The rules and their notes
+## 3. The rules and their mapping
 
-The setup is the engine's rules, in the engine's own syntax, kept in Postgres with
-`authz.set_rules`. Comments starting `pg_auth:` say which tables they protect and which tables'
-rows are relationships. The engine reads them as comments; pg_auth reads only them. This is the
-whole setup of the demo on the home page, on OpenFGA:
+The setup is the engine's rules, in the engine's own syntax, and the mapping of the tables they
+decide on, both kept in Postgres with `authz.set_rules`. The mapping says, in YAML, which tables
+hold which types, what reading and writing a row asks, and which tables' rows are relationships;
+the rules go to the engine as they are. This is the whole setup of the demo on the home page, on
+OpenFGA:
 
 ```sql
 select authz.configure(subject => 'jwt');
 
-select authz.set_rules('openfga', 'model', $$
+select authz.set_rules('openfga', 'model', $fga$
 model
   schema 1.1
 type user
 type org
-  # pg_auth: rows of memberships (org_id, role, user_id)
-  # pg_auth: protects memberships (org_id): read can_read, write can_manage
   relations
     define admin: [user]
     define member: [user]
     define can_read: member or admin
     define can_manage: admin
 type document
-  # pg_auth: protects documents (id): read viewer, write editor, insert org#can_manage from org_id
-  # pg_auth: protects shares (doc_id): read viewer, write editor
-  # pg_auth: org from documents.org_id
-  # pg_auth: shared_with from shares(doc_id).user_id: until expires_at
   relations
     define org: [org]
     define shared_with: [user]
     define viewer: shared_with or can_read from org
     define editor: can_manage from org
-$$);
+$fga$, mapping => $yaml$
+memberships:
+  type: org
+  id: org_id
+  read: can_read
+  write: can_manage
+  rows: {object: org_id, relation: role, subject: user_id}
+documents:
+  read: viewer
+  write: editor
+  insert: org#can_manage from org_id
+  relations:
+    org: org_id
+shares:
+  type: document
+  id: doc_id
+  read: viewer
+  write: editor
+  relations:
+    shared_with: {subject: user_id, until: expires_at}
+$yaml$);
 ```
 
 When the transaction commits, the three tables are protected, the rows of `memberships`,
@@ -149,37 +164,12 @@ When the transaction commits, the three tables are protected, the rows of `membe
 membership inserted through PostgREST then shows its org's documents to the new member, and a
 share shows until its `expires_at`.
 
-The same setup on SpiceDB, an attribute policy on Cerbos, and Cedar after them:
+The mapping is the same for every engine. On SpiceDB it is this one, word for word, with the
+schema in SpiceDB's syntax (`docker/demo/mappings/spicedb.yaml`). An attribute policy on Cerbos
+maps its table and the attributes it reads:
 
 ```sql
-select authz.set_rules('spicedb', 'schema', $$
-use expiration
-
-definition user {}
-
-definition org {
-  // pg_auth: rows of memberships (org_id, role, user_id)
-  // pg_auth: protects memberships (org_id): read can_read, write can_manage
-  relation admin: user
-  relation member: user
-  permission can_read = member + admin
-  permission can_manage = admin
-}
-
-definition document {
-  // pg_auth: protects documents (id): read viewer, write editor, insert org#can_manage from org_id
-  // pg_auth: protects shares (doc_id): read viewer, write editor
-  // pg_auth: org from documents.org_id
-  // pg_auth: shared_with from shares(doc_id).user_id: until expires_at
-  relation org: org
-  relation shared_with: user | user with expiration
-  permission viewer = shared_with + org->can_read
-  permission editor = org->can_manage
-}
-$$);
-
-select authz.set_rules('cerbos', 'resource/document', $$
-# pg_auth: protects documents (id): read view, write edit, attributes (owner, status)
+select authz.set_rules('cerbos', 'resource/document', $cerbos$
 apiVersion: api.cerbos.dev/v1
 resourcePolicy:
   version: default
@@ -200,133 +190,155 @@ resourcePolicy:
       condition:
         match:
           expr: request.resource.attr.owner == request.principal.id
-$$);
+$cerbos$, mapping => $yaml$
+documents:
+  read: view
+  write: edit
+  attributes: [owner, status]
+$yaml$);
 ```
 
-On Cedar, the schema is the rule named `schema`, and its notes protect and relate the tables; every
-other rule holds policies. A parent is the relation `in`: the object is in the subject. The
-subject is a `User`, since Cedar's types are capitalised, and a share carries its document's org,
-which the policy reads (the demo fills it in with a trigger, `docker/demo/sql/cedar.sql`):
+On Cedar, the rule named `schema` is the schema and carries the mapping; every other rule holds
+policies. A relationship is the relation `in`: the object is in the subject. The subject is a
+`User`, since Cedar's types are capitalised, and a share carries its document's org, which the
+policy reads (the demo fills it in with a trigger, `docker/demo/sql/cedar.sql`):
 
 ```sql
 select authz.configure(subject => 'jwt', subject_type => 'User');
 
-select authz.set_rules('cedar', 'schema', $$
-// pg_auth: protects memberships (org_id): read read
+select authz.set_rules('cedar', 'schema', $cedar$
 entity Org;
-// pg_auth: protects memberships (org_id): read manage, write manage
 entity OrgAdmins;
-// pg_auth: in from memberships(user_id).org_id: subject Org
-// pg_auth: in from memberships(user_id).org_id: subject OrgAdmins, name admins, when role = 'admin'
-// pg_auth: in from shares(user_id).doc_id: subject Document, until expires_at
 entity User in [Org, OrgAdmins, Document];
-// pg_auth: protects documents (id): read view, write edit, attributes (org_id as org, org_id as admins)
-// pg_auth: protects shares (doc_id): read view, write edit, attributes (org_id as org, org_id as admins)
 entity Document { org: Org, admins: OrgAdmins };
 action read appliesTo { principal: User, resource: Org };
 action manage appliesTo { principal: User, resource: OrgAdmins };
 action view, edit appliesTo { principal: User, resource: Document };
-$$);
+$cedar$, mapping => $yaml$
+memberships:
+  - {type: Org, id: org_id, read: read}
+  - {type: OrgAdmins, id: org_id, read: manage, write: manage}
+  - type: User
+    relations:
+      in: {object: user_id, subject: org_id, subject_type: Org}
+  - type: User
+    relations:
+      in: {object: user_id, subject: org_id, subject_type: OrgAdmins, when: "role = 'admin'"}
+documents:
+  read: view
+  write: edit
+  attributes: [org_id as org, org_id as admins]
+shares:
+  - {type: Document, id: doc_id, read: view, write: edit, attributes: [org_id as org, org_id as admins]}
+  - type: User
+    relations:
+      in: {object: user_id, subject: doc_id, subject_type: Document, until: expires_at}
+$yaml$);
 
-select authz.set_rules('cedar', 'documents', $$
+select authz.set_rules('cedar', 'documents', $cedar$
 permit (principal, action == Action::"read", resource is Org) when { principal in resource };
 permit (principal, action == Action::"manage", resource is OrgAdmins) when { principal in resource };
 permit (principal, action == Action::"view", resource is Document) when { principal in resource.org };
 permit (principal, action == Action::"view", resource is Document) when { principal in resource };
 permit (principal, action == Action::"edit", resource is Document) when { principal in resource.admins };
-$$);
+$cedar$);
 ```
 
-Each note becomes a plain RLS policy on its table that only asks pg_auth
+Each protected table gets plain RLS policies that only ask pg_auth
 (`authz.permits('document', 'viewer', id)`), so `pg_policies` lists them; pg_auth's planner hook
 turns them into an indexable filter or a batched check. The policies hold no rule of their own:
-the engine decides every row (`compare/notes.exs` changes the engine behind Postgres's back and
+the engine decides every row (`compare/demo.exs` changes the engine behind Postgres's back and
 the rows follow).
 
-### Where a note goes
+**Rules kept in the engine itself** (Cerbos Hub, a model managed elsewhere) are stored without a
+body: `authz.set_rules('openfga', 'model', null, mapping => ...)` sets up the tables and pushes
+nothing. pg_auth cannot read such rules, so the mapping names every type and every subject type
+(`type:`, `subject_type:`).
 
-A note belongs to the type it sits in:
+### The mapping
 
-- **OpenFGA:** a `#` comment inside a `type` block. A model stored as JSON has no comments, so no
-  notes.
-- **SpiceDB:** a `//` comment inside a `definition`'s braces, or the comment just before it
-  (`/** ... */` too).
-- **Cerbos:** a `#` comment anywhere in the policy; it belongs to the policy's resource. Cerbos
-  keeps no relationships: its only note is `protects`.
-- **Cedar:** a `//` comment in the schema, inside an `entity` declaration or just before it; an
-  entity declared with others (`entity A, B;`) takes none. Its relation is `in`, the object in
-  the subject (`in from memberships(user_id).org_id: subject Org`). Notes in policies are refused.
-
-### Protecting a table: `protects`
-
-```text
-protects <table> (<id>): read <permission>[, <clause>, ...]
+```yaml
+<table>:                         # one entry, or a list of them (a table protected or related twice)
+  type: <type>                   # default: the table's name, singular or plural, when the rules have it
+  id: <column or expression>     # default: its primary key
+  read: <permission>             # what reading a row asks; a protected table needs it
+  write: <permission>            # what inserting, updating and deleting asks; without it, denied
+  update: <permission>           # and delete: their own permission
+  insert: <type>#<permission> from <column>   # inserts checked on a parent
+  attributes: [<column>, <column> as <name>]  # the values the rules read
+  tree: <table>(<id>, <parent>) from <permission>   # a permission inherited down a tree
+  relations:                     # rows that are relationships of this type
+    <relation>: <subject column>
+    <relation>: {subject: <column>, subject_type: <type>, until: <column>, when: <sql>, ...}
+  rows: {object: <column>, relation: <column>, subject: <column>}   # the relation in a column
 ```
 
-The table's rows are objects of the note's type, with `<id>` their id: a column (the row's own
-id, or a parent's such as `org_id`), or an IMMUTABLE expression over the row
-(`protects objects (split_part(name, '/', 1)): read viewer`, a storage path's first folder).
-Index it as you would for RLS. Partitions created later are protected too.
+A key it does not know, a type, relation or permission the rules do not have, or a column the
+table does not have fails when the transaction commits, naming the table and what the rules have.
 
-| clause | |
-|---|---|
-| `read <permission>` | required: the permission to read a row |
-| `write <permission>` | to insert, update and delete; without it, writes are denied |
-| `update <permission>`, `delete <permission>` | their own permission (GitHub: push to update, delete to delete) |
-| `insert <type>#<permission> from <column>` | inserts checked on the parent: a table protected by its own id cannot authorize an INSERT, the engine has no object yet (`insert project#create from project_id`) |
-| `attributes (<column>, <column> as <name>)` | the row's values the rules read: Cerbos's attributes, or a condition's parameters (below) |
-| `tree <table>(<id>, <parent>) from <permission>` | a permission inherited down a tree the app stores |
-
-- **Several ways to reach a row** (an order visible to its buyer, or to its seller's staff): one
-  `protects` note per way, in each type. A row is visible when any allows it.
-- **A tree** (folders with `parent_id`): `protects folders (id): read viewer, tree folders(id,
-  parent_id) from viewer_direct`, with the model reading `viewer: viewer_direct or viewer from
-  parent`. The engine lists only direct grants and Postgres expands them; triggers keep a closure
-  of the tree.
-- **Rules on the row's own attributes** (Cerbos): `attributes (owner_id, status)` sends those
-  columns as the resource's attributes, `owner_id as ownerId` under another name. Cerbos's plan for
-  the subject (always, never, or a condition on the attributes) is compiled into a filter on those
-  columns: indexes serve it as they serve RLS, and a cached plan serves every subject whose plan has
-  the same shape. A condition Cerbos expresses with more than comparisons, `and`, `or`, `not` and
-  `in` is evaluated per row. The principal's roles come from the claim `roles_claim` (default
-  `role`; `authz.configure(roles_claim => 'app_metadata.roles')`) or, with `subject => 'guc'`, from
-  `pg_auth.subject_roles` (comma separated, superuser-only like `pg_auth.subject_id`); its
-  attributes are the token's claims. **Scoped policies** (a tenant's overrides, `scope:` in the
-  policy) need the request's scope: `authz.configure(scope_claim => 'tenant_id')` sends that claim
-  as Cerbos's scope (`pg_auth.subject_scope` for a session subject; `policy_version` for a version
-  other than `default`). Without one, a scoped override does not apply; `authz.doctor()` says so.
+- **The id** is a column (the row's own id, or a parent's such as `org_id`), or an IMMUTABLE
+  expression over the row (`id: "split_part(name, '/', 1)"`, a storage path's first folder).
+  Index it as you would for RLS. Partitions created later are protected too.
+- **Several ways to reach a row** (an order visible to its buyer, or to its seller's staff): a
+  list of entries, one per way, each with its type. A row is visible when any allows it.
+- **An insert checked on a parent:** a table protected by its own id cannot authorize an INSERT,
+  the engine has no object yet (`insert: project#create from project_id`).
+- **A tree** (folders with `parent_id`): `tree: folders(id, parent_id) from viewer_direct`, with the
+  model reading `viewer: viewer_direct or viewer from parent`. The engine lists only direct grants
+  and Postgres expands them; triggers keep a closure of the tree.
+- **Rules on the row's own attributes** (Cerbos, Cedar): `attributes: [owner_id, status]` sends
+  those columns as the resource's attributes, `owner_id as ownerId` under another name. The
+  engine's plan for the subject (always, never, or a condition on the attributes) is compiled into
+  a filter on those columns: indexes serve it as they serve RLS, and a cached plan serves every
+  subject whose plan has the same shape. A condition the engine expresses with more than
+  comparisons, `and`, `or`, `not` and `in` is evaluated per row. The principal's roles come from
+  the claim `roles_claim` (default `role`; `authz.configure(roles_claim => 'app_metadata.roles')`)
+  or, with `subject => 'guc'`, from `pg_auth.subject_roles` (comma separated, superuser-only like
+  `pg_auth.subject_id`); its attributes are the token's claims. **Scoped policies** (Cerbos: a
+  tenant's overrides, `scope:` in the policy) need the request's scope:
+  `authz.configure(scope_claim => 'tenant_id')` sends that claim as Cerbos's scope
+  (`pg_auth.subject_scope` for a session subject; `policy_version` for a version other than
+  `default`). Without one, a scoped override does not apply; `authz.doctor()` says so.
 - **Row state** (`not deleted`, `published`) stays plain SQL: add an ordinary restrictive policy
   next to pg_auth's; it joins the scan's filter.
 
-### Rows that are relationships: `rows of` and `<relation> from`
+### Rows that are relationships
 
 An app with no backend changes who may see what by writing rows, through PostgREST like any other
-table: a membership, a share, a team. Two notes make a table's rows relationships in the engine
-(OpenFGA or SpiceDB), and pg_auth delivers each change:
+table: a membership, a share, a team. The mapping makes a table's rows relationships in the
+engine (OpenFGA, SpiceDB, or Cedar's parents), and pg_auth delivers each change:
 
-```text
-rows of memberships (org_id, role, user_id)             -- org:<org_id>#<role>@user:<user_id>
-org from documents.org_id                               -- document:<id>#org@org:<org_id>
-shared_with from shares(doc_id).user_id                 -- document:<doc_id>#shared_with@user:<user_id>
+```yaml
+memberships:
+  type: org
+  rows: {object: org_id, relation: role, subject: user_id}   # org:<org_id>#<role>@user:<user_id>
+documents:
+  relations:
+    org: org_id                                               # document:<id>#org@org:<org_id>
+shares:
+  type: document
+  relations:
+    shared_with: {object: doc_id, subject: user_id}           # document:<doc_id>#shared_with@user:<user_id>
 ```
 
-- `rows of <table> (<object>, <relation>, <subject>)` reads the relation from the middle column.
-  The relations a row may name are the ones in the model that take the subject; a row naming
-  another fails at once (`check_violation`), where the app sees it, instead of the engine refusing
-  it after the commit.
-- `<relation> from <table>[(<object>)].<subject>` writes one relation. The object column defaults
-  to the column the table is protected by, else its single-column primary key.
-- The subject's type comes from the model (the relation's one directly related type). Clauses say
-  otherwise, after a colon:
+- `rows` reads the relation from a column. The relations a row may name are the ones in the rules
+  that take the subject; a row naming another fails at once (`check_violation`), where the app sees
+  it, instead of the engine refusing it after the commit.
+- `relations` writes one relation per entry. The object is the entry's `id`, or `object`, else the
+  table's single-column primary key.
+- The subject's type comes from the rules (the relation's one directly related type). A
+  relation's keys say otherwise:
 
-| clause | |
+| key | |
 |---|---|
-| `subject <type>`, `subject <type>#<relation>` | the subject's type, or a userset (`subject team#member`: the team's members) |
-| `subject <type>:*` | everyone (`user:*`): no subject column (`viewer from shares(doc_id): subject user:*, when public`) |
-| `until <column>` | the relationship ends at the row's timestamp (null: for good) |
-| `condition <name>(<parameter> = <column>, ...)` | written with an OpenFGA condition or SpiceDB caveat, the row giving those parameters |
-| `when <SQL>` | only rows matching it; takes the rest of the note (one `shares` table for users, teams and the public, one note per kind) |
-| `name <name>` | the declaration's name, when the generated `<type>_<relation>` is not wanted |
+| `subject` | the subject's column |
+| `subject_type`, `subject_relation` | the subject's type, or a userset (`subject_type: team, subject_relation: member`: the team's members) |
+| `subject_id` | a fixed subject, `'*'` for everyone (`user:*`): no subject column |
+| `object` | the object's column, when not the entry's id |
+| `until` | the relationship ends at the row's timestamp (null: for good) |
+| `condition` | written with an OpenFGA condition or SpiceDB caveat, the row giving its parameters (`{name: in_region, with: {allowed: regions}}`) |
+| `when` | only rows matching this SQL (one `shares` table for users, teams and the public, one entry per kind) |
+| `name` | the declaration's name, when the generated `<type>_<relation>` is not wanted |
 
 - **Write to relations, read permissions.** The rows write plain relations (`admin`, `member`,
   `shared_with`); tables are protected by permissions computed from them (`viewer: shared_with or
@@ -355,9 +367,15 @@ shared_with from shares(doc_id).user_id                 -- document:<doc_id>#sha
     region in allowed
   }
   type doc
-    # pg_auth: viewer from shares(doc_id).user_id: condition in_region(allowed = regions)
     relations
       define viewer: [user, user with in_region]
+  ```
+
+  ```yaml
+  shares:
+    type: doc
+    relations:
+      viewer: {object: doc_id, subject: user_id, condition: {name: in_region, with: {allowed: regions}}}
   ```
 
   ```sql
@@ -378,8 +396,7 @@ shared_with from shares(doc_id).user_id                 -- document:<doc_id>#sha
     in particular. Broad subjects are then checked row by row.
   - **The protected row's own values.** A condition can also take values from the row being read
     (a report's level against a reader's clearance): protect the table with them as attributes,
-    named as the condition's parameters (`protects reports (id): read viewer, attributes
-    (level)`). What that costs depends on the engine, since an engine's list cannot take a value
+    named as the condition's parameters (`reports: {read: viewer, attributes: [level]}`). What that costs depends on the engine, since an engine's list cannot take a value
     per row:
 
     | engine | how rows are decided | expect |
@@ -393,30 +410,33 @@ shared_with from shares(doc_id).user_id                 -- document:<doc_id>#sha
   on.
 - **Needs** the sidecar's `PG_AUTH_DATABASE_URL` (as for the permission index), and a unique key
   over the columns, so two rows are never one relationship. Rows already in the table are
-  delivered when the note first appears.
+  delivered when the mapping first names the table.
 
 ### Versions, pushes and checks
 
 ```sql
-select engine, name, version, pushed_at, error from authz.rules();   -- the versions in force
-select jsonb_pretty(authz_internal.setup());                         -- what the notes set up
+select engine, name, version, mapping, pushed_at, error from authz.rules();   -- the versions in force
+select jsonb_pretty(authz_internal.setup());                                  -- what the mappings set up
 ```
 
 - **Versions.** Every change is a new version in `authz_internal.rules`, with who stored it and when; the
-  same text again is not one. `authz.rules()` shows the latest of each, `body` included. A
-  migration carries the rules with the tables they protect, and they are reviewed as written.
-- **What changes.** A new version sets up what its notes say: a note removed removes its
-  protection or relationship table, one unchanged is left as it is (its rows are not delivered
-  again).
+  same rules and mapping again are not one. `authz.rules()` shows the latest of each, `body` and
+  `mapping` included. A migration carries the rules and their mapping with the tables they
+  protect, and they are reviewed as written.
+- **What changes.** A new version sets up what its mapping says: a table it no longer names loses
+  its protection or stops being a relationship table, one unchanged is left as it is (its rows are
+  not delivered again). A version changing only the mapping is not pushed again: the engine has
+  its rules already. Rules stored with no mapping keep the one before, so updating the rules alone
+  leaves the tables as they are; `mapping => ''` removes it.
 - **Pushed.** The sidecar pushes the latest version within milliseconds (OpenFGA: a new
   authorization model, which it then reads with; SpiceDB: WriteSchema; Cerbos: its Admin API), and
   every backend asks again, since new rules may change any answer. Each push is recorded in
   `pushed_at`. Relationships wait for the rules they need: none is delivered while that engine's
   rules are not pushed.
-- **Checked.** The notes are applied when the rules are stored, so their tables and columns must
-  exist by then, and a note that does not parse fails at once, naming its line. A note naming a
-  type or permission the rules do not have fails when the transaction commits, naming what they
-  have:
+- **Checked.** The mapping is applied when the rules are stored, so its tables and columns must
+  exist by then, and a mapping that is not YAML, or names a key it does not take, fails at once,
+  naming its table. A mapping naming a type or permission the rules do not have fails when the
+  transaction commits, naming what they have:
 
   ```text
   ERROR:  the setup names what the rules stored with authz.set_rules do not have:
@@ -436,7 +456,7 @@ select jsonb_pretty(authz_internal.setup());                         -- what the
   Store a corrected version to replace it.
 - **OpenFGA's DSL** is converted to the API's JSON by the sidecar (schema 1.1: types, relations,
   `[user, user:*, team#member, user with in_region]`, `or`, `and`, `but not`, `from`, conditions);
-  modules are refused. JSON is taken as is, without notes.
+  modules are refused. JSON is taken as is.
 - **Every sidecar follows them.** The engine's id for the rules in force (OpenFGA's model, SpiceDB's
   schema revision) is kept beside them, and every sidecar asks with it from the next request, not
   only the one that pushed them.
@@ -454,45 +474,25 @@ select jsonb_pretty(authz_internal.setup());                         -- what the
 ## 4. Rules managed in the engine itself
 
 Rules kept in the engine, or in a policy directory or git store Cerbos reads, stay there: pg_auth
-pushes only what `authz.set_rules` stored. The notes are then written as calls, the lower level the
-notes compile into, in `authz_internal` (for `authz_admin`). `authz_internal.setup(jsonb)` takes the whole setup as one document, applies it in one
-transaction and keeps every version (`authz_internal.setups`); `authz_internal.protect` and `authz_internal.relate` declare
-one table at a time:
+pushes only what `authz.set_rules` stored. Store their mapping alone, with no body:
 
 ```sql
-select authz_internal.setup($${
-  "subject": {"source": "jwt", "claim": "sub"},
-  "relationships": [
-    {"table": "app.memberships", "object": {"type": "org", "column": "org_id"},
-     "relation": {"column": "role", "allowed": ["admin", "member"]},
-     "subject": {"type": "user", "column": "user_id"}},
-    {"table": "app.shares", "object": {"type": "doc", "column": "doc_id"}, "relation": "viewer",
-     "subject": {"type": "user", "column": "user_id"}, "expires": {"column": "expires_at"}}],
-  "protect": [
-    {"table": "app.docs", "type": "doc", "column": "id", "select": "viewer", "write": "editor"},
-    {"table": "app.memberships", "type": "org", "column": "org_id",
-     "select": "can_read", "write": "can_manage"}]
-}$$);
-
-select authz_internal.protect('app.docs', type => 'doc', id => 'id', read => 'viewer', write => 'editor');
-select authz_internal.relate('app.memberships', object_type => 'org', object_column => 'org_id',
-                    relation_column => 'role', subject_type => 'user', subject_column => 'user_id');
+select authz.set_rules('openfga', 'model', null, mapping => $yaml$
+docs:
+  type: doc
+  id: id
+  read: viewer
+  write: editor
+memberships:
+  type: org
+  rows: {object: org_id, relation: role, subject: user_id, subject_type: user}
+$yaml$);
 ```
 
-- A protection takes `"select"`, `"write"`, `"update"`, `"delete"`, `"insert"` (a permission, or
-  `{"type", "column", "permission"}` on the parent), `"column"` or `"key"`, `"attributes"` (a list
-  of columns, or `{"name": "column"}`), `"hierarchy"` (`{"tree", "direct"}`), `"name"` and
-  `"force"` (`false` lets the table owner bypass the policies; the notes always force them).
-- A relationship table takes `"object"`, `"relation"` (a name, or `{"column", "allowed"}`),
-  `"subject"` (`"column"` or a fixed `"id"`, `"*"` for everyone), `"by"` (one declaration per value
-  of a column), `"filter"`, `"expires"` and `"condition"` (`{"name", "context"}`).
-- `"subject"` takes `authz.configure`'s settings.
-- What the previous document declared and this one does not is removed. Unknown keys fail, naming
-  what the place takes. With rules stored but no notes in them, a setup written this way is left
-  as it is; with notes, the notes' setup replaces it.
-- `authz_internal.unbind(table)` removes pg_auth's policies from a table, `authz_internal.unrelate(table)` stops
-  delivering its rows. Store the rules before declaring tables that write their relations: the
-  engine refuses a relationship whose relation its model does not have yet.
+pg_auth cannot read rules it does not keep, so the mapping names every type (`type:`) and every
+relationship's subject type (`subject_type:`), and the commit-time check against the rules is the
+engine's to make when it is asked. Store the engine's rules before declaring tables that write
+their relations: the engine refuses a relationship whose relation its model does not have yet.
 
 ## 5. Inspect and debug
 

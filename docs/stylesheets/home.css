@@ -1335,14 +1335,14 @@
   color: #8f8f8f;
 }
 
-/* pg_auth's notes: the only lines of the rules pg_auth reads */
+/* the mapping: the only part of the setup pg_auth reads */
 .pa-demo__setup .n,
 .pa-setup .n {
   color: var(--pa-green);
   font-weight: 600;
 }
 
-/* the story column is narrow: a long note wraps rather than hides its end */
+/* the story column is narrow: a long mapping line wraps rather than hides its end */
 .pa-setup .n {
   white-space: pre-wrap;
 }

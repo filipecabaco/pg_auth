@@ -1,21 +1,9 @@
 // The demo's organisations in Cedar, which the sidecar runs itself: no engine server. Stored as the
-// rule named `schema`; its notes (`pg_auth: ...`) protect and relate the tables. A membership row
-// puts a user in its org, and in the org's admins when its role is admin; a share puts a user in
-// the document.
+// rule named `schema`, with the mapping of its tables (docker/demo/mappings/cedar.yaml).
 
-// pg_auth: protects memberships (org_id): read read
 entity Org;
-
-// pg_auth: protects memberships (org_id): read manage, write manage
 entity OrgAdmins;
-
-// pg_auth: in from memberships(user_id).org_id: subject Org
-// pg_auth: in from memberships(user_id).org_id: subject OrgAdmins, name admins, when role = 'admin'
-// pg_auth: in from shares(user_id).doc_id: subject Document, until expires_at
 entity User in [Org, OrgAdmins, Document];
-
-// pg_auth: protects documents (id): read view, write edit, attributes (org_id as org, org_id as admins)
-// pg_auth: protects shares (doc_id): read view, write edit, attributes (org_id as org, org_id as admins)
 entity Document { org: Org, admins: OrgAdmins };
 
 action read appliesTo { principal: User, resource: Org };

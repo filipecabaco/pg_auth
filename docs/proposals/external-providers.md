@@ -194,8 +194,8 @@ after another, so a cancel or `statement_timeout` still applies.
   `postgres` storage driver (the project's own database can hold it) or a file that persists. The
   sidecar could also push the version in force again when Cerbos does not have it.
 - **Cerbos Hub** manages the policies itself and gives its PDPs a read-only store: the rules stay
-  in Hub, so `authz.set_rules` and its notes do not apply, and tables are set up with
-  `authz_internal.protect`.
+  in Hub, so the rules are stored with their mapping only (`authz.set_rules('cerbos', name, null,
+  mapping => ...)`): pg_auth sets up the tables and pushes nothing.
 
 ## Questions for Supabase
 

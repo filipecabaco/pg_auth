@@ -1,6 +1,6 @@
 #!/usr/bin/env elixir
 # A logical dump (pg_dump, pg_restore) carries pg_auth's configuration: the subject settings, the
-# stored rules and what their notes set up, the protected and relationship tables, and the changes
+# stored rules and what their mapping sets up, the protected and relationship tables, and the changes
 # not yet delivered, with the outbox's sequence where it was. Postgres alone, no engine: the rules
 # wait to be pushed. See compare/README.md.
 #
@@ -11,6 +11,7 @@ defmodule Dump do
   @root Path.expand("..", __DIR__)
   @image "pg_auth-bench"
   @rules Path.expand("../docker/demo/rules/openfga.fga", __DIR__)
+  @mapping Path.expand("../docker/demo/mappings/openfga.yaml", __DIR__)
 
   # what has to be the same in the database and in its restored copy
   @compared [
@@ -48,6 +49,7 @@ defmodule Dump do
   defp setup(c) do
     sql!(c, "postgres", "create database app")
     {_, 0} = System.cmd("docker", ["cp", @rules, "#{c}:/tmp/rules.fga"])
+    {_, 0} = System.cmd("docker", ["cp", @mapping, "#{c}:/tmp/mapping.yaml"])
     sql!(c, "app", """
     create extension pg_auth;
     create role authenticated nologin;
@@ -58,7 +60,8 @@ defmodule Dump do
     insert into documents values (1, 1, 'Roadmap'), (2, 1, 'Budget');
     insert into memberships values (1, 'anne', 'admin');
     \\set rules `cat /tmp/rules.fga`
-    select authz.set_rules('openfga', 'model', :'rules');
+    \\set mapping `cat /tmp/mapping.yaml`
+    select authz.set_rules('openfga', 'model', :'rules', mapping => :'mapping');
     insert into memberships values (1, 'bob', 'member');
     """)
     [{"pg_auth set up from the demo's rules, changes waiting", "ok"}]

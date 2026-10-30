@@ -1,0 +1,29 @@
+# The demo's tables on Cedar, stored with its schema: a membership row puts its user in the org,
+# and in the org's admins when its role is admin; a share puts its user in the document.
+memberships:
+  - type: Org
+    id: org_id
+    read: read
+  - type: OrgAdmins
+    id: org_id
+    read: manage
+    write: manage
+  - type: User
+    relations:
+      in: {object: user_id, subject: org_id, subject_type: Org}
+  - type: User
+    relations:
+      in: {object: user_id, subject: org_id, subject_type: OrgAdmins, when: "role = 'admin'"}
+documents:
+  read: view
+  write: edit
+  attributes: [org_id as org, org_id as admins]
+shares:
+  - type: Document
+    id: doc_id
+    read: view
+    write: edit
+    attributes: [org_id as org, org_id as admins]
+  - type: User
+    relations:
+      in: {object: user_id, subject: doc_id, subject_type: Document, until: expires_at}

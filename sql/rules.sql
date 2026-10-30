@@ -1,23 +1,31 @@
--- The engine's rules, kept in Postgres in the engine's own language: the OpenFGA model (its DSL),
--- the SpiceDB schema, the Cerbos policies (YAML), Cedar's schema and policies. Each change is a new
--- version, kept for review and history; the sidecar pushes the latest to the engine and records
--- whether it took it (Cedar: whether they compile and validate; every sidecar then loads them).
+-- The engine's rules, kept in Postgres in the engine's own language (the OpenFGA model, the
+-- SpiceDB schema, the Cerbos policies, Cedar's schema and policies), each with the mapping of the
+-- tables they decide on: which tables hold which types, how a row is checked, which rows are
+-- relationships (src/mapping.rs). Each change is a new version, kept for review and history; the
+-- sidecar pushes the latest to the engine and records whether it took it (Cedar: whether they
+-- compile and validate; every sidecar then loads them).
 --
---   select authz.set_rules('openfga', 'model', $$ model ... $$);
---   select authz.set_rules('cerbos', 'resource/expense', $$ apiVersion: api.cerbos.dev/v1 ... $$);
---   select authz.set_rules('cedar', 'schema', $$ entity User in [Group]; ... $$);
---   select authz.set_rules('cedar', 'documents', $$ permit (principal, action, resource) when { ... }; $$);
+--   select authz.set_rules('openfga', 'model', $$ model ... $$, mapping => $$
+--   documents:
+--     read: viewer
+--     write: editor
+--     relations:
+--       org: org_id
+--   $$);
 --   select name, version, pushed_at, error from authz.rules();
 --
 -- OpenFGA and SpiceDB have one model or schema: one name. Cerbos has a policy per file: one name
--- each, as you would name the files; so has Cedar, whose rule named `schema` is its schema.
--- Optional: rules managed in the engine itself stay there.
+-- each, as you would name the files; so has Cedar, whose rule named `schema` is its schema. Rules
+-- kept in the engine itself (Cerbos Hub, a model managed elsewhere) are stored with no body: only
+-- their mapping, which then names every type.
 
 create table authz_internal.rules (
     engine     text not null check (engine in ('openfga', 'spicedb', 'cerbos', 'cedar')),
     name       text not null,
     version    int not null,
-    body       text not null,
+    -- null: the rules are kept in the engine itself; only the mapping is stored
+    body       text,
+    mapping    text,
     created_at timestamptz not null default now(),
     created_by name not null default current_user,
     -- when the engine took it, or why it refused it (an invalid model, a policy that does not parse)
@@ -29,9 +37,11 @@ create table authz_internal.rules (
     primary key (engine, name, version)
 );
 
--- Store a new version of the rules called `name` for `engine` (none when the text is unchanged)
--- and have the sidecar push it. Returns the version in force.
-create function authz.set_rules(engine text, name text, body text) returns int
+-- Store a new version of the rules called `name` for `engine` and their mapping (none when both
+-- are unchanged), set up the tables the mapping describes, and have the sidecar push the rules.
+-- No mapping keeps the one before, so new rules alone leave the tables as they are; an empty one
+-- ('') removes it. Returns the version in force.
+create function authz.set_rules(engine text, name text, body text, mapping text default null) returns int
 language plpgsql volatile as $$
 #variable_conflict use_column
 declare
@@ -50,47 +60,64 @@ begin
         end if;
     end if;
     select * into latest from authz_internal.rules r where r.engine = set_rules.engine and r.name = set_rules.name order by r.version desc limit 1;
-    if latest.body = set_rules.body then
+    mapping := coalesce(mapping, latest.mapping);
+    if latest.version is not null and latest.body is not distinct from set_rules.body
+       and latest.mapping is not distinct from set_rules.mapping then
         return latest.version;
     end if;
-    insert into authz_internal.rules (engine, name, version, body) values (engine, name, coalesce(latest.version, 0) + 1, body);
-    -- the tables the rules' notes describe, protected and related in this transaction
+    if body is null and mapping is null then
+        raise exception 'rules need a body, a mapping, or both'
+            using hint = 'rules kept in the engine itself are stored with their mapping only: set_rules(engine, name, null, mapping => ...)';
+    end if;
+    -- rules unchanged (a new mapping) are as the engine took them; rules kept in the engine have
+    -- nothing to push
+    insert into authz_internal.rules (engine, name, version, body, mapping, pushed_at, error, engine_ref)
+    select engine, name, coalesce(latest.version, 0) + 1, body, mapping,
+           case when body is null then now() when latest.body is not distinct from body then latest.pushed_at end,
+           case when latest.body is not distinct from body then latest.error end,
+           case when latest.body is not distinct from body then latest.engine_ref end;
+    -- the tables the mapping describes, protected and related in this transaction
     perform authz_internal.rules_apply(engine);
     perform pg_notify('pg_auth_rules', engine);
     return coalesce(latest.version, 0) + 1;
 end
 $$;
 
--- What the notes in an engine's rules say (`# pg_auth: protects documents (id): read viewer`,
--- src/notes.rs), applied as one setup document (authz_internal.setup): tables protected and related, and
--- what an earlier version's notes declared and this one's do not, removed. An object column a note
--- leaves to the table is its primary key. Rules with no notes change nothing, unless notes set the
--- setup before (then it is removed): a setup written by hand is not the rules' to undo.
+-- What the mappings stored with an engine's rules describe (src/mapping.rs), applied as one setup
+-- document (authz_internal.setup): tables protected and related, and what an earlier version
+-- declared and this one does not, removed. An id a mapping leaves to the table is its primary
+-- key. Rules with no mapping change nothing, unless a mapping set the setup before (then it is
+-- removed): a setup written by hand is not the rules' to undo.
 create function authz_internal.rules_apply(p_engine text) returns void
 language plpgsql volatile as $$
 declare
     document jsonb := '{"relationships": [], "protect": []}';
-    notes jsonb;
+    mapped jsonb;
     r record;
 begin
-    for r in select l.body from authz.rules(p_engine) l loop
-        notes := authz_internal.rules_document(p_engine, r.body);
-        document := jsonb_build_object('relationships', (document -> 'relationships') || (notes -> 'relationships'),
-                                       'protect', (document -> 'protect') || (notes -> 'protect'));
+    for r in select l.body, l.mapping from authz.rules(p_engine) l where l.mapping is not null loop
+        mapped := authz_internal.mapping_document(p_engine, r.body, r.mapping);
+        document := jsonb_build_object('relationships', (document -> 'relationships') || (mapped -> 'relationships'),
+                                       'protect', (document -> 'protect') || (mapped -> 'protect'));
     end loop;
     if jsonb_array_length(document -> 'relationships') + jsonb_array_length(document -> 'protect') = 0
        and authz_internal.setup() ->> 'source' is distinct from 'rules' then
         return;
     end if;
-    document := document || jsonb_build_object('source', 'rules', 'relationships', coalesce((
-        select jsonb_agg(case when e -> 'object' ? 'column' then e
-                              else jsonb_set(e, '{object,column}', to_jsonb(authz_internal.rules_key(e ->> 'table'))) end)
-        from jsonb_array_elements(document -> 'relationships') e), '[]'));
+    document := document || jsonb_build_object('source', 'rules',
+        'relationships', coalesce((
+            select jsonb_agg(case when e -> 'object' ? 'column' then e
+                                  else jsonb_set(e, '{object,column}', to_jsonb(authz_internal.rules_key(e ->> 'table'))) end)
+            from jsonb_array_elements(document -> 'relationships') e), '[]'),
+        'protect', coalesce((
+            select jsonb_agg(case when e ? 'column' or e ? 'key' then e
+                                  else e || jsonb_build_object('column', authz_internal.rules_key(e ->> 'table')) end)
+            from jsonb_array_elements(document -> 'protect') e), '[]'));
     perform authz_internal.setup(document);
 end
 $$;
 
--- A relationship table's object column when a note names none: its single-column primary key.
+-- A table's id when a mapping names none: its single-column primary key.
 create function authz_internal.rules_key(p_table text) returns name
 language plpgsql stable as $$
 declare
@@ -101,8 +128,8 @@ begin
     from pg_index i join pg_attribute a on a.attrelid = i.indrelid and a.attnum = i.indkey[0]
     where i.indrelid = rel and i.indisprimary and i.indnatts = 1;
     if key is null then
-        raise exception '% has no single-column primary key: name the object column in the note (<relation> from %(<column>).<subject column>)',
-            rel, p_table;
+        raise exception '% has no single-column primary key: name its id in the mapping (id: <column>, or object: <column> in a relation)',
+            rel;
     end if;
     return key;
 end
@@ -110,9 +137,9 @@ $$;
 
 -- The rules in force: the latest version of each, whether the engine took it, and why not.
 create function authz.rules(engine text default null)
-returns table (engine text, name text, version int, body text, pushed_at timestamptz, error text)
+returns table (engine text, name text, version int, body text, mapping text, pushed_at timestamptz, error text)
 language sql stable as $$
-    select distinct on (r.engine, r.name) r.engine, r.name, r.version, r.body, r.pushed_at, r.error
+    select distinct on (r.engine, r.name) r.engine, r.name, r.version, r.body, r.mapping, r.pushed_at, r.error
     from authz_internal.rules r
     where rules.engine is null or r.engine = rules.engine
     order by r.engine, r.name, r.version desc
@@ -131,7 +158,7 @@ begin
     select l.name, l.version, l.body,
            (select r.body from authz_internal.rules r
             where r.engine = p_engine and r.name = l.name and r.pushed_at is not null order by r.version desc limit 1)
-    from authz.rules(p_engine) l where l.pushed_at is null and l.error is null;
+    from authz.rules(p_engine) l where l.pushed_at is null and l.error is null and l.body is not null;
 end
 $$;
 
@@ -149,9 +176,11 @@ $$;
 -- took, which every sidecar loads.
 create function authz_sidecar.rules_in_force(p_engine text) returns table (name text, body text)
 language sql stable security definer set search_path = pg_catalog, pg_temp as $$
-    select distinct on (r.name) r.name, r.body from authz_internal.rules r
-    where r.engine = p_engine and r.pushed_at is not null
-    order by r.name, r.version desc
+    select l.name, l.body from (
+        select distinct on (r.name) r.name, r.body from authz_internal.rules r
+        where r.engine = p_engine and r.pushed_at is not null
+        order by r.name, r.version desc) l
+    where l.body is not null
 $$;
 
 -- For the sidecar: the engine's id for the rules in force (OpenFGA's model id), or null.
@@ -161,7 +190,7 @@ language sql stable security definer set search_path = pg_catalog, pg_temp as $$
     order by pushed_at desc limit 1
 $$;
 
-revoke execute on function authz.set_rules(text, text, text) from public;
+revoke execute on function authz.set_rules(text, text, text, text) from public;
 revoke execute on function authz.rules(text) from public;
 
 -- What the setup names that the stored rules do not have: a protected table's type, permission or
@@ -182,7 +211,11 @@ begin
     end if;
     rules := case eng when 'openfga' then 'the openfga model' when 'spicedb' then 'the spicedb schema'
                       when 'cedar' then 'the cedar schema' else 'the cerbos policies' end;
-    select jsonb_agg(to_jsonb(n)) into names from authz.rules() r, authz_internal.rules_names(r.engine, r.body) n;
+    -- rules kept in the engine are not read: what their mapping names is the engine's to check
+    select jsonb_agg(to_jsonb(n)) into names from authz.rules() r, authz_internal.rules_names(r.engine, r.body) n where r.body is not null;
+    if names is null then
+        return;
+    end if;
     if jsonb_path_exists(names, '$[*] ? (@.kind == "unreadable")') then
         return;  -- the engine says what is wrong with them (authz.doctor)
     end if;

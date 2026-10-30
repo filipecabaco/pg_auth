@@ -1,13 +1,13 @@
 #!/usr/bin/env elixir
 # Complex setups end to end, as a backend-less app would write them: the engines' published shapes
-# (OpenFGA's sample stores, AuthZed's schema examples, Cerbos's demo apps), set up with
-# authz_internal.relate and authz_internal.protect, checked through what each user sees and may write. See
+# (OpenFGA's sample stores, AuthZed's schema examples, Cerbos's demo apps), set up by a mapping
+# stored with authz.set_rules (the rules are loaded into the engine here, so the mapping names every
+# type), checked through what each user sees and may write. See
 # docs/proposals/setting-rules.md for where these come from and what they cannot yet express.
 #
 #   github  teams inside teams, repo access to a user or a team, the org owner sees every repo, a
 #           ban (but not), push needed to update                          OpenFGA, SpiceDB
-#   drive   nested groups, viewers inherited down a folder tree, a public link (user:*), set up by one
-#           authz_internal.setup document
+#   drive   nested groups, viewers inherited down a folder tree, a public link (user:*)
 #                                                                         OpenFGA, SpiceDB
 #   expense derived roles (owner, finance), an amount limit on approval, a tenant's scoped deny, camelCase attributes
 #                                                                         Cerbos
@@ -18,7 +18,7 @@
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
 dir = Path.join(__DIR__, "lib")
-for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
+for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
 
 defmodule Complex do
   alias Compare.{Docker, Stack}
@@ -62,28 +62,83 @@ defmodule Complex do
       define viewer: viewer_grant or viewer from folder
   """
 
-  # Drive's setup as one document, applied with authz_internal.setup
-  @drive_setup %{
-    relationships: [
-      %{table: "app.group_members", name: "user", object: %{type: "group", column: "group_id"}, relation: "member",
-        subject: %{type: "user", column: "user_id"}},
-      %{table: "app.group_members", name: "group", object: %{type: "group", column: "group_id"}, relation: "member",
-        subject: %{type: "group", column: "child_group", relation: "member"}},
-      %{table: "app.folders", object: %{type: "folder", column: "id"}, relation: "parent", subject: %{type: "folder", column: "parent_id"}},
-      %{table: "app.docs", object: %{type: "doc", column: "id"}, relation: "folder", subject: %{type: "folder", column: "folder_id"}},
-      %{table: "app.folder_shares", name: "user", object: %{type: "folder", column: "folder_id"}, relation: "viewer_grant",
-        subject: %{type: "user", column: "user_id"}},
-      %{table: "app.folder_shares", name: "group", object: %{type: "folder", column: "folder_id"}, relation: "viewer_grant",
-        subject: %{type: "group", column: "group_id", relation: "member"}},
-      # one table, a declaration per kind of grantee; the public link is everyone (user:*)
-      %{table: "app.doc_shares", by: "grantee_kind", object: %{type: "doc", column: "doc_id"}, relation: "viewer_grant",
-        subject: %{user: %{type: "user", column: "grantee_id"}, public: %{type: "user", id: "*"}}}
-    ],
-    protect: [
-      %{table: "app.docs", type: "doc", column: "id", select: "viewer"},
-      %{table: "app.folders", type: "folder", column: "id", select: "viewer"}
-    ]
-  }
+  # GitHub's tables: who is in an org and a team, repos, the access given to a user or a team
+  @github_mapping """
+  app.org_members:
+    type: organization
+    rows: {object: org_id, relation: role, subject: user_id, subject_type: user}
+  app.team_members:
+    - type: team
+      relations:
+        member: {object: team, subject: user_id, subject_type: user}
+    - type: team
+      relations:
+        member: {object: team, subject: child_team, subject_type: team, subject_relation: member}
+  # pushing updates a repo; deleting one takes more
+  app.repos:
+    type: repo
+    id: id
+    read: can_read
+    write: can_push
+    delete: can_delete
+    relations:
+      organization: {subject: org_id, subject_type: organization}
+  # one table, an entry per kind of grantee, and only the roles the model has
+  app.repo_access:
+    - type: repo
+      rows: {object: repo_id, relation: role, allowed: [reader, writer, admin], subject: grantee_id, subject_type: user,
+             when: "grantee_kind = 'user'"}
+    - type: repo
+      rows: {object: repo_id, relation: role, allowed: [reader, writer, admin], subject: grantee_id, subject_type: team,
+             subject_relation: member, when: "grantee_kind = 'team'"}
+  app.repo_bans:
+    type: repo
+    relations:
+      banned: {object: repo_id, subject: user_id, subject_type: user}
+  """
+
+  # Drive's tables: groups inside groups, a folder tree, shares with a user, a group or everyone
+  @drive_mapping """
+  app.group_members:
+    - type: group
+      relations:
+        member: {object: group_id, subject: user_id, subject_type: user}
+    - type: group
+      relations:
+        member: {object: group_id, subject: child_group, subject_type: group, subject_relation: member}
+  app.folders:
+    type: folder
+    id: id
+    read: viewer
+    relations:
+      parent: {subject: parent_id, subject_type: folder}
+  app.docs:
+    type: doc
+    id: id
+    read: viewer
+    relations:
+      folder: {subject: folder_id, subject_type: folder}
+  app.folder_shares:
+    - type: folder
+      relations:
+        viewer_grant: {object: folder_id, subject: user_id, subject_type: user}
+    - type: folder
+      relations:
+        viewer_grant: {object: folder_id, subject: group_id, subject_type: group, subject_relation: member}
+  # the public link is a share with everyone (user:*)
+  app.doc_shares:
+    - type: doc
+      relations:
+        viewer_grant: {object: doc_id, subject: grantee_id, subject_type: user, when: "grantee_kind = 'user'"}
+    - type: doc
+      relations:
+        viewer_grant: {object: doc_id, subject_id: "*", subject_type: user, when: "grantee_kind = 'public'"}
+  """
+
+  # the policies say ownerId, as Cerbos's demos do; the column is owner
+  @expense_mapping """
+  app.expenses: {type: expense, id: id, read: view, write: approve, attributes: [amount, status, owner as ownerId]}
+  """
 
   # how long a change may take to become visible before the check fails
   @deadline_ms 15_000
@@ -114,7 +169,7 @@ defmodule Complex do
         url = "postgres://postgres:complex@#{stack.id}-postgres:5432/postgres"
         stack = Stack.start_engine(stack, @model, [default: 1000], engine: engine, sidecar_cache_ms: nil, sidecar_env: [{"PG_AUTH_DATABASE_URL", url}])
         conn = start_postgres(stack)
-        github(conn) ++ drive(conn)
+        github(conn, engine) ++ drive(conn, engine)
       end
     catch
       kind, reason ->
@@ -139,6 +194,12 @@ defmodule Complex do
     conn
   end
 
+  # the rules are in the engine already: the mapping alone, stored with no body
+  defp set_mapping(conn, engine, mapping) do
+    name = %{"openfga" => "model", "spicedb" => "schema", "cerbos" => "resource/expense"}[engine]
+    Postgrex.query!(conn, "select authz.set_rules($1, $2, null, mapping => $3)", [engine, name, mapping])
+  end
+
   defp retry(f, 0), do: f.()
 
   defp retry(f, n) do
@@ -150,7 +211,7 @@ defmodule Complex do
 
   # ── GitHub: OpenFGA's github sample store and AuthZed's GitHub schema, cut to their shape ─────
 
-  defp github(conn) do
+  defp github(conn, engine) do
     run_all(conn, [
       "select authz.configure(subject => 'jwt')",
       "create table app.org_members (org_id int, user_id text, role text, primary key (org_id, user_id))",
@@ -165,17 +226,10 @@ defmodule Complex do
       "insert into app.team_members values ('core', 'alice', null), ('platform', null, 'core')",
       "insert into app.repos select i, case when i = 5 then 2 else 1 end, 'repo ' || i from generate_series(1, 5) i",
       "insert into app.repo_access values (1, 'team', 'platform', 'reader'), (2, 'user', 'bob', 'writer'), (3, 'team', 'core', 'admin'), (5, 'user', 'alice', 'reader')",
-      "insert into app.repo_bans values (3, 'alice')",
-      "select authz_internal.relate('app.org_members', object_type => 'organization', object_column => 'org_id', relation_column => 'role', subject_type => 'user', subject_column => 'user_id')",
-      "select authz_internal.relate('app.team_members', name => 'user', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'user', subject_column => 'user_id')",
-      "select authz_internal.relate('app.team_members', name => 'team', object_type => 'team', object_column => 'team', relation => 'member', subject_type => 'team', subject_column => 'child_team', subject_relation => 'member')",
-      "select authz_internal.relate('app.repos', object_type => 'repo', object_column => 'id', relation => 'organization', subject_type => 'organization', subject_column => 'org_id')",
-      # a declaration per kind of grantee, and only the roles the model has
-      "select authz_internal.relate('app.repo_access', name => 'user', filter => 'grantee_kind = ''user''', object_type => 'repo', object_column => 'repo_id', relation_column => 'role', subject_type => 'user', subject_column => 'grantee_id', relations => array['reader', 'writer', 'admin'])",
-      "select authz_internal.relate('app.repo_access', name => 'team', filter => 'grantee_kind = ''team''', object_type => 'repo', object_column => 'repo_id', relation_column => 'role', subject_type => 'team', subject_column => 'grantee_id', subject_relation => 'member', relations => array['reader', 'writer', 'admin'])",
-      "select authz_internal.relate('app.repo_bans', object_type => 'repo', object_column => 'repo_id', relation => 'banned', subject_type => 'user', subject_column => 'user_id')",
-      # pushing updates a repo; deleting one takes more
-      "select authz_internal.protect('app.repos', type => 'repo', id => 'id', read => 'can_read', write => 'can_push', on_delete => 'can_delete')"
+      "insert into app.repo_bans values (3, 'alice')"
+    ])
+    set_mapping(conn, engine, @github_mapping)
+    run_all(conn, [
     ])
     delivered!(conn)
     repos = &visible(conn, %{sub: &1}, "select id from app.repos order by id")
@@ -201,7 +255,7 @@ defmodule Complex do
 
   # ── Drive: OpenFGA's gdrive sample store and AuthZed's docs-style sharing ─────────────────────
 
-  defp drive(conn) do
+  defp drive(conn, engine) do
     run_all(conn, [
       "create table app.group_members (group_id text not null, user_id text, child_group text)",
       "create table app.folders (id int primary key, parent_id int)",
@@ -215,10 +269,9 @@ defmodule Complex do
       "insert into app.folders values (1, null), (2, 1), (3, 2)",
       "insert into app.docs values (1, 1, 'handbook'), (2, 2, 'design'), (3, 3, 'secrets'), (4, 1, 'press kit')",
       "insert into app.folder_shares values (2, null, 'engineers'), (3, 'frank', null)",
-      "insert into app.doc_shares values (4, 'public', null)",
-      # the whole setup as one document (authz_internal.setup), where github above uses the calls
-      "select authz_internal.setup('#{JSON.encode!(@drive_setup)}')"
+      "insert into app.doc_shares values (4, 'public', null)"
     ])
+    set_mapping(conn, engine, @drive_mapping)
     delivered!(conn)
     docs = &visible(conn, %{sub: &1}, "select id from app.docs order by id")
     [
@@ -242,10 +295,9 @@ defmodule Complex do
       "create table app.expenses (id int primary key, owner text not null, amount numeric not null, status text not null)",
       "create index on app.expenses (owner)",
       "grant select, insert, update, delete on all tables in schema app to app_user",
-      "insert into app.expenses values (1, 'ann', 500, 'open'), (2, 'ann', 5000, 'open'), (3, 'ben', 200, 'open'), (4, 'ann', 100, 'flagged')",
-      # the policies say ownerId, as Cerbos's demos do; the column is owner
-      "select authz_internal.protect('app.expenses', type => 'expense', id => 'id', read => 'view', write => 'approve', attributes => array['amount', 'status'], attribute_map => '{\"ownerId\": \"owner\"}')"
+      "insert into app.expenses values (1, 'ann', 500, 'open'), (2, 'ann', 5000, 'open'), (3, 'ben', 200, 'open'), (4, 'ann', 100, 'flagged')"
     ])
+    set_mapping(conn, "cerbos", @expense_mapping)
     ann = %{sub: "ann", role: "user", department: "sales", tenant: "acme"}
     ben = %{sub: "ben", role: "user", department: "sales", tenant: "acme"}
     fin = %{sub: "fin", role: "user", department: "finance", tenant: "acme"}

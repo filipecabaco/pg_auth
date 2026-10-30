@@ -6,9 +6,20 @@
 # A run against SpiceDB (run.exs --engine spicedb) goes into docs/benchmarks.md's SpiceDB block
 # only; the landing page and the catalogue keep the OpenFGA run:
 #   elixir bench/docker/apply_zero.exs table.md <date> <commit> spicedb
+# Every engine side by side (bench/docker/engines_table.exs) goes into its "All engines" block:
+#   elixir bench/docker/engines_table.exs <openfga run> <spicedb run> > engines.md
+#   elixir bench/docker/apply_zero.exs engines.md <date> <commit> engines
 [table_file, date, commit | engine] = System.argv()
 table = File.read!(table_file) |> String.trim()
 [summary | _] = String.split(table, "\n", parts: 2)
+
+if engine == ["engines"] do
+  f = "docs/benchmarks.md"
+  block = "<!-- results-engines:start -->\nCommit `#{commit}`, #{date}.\n\n" <> table <> "\n<!-- results-engines:end -->"
+  File.write!(f, Regex.replace(~r/<!-- results-engines:start -->.*<!-- results-engines:end -->/s, File.read!(f), fn _ -> block end))
+  IO.puts("docs/benchmarks.md: all engines")
+  System.halt(0)
+end
 
 if engine == ["spicedb"] do
   f = "docs/benchmarks.md"

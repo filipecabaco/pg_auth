@@ -210,7 +210,7 @@ against Cedar's decision, row by row.
 ## Relationship tables
 
 `relationships.exs` checks that an application with no backend can grant and revoke access by
-writing rows (`authz_internal.relate`), on a real OpenFGA and SpiceDB, with the sidecar's production cache
+writing rows (the mapping's `rows` and `relations`), on a real OpenFGA and SpiceDB, with the sidecar's production cache
 settings: an org's admin adds a member, a member is refused admin rights and shares outside their
 org, shares to a user and to a team, a revocation, and the engine paused while a grant is written
 (it waits in the outbox and arrives; an invalid relationship is set aside). Each change is timed
@@ -221,8 +221,8 @@ from its commit to the moment the subject sees it.
 
 ## Grants that end
 
-`expiry.exs` checks relationship tables whose rows end (`authz_internal.relate` `expires_column`), on a
-real OpenFGA and SpiceDB, the rules stored in Postgres (`authz.set_rules`): a share shows until its
+`expiry.exs` checks relationship tables whose rows end (a relation's `until` in the mapping), on a
+real OpenFGA and SpiceDB, the rules and mapping stored in Postgres (`authz.set_rules`): a share shows until its
 end and goes after it (timed from the end), an end moved later keeps it and one moved earlier ends
 it, a renewal brings it back, the ends waiting in the outbox are not changes waiting, and SpiceDB,
 given the end as an expiration, ends it itself with the sidecar paused.
@@ -233,7 +233,7 @@ given the end as an expiration, ends it itself with the sidecar paused.
 ## Conditions and caveats
 
 `conditions.exs` checks relationships written with an OpenFGA condition or a SpiceDB caveat
-(`authz_internal.relate` `condition`, `condition_context`) and the context each request gives
+(a relation's `condition` in the mapping) and the context each request gives
 (`authz.configure(context => ...)`), on a real OpenFGA and SpiceDB, through a sidecar that lists
 and one that checks rows (`LIST_LIMIT` 2): a share in some regions shows to a token from one of
 them, a token without the claim is not let in, the row's new regions are followed, and a share
@@ -248,9 +248,9 @@ them, the other follows.
 
 ## The demo's rules, and who decides
 
-`notes.exs` loads the demo's rules files (`docker/demo/rules`) unchanged into OpenFGA, SpiceDB
-and Cerbos with `authz.set_rules`, and plays the demo's story: the notes in each file protect and
-relate the tables, with nothing set up by hand. Then it checks that the engine decides each row,
+`demo.exs` loads the demo's rules files (`docker/demo/rules`) unchanged into OpenFGA, SpiceDB,
+Cerbos and Cedar with `authz.set_rules`, each with its mapping (`docker/demo/mappings`), and plays
+the demo's story: the mapping protects and relates the tables, with nothing set up by hand. Then it checks that the engine decides each row,
 not Postgres:
 
 - every `pg_auth` policy in `pg_policies` is only a call to `authz.permits` or
@@ -261,8 +261,8 @@ not Postgres:
 - with the engine stopped, and then the sidecar stopped, every read and write on a protected
   table fails once the sidecar's 1 s answers have passed.
 
-    elixir compare/notes.exs                            # OpenFGA, SpiceDB, then Cerbos
-    elixir compare/notes.exs --engine cerbos --no-build
+    elixir compare/demo.exs                             # OpenFGA, SpiceDB, Cerbos, then Cedar
+    elixir compare/demo.exs --engine cerbos --no-build
 
 ## The permission index across restarts
 

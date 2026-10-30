@@ -1,7 +1,7 @@
 #!/usr/bin/env elixir
 # The engine's rules kept in Postgres (authz.set_rules), end to end: each engine starts without
-# them, and the rules' notes (`# pg_auth: protects ...`) are the whole setup: no table is protected
-# or related by hand. The sidecar pushes what Postgres holds, rows show as those rules say, a new
+# them, and the mapping stored with them is the whole setup: no table is protected or related by
+# hand. The sidecar pushes what Postgres holds, rows show as those rules say, a new
 # version changes what they show, and rules the engine refuses are reported while it keeps the
 # version before. In each engine's own language: OpenFGA's DSL, a SpiceDB schema, Cerbos's YAML. See
 # compare/README.md and docs/proposals/setting-rules.md.
@@ -12,13 +12,31 @@
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
 dir = Path.join(__DIR__, "lib")
-for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
+for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(dir, f <> ".exs"))
 
 defmodule Rules do
   alias Compare.{Docker, Stack}
 
   # the engine starts with this alone: the rules come from Postgres
   @bare "model\n  schema 1.1\ntype user\n"
+
+  # the tables the rules decide on, the same for every version
+  @mappings %{
+    "openfga" => """
+    app.memberships:
+      type: org
+      rows: {object: org_id, relation: role, subject: user_id}
+    app.documents:
+      read: viewer
+      relations:
+        org: org_id
+    """,
+    "cerbos" => """
+    app.documents:
+      read: view
+      attributes: [owner, status]
+    """
+  }
 
   # members of an org read its documents (version 1), then only its admins (version 2), then rules
   # the engine refuses (version 3: what pg_auth checks is there, what only the engine checks is not)
@@ -29,14 +47,11 @@ defmodule Rules do
         schema 1.1
       type user
       type org
-        # pg_auth: rows of app.memberships (org_id, role, user_id)
         relations
           define admin: [user]
           define member: [user]
           define can_read: member or admin
       type document
-        # pg_auth: protects app.documents (id): read viewer
-        # pg_auth: org from app.documents.org_id
         relations
           define org: [org]
           define viewer: can_read from org
@@ -46,14 +61,11 @@ defmodule Rules do
         schema 1.1
       type user
       type org
-        # pg_auth: rows of app.memberships (org_id, role, user_id)
         relations
           define admin: [user]
           define member: [user]
           define can_read: admin
       type document
-        # pg_auth: protects app.documents (id): read viewer
-        # pg_auth: org from app.documents.org_id
         relations
           define org: [org]
           define viewer: can_read from org
@@ -64,14 +76,11 @@ defmodule Rules do
         schema 1.1
       type user
       type org
-        # pg_auth: rows of app.memberships (org_id, role, user_id)
         relations
           define admin: [user]
           define member: [user]
           define can_read: admin or ghost
       type document
-        # pg_auth: protects app.documents (id): read viewer
-        # pg_auth: org from app.documents.org_id
         relations
           define org: [org]
           define viewer: can_read from org
@@ -81,14 +90,11 @@ defmodule Rules do
       """
       definition user {}
       definition org {
-        // pg_auth: rows of app.memberships (org_id, role, user_id)
         relation admin: user
         relation member: user
         permission can_read = member + admin
       }
       definition document {
-        // pg_auth: protects app.documents (id): read viewer
-        // pg_auth: org from app.documents.org_id
         relation org: org
         permission viewer = org->can_read
       }
@@ -96,14 +102,11 @@ defmodule Rules do
       """
       definition user {}
       definition org {
-        // pg_auth: rows of app.memberships (org_id, role, user_id)
         relation admin: user
         relation member: user
         permission can_read = admin
       }
       definition document {
-        // pg_auth: protects app.documents (id): read viewer
-        // pg_auth: org from app.documents.org_id
         relation org: org
         permission viewer = org->can_read
       }
@@ -111,14 +114,11 @@ defmodule Rules do
       """
       definition user {}
       definition org {
-        // pg_auth: rows of app.memberships (org_id, role, user_id)
         relation admin: user
         relation member: user
         permission can_read = admin + ghost
       }
       definition document {
-        // pg_auth: protects app.documents (id): read viewer
-        // pg_auth: org from app.documents.org_id
         relation org: org
         permission viewer = org->can_read
       }
@@ -126,7 +126,6 @@ defmodule Rules do
     ],
     "cerbos" => [
       """
-      # pg_auth: protects app.documents (id): read view, attributes (owner, status)
       apiVersion: api.cerbos.dev/v1
       resourcePolicy:
         version: default
@@ -140,7 +139,6 @@ defmodule Rules do
                 expr: request.resource.attr.owner == request.principal.id
       """,
       """
-      # pg_auth: protects app.documents (id): read view, attributes (owner, status)
       apiVersion: api.cerbos.dev/v1
       resourcePolicy:
         version: default
@@ -158,7 +156,6 @@ defmodule Rules do
       """,
       # a condition that does not compile
       """
-      # pg_auth: protects app.documents (id): read view, attributes (owner, status)
       apiVersion: api.cerbos.dev/v1
       resourcePolicy:
         version: default
@@ -221,7 +218,7 @@ defmodule Rules do
     [v1, v2, refused] = @rules[engine]
     name = %{"openfga" => "model", "spicedb" => "schema", "cerbos" => "resource/document"}[engine]
     setup(conn, engine)
-    # the notes protect and relate the tables; their rows reach the engine once it has the rules
+    # the mapping protects and relates the tables; their rows reach the engine once it has the rules
     first = set_rules(conn, engine, name, v1)
     pushed?(conn, engine, 1) || raise("version 1 was not pushed")
     eventually(fn -> Postgrex.query!(conn, "select count(*) from authz_internal.outbox", []).rows == [[0]] end) || raise("relationships not delivered")
@@ -241,11 +238,11 @@ defmodule Rules do
         after_v2 = if engine == "cerbos", do: [1, 2, 3], else: []
         eventually(fn -> refused?(conn, engine) end) and doctor_fails?(conn) and visible(conn, "anne") == after_v2
       end),
-      check("a note naming what the rules lack fails at commit", fn ->
-        typo = String.replace(v2, ~r/read (viewer|view)\b/, "read vewer")
-        sql = "select authz.set_rules($1, $2, $3)"
+      check("a mapping naming what the rules lack fails at commit", fn ->
+        typo = String.replace(mapping(engine), ~r/read: (viewer|view)\b/, "read: vewer")
+        sql = "select authz.set_rules($1, $2, $3, mapping => $4)"
         match?({:error, %Postgrex.Error{postgres: %{code: :check_violation, message: "the setup names what the rules" <> _}}},
-               Postgrex.query(conn, sql, [engine, name, typo]))
+               Postgrex.query(conn, sql, [engine, name, v2, typo]))
       end),
       check("every version is kept, the refused one with the engine's reason", fn ->
         Postgrex.query!(conn, "select count(*), count(error) from authz_internal.rules where engine = $1", [engine]).rows == [[3, 1]]
@@ -275,9 +272,12 @@ defmodule Rules do
   end
 
   defp set_rules(conn, engine, name, body) do
-    [[version]] = Postgrex.query!(conn, "select authz.set_rules($1, $2, $3)", [engine, name, body]).rows
+    [[version]] = Postgrex.query!(conn, "select authz.set_rules($1, $2, $3, mapping => $4)", [engine, name, body, mapping(engine)]).rows
     version
   end
+
+  defp mapping("cerbos"), do: @mappings["cerbos"]
+  defp mapping(_relationships), do: @mappings["openfga"]
 
   defp pushed?(conn, engine, version) do
     eventually(fn ->

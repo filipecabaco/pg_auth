@@ -451,15 +451,34 @@ defmodule Parity do
     broad = for s <- ctx.subjects, t <- @tables, expected_mode(ctx, :per_row, s, t) != "listed ids", do: {s, t}
 
     # a read by the subject asks the sidecar to fill its set
-    for {s, t} <- broad do
-      Postgrex.transaction(ctx.conn, fn c ->
-        as_subject(c, :per_row, s)
-        q!(c, "select count(*) from #{t.name}")
-      end)
+    ask = fn pairs ->
+      for {s, t} <- pairs do
+        Postgrex.transaction(ctx.conn, fn c ->
+          as_subject(c, :per_row, s)
+          q!(c, "select count(*) from #{t.name}")
+        end)
+      end
     end
 
-    wait_until(fn -> fresh_sets(ctx) >= length(Enum.uniq_by(broad, fn {s, t} -> {s, t.type, t.perm} end)) end, 300_000) ||
-      raise "permission index sets did not become fresh"
+    ask.(broad)
+    needed = length(Enum.uniq_by(broad, fn {s, t} -> {s, t.type, t.perm} end))
+
+    # a set can go stale before it is used: every sidecar's feed marks all sets stale when it
+    # starts following, and another sidecar may start while this one fills. Production refills it
+    # on the subject's next read; so does this, every 2 s
+    stale = fn ->
+      sets = MapSet.new(q!(ctx.conn, "select subject, object_type, permission from authz_internal.permission_sets where status = 'stale'").rows)
+      Enum.filter(broad, fn {s, t} -> MapSet.member?(sets, ["user:#{s}", t.type, t.perm]) end)
+    end
+
+    fresh? =
+      Enum.reduce_while(1..150, false, fn _, _ ->
+        if fresh_sets(ctx) >= needed, do: {:halt, true}, else: (Process.sleep(2000) && ask.(stale.()) && {:cont, false})
+      end)
+
+    fresh? ||
+      raise "permission index sets did not become fresh: #{needed} needed, " <>
+              inspect(q!(ctx.conn, "select status, count(*) from authz_internal.permission_sets group by 1 order by 1").rows)
 
     indexed =
       for(s <- ctx.subjects, t <- @tables, do: {s, t})

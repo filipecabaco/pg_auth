@@ -1,10 +1,10 @@
 #!/usr/bin/env elixir
-# The sidecar reached over HTTPS (pg_auth.sidecar_url) instead of its Unix socket, on real OpenFGA
-# and SpiceDB: the demo's story told with the socket pointing nowhere, then the attacks the
+# The sidecar reached over HTTPS (pg_auth.sidecar_url) instead of its Unix socket, on real OpenFGA,
+# SpiceDB and Cerbos: the demo's story told with the socket pointing nowhere, then the attacks the
 # signed requests are there to stop (docs/proposals/external-providers.md). A test CA and a
 # certificate for the sidecar's name are made with openssl. See compare/README.md.
 #
-#   elixir compare/remote.exs                       # openfga, spicedb
+#   elixir compare/remote.exs                       # openfga, spicedb, cerbos
 #   elixir compare/remote.exs --engine spicedb --no-build
 
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
@@ -16,7 +16,7 @@ defmodule Remote do
   alias Compare.{Docker, Stack}
 
   @rules Path.expand("../docker/demo/rules", __DIR__)
-  @files %{"openfga" => {"model", "openfga.fga"}, "spicedb" => {"schema", "spicedb.zed"}}
+  @files %{"openfga" => {"model", "openfga.fga"}, "spicedb" => {"schema", "spicedb.zed"}, "cerbos" => {"resource/document", "cerbos.yaml"}}
   @bare "model\n  schema 1.1\ntype user\n"
   @host "sidecar.pg-auth.test"
   # a proxy terminating TLS in front of a sidecar on plain HTTP, as a platform would; and one that
@@ -30,7 +30,7 @@ defmodule Remote do
   def main(argv) do
     {opts, _} = OptionParser.parse!(argv, strict: [engine: :string, build: :boolean])
     if Keyword.get(opts, :build, true), do: Stack.build(Path.expand("..", __DIR__))
-    engines = if e = opts[:engine], do: [e], else: ["openfga", "spicedb"]
+    engines = if e = opts[:engine], do: [e], else: ["openfga", "spicedb", "cerbos"]
     Process.flag(:trap_exit, true)
     results = for e <- engines, do: {e, run(e)}
     for {e, steps} <- results, {step, outcome} <- steps, do: IO.puts("#{String.pad_trailing(e, 8)} #{String.pad_trailing(step, 66)} #{outcome}")
@@ -47,7 +47,7 @@ defmodule Remote do
       # a sidecar on a socket, first so its image sets up the volume they share; Postgres points
       # elsewhere until the cost is measured, and it has no database (relationships and rules go
       # through the one reached over HTTPS)
-      stack = Stack.start_engine(stack, @bare, [default: 1000], engine: engine, sidecar_cache_ms: nil)
+      stack = Stack.start_engine(stack, @bare, [default: 1000], [engine: engine, sidecar_cache_ms: nil] ++ cerbos(engine))
       {conn, pg} = start_postgres(stack)
       for {name, path} <- certs, do: put(pg, path, "#{@tls}/#{name}")
       port = start_sidecar(stack, engine)
@@ -60,7 +60,7 @@ defmodule Remote do
       })
 
       setup(conn, engine)
-      story(conn) ++ refusals(conn) ++ attacks(port) ++ behind_a_proxy(conn, stack, dir(stack)) ++ cost(conn, stack) ++
+      story(conn, engine) ++ refusals(conn, engine) ++ attacks(port) ++ behind_a_proxy(conn, stack, dir(stack), engine) ++ cost(conn, stack) ++
         misconfigured(stack, engine)
     catch
       kind, reason ->
@@ -72,7 +72,33 @@ defmodule Remote do
     end
   end
 
-  defp story(conn) do
+  # Cerbos storing policies in a database with its Admin API on, so the sidecar pushes the rules
+  defp cerbos("cerbos"),
+    do: [cerbos_args: ["server", "--set=storage.driver=sqlite3", "--set=storage.sqlite3.dsn=:memory:", "--set=server.adminAPI.enabled=true"]]
+
+  defp cerbos(_), do: []
+
+  # what anne, then carl, see once the story is told
+  defp anne_sees("cerbos"), do: [1, 2, 3, 4]
+  defp anne_sees(_), do: [1, 2, 3]
+  defp carl_sees("cerbos"), do: [1, 2, 4, 5]
+  defp carl_sees(_), do: [4, 5]
+
+  # Cerbos's: everyone reads published documents and their own drafts, and only the owner edits
+  defp story(conn, "cerbos") do
+    [
+      check("over HTTPS: anne sees hers and the published ones; bob the published", fn ->
+        eventually(fn -> visible(conn, "anne") == [1, 2, 3, 4] end) and visible(conn, "bob") == [1, 4]
+      end),
+      check("anne publishes a draft: bob sees it", fn ->
+        as(conn, "anne", "update documents set status = 'published' where id = 2") == {:ok, 1} and
+          eventually(fn -> visible(conn, "bob") == [1, 2, 4] end)
+      end),
+      check("bob cannot edit anne's document: 0 rows", fn -> as(conn, "bob", "update documents set title = 'Mine' where id = 1") == {:ok, 0} end)
+    ]
+  end
+
+  defp story(conn, _relationships) do
     [
       check("over HTTPS: anne, org 1's admin, sees its documents; bob none", fn ->
         eventually(fn -> visible(conn, "anne") == [1, 2, 3] end) and visible(conn, "bob") == []
@@ -89,10 +115,11 @@ defmodule Remote do
   end
 
   # what the extension refuses: each fails the statement, and nothing is read
-  defp refusals(conn) do
-    fails = fn setting, value, message ->
+  defp refusals(conn, engine) do
+    # each with a subject not asked about yet, so the sidecar is asked rather than an answer kept
+    fails = fn setting, value, subject, message ->
       settings(conn, %{setting => value})
-      result = as(conn, "anne", "select id from documents")
+      result = as(conn, subject, "select id from documents")
       settings(conn, %{setting => default(setting)})
       match?({:error, %Postgrex.Error{postgres: %{message: m}}} when is_binary(m), result) and
         elem(result, 1).postgres.message =~ message
@@ -100,15 +127,15 @@ defmodule Remote do
 
     [
       check("a secret the sidecar does not hold fails the statement", fn ->
-        fails.("pg_auth.sidecar_secret_file", "#{@tls}/wrong-secret", "refused pg_auth's signature")
+        fails.("pg_auth.sidecar_secret_file", "#{@tls}/wrong-secret", "ivan", "refused pg_auth's signature")
       end),
       check("an http:// URL fails the statement", fn ->
-        fails.("pg_auth.sidecar_url", "http://#{@host}:8443", "must be https")
+        fails.("pg_auth.sidecar_url", "http://#{@host}:8443", "judy", "must be https")
       end),
       check("a certificate the trusted CA did not sign fails the statement", fn ->
-        fails.("pg_auth.sidecar_ca_file", "#{@tls}/other-ca.pem", "invalid peer certificate: UnknownIssuer")
+        fails.("pg_auth.sidecar_ca_file", "#{@tls}/other-ca.pem", "kim", "invalid peer certificate: UnknownIssuer")
       end),
-      check("and with the settings back, the statement reads again", fn -> visible(conn, "anne") == [1, 2, 3] end)
+      check("and with the settings back, the statement reads again", fn -> visible(conn, "anne") == anne_sees(engine) end)
     ]
   end
 
@@ -139,7 +166,7 @@ defmodule Remote do
         headers = signed.(@secret, now, body)
         r = post.(headers, body)
         {_, request_signature} = List.keyfind(headers, "pg-auth-signature", 0)
-        r.status == 200 and r.body =~ ~s("ids") and
+        r.status == 200 and r.body =~ ~r/"ids"|"too_many"/ and
           r.headers["pg-auth-signature"] == [sign(@secret, "v1 response\n#{request_signature}\n200\n" <> r.body)]
       end),
       check("health answers with nothing about anyone", fn ->
@@ -179,7 +206,7 @@ defmodule Remote do
   # The sidecar on plain HTTP (PG_AUTH_TLS_TERMINATED=1) behind nginx, which holds the certificate,
   # as on a platform that terminates TLS in front of its services. The signatures cross the proxy
   # untouched, so it still cannot answer for the sidecar.
-  defp behind_a_proxy(conn, stack, dir) do
+  defp behind_a_proxy(conn, stack, dir, engine) do
     sidecar = Stack.track(stack, "#{stack.id}-plain")
     env = engine_env(stack) ++ Enum.flat_map(
       ["PG_AUTH_LISTEN=0.0.0.0:8080", "PG_AUTH_TLS_TERMINATED=1", "PG_AUTH_SECRET_FILE=#{@tls}/secret",
@@ -203,7 +230,9 @@ defmodule Remote do
         proxy_pass http://#{sidecar}:8080;
         proxy_set_header Accept-Encoding "";
         sub_filter_types application/json;
+        # more ids than the engine gave, or a plan that lets everyone read everything
         sub_filter '"ids":[' '"ids":["4","5",';
+        sub_filter '"plan":"condition"' '"plan":"always"';
         sub_filter_once off;
       }
     }
@@ -227,7 +256,7 @@ defmodule Remote do
     steps = [
       check("behind a proxy terminating TLS: carl reads through it", fn ->
         settings(conn, %{"pg_auth.sidecar_url" => "https://#{@proxy}"})
-        (eventually(fn -> visible(conn, "carl") == [4, 5] end) or raise("carl: #{inspect(as(conn, "carl", "select id from documents"))}")) and
+        (eventually(fn -> visible(conn, "carl") == carl_sees(engine) end) or raise("carl: #{inspect(as(conn, "carl", "select id from documents"))}")) and
           Docker.logs(proxy) =~ "POST /v1/ask"
       end),
       check("a secret the sidecar does not hold fails, through the proxy", fn ->
@@ -269,7 +298,8 @@ defmodule Remote do
   end
 
   defp engine_env(stack) do
-    Enum.flat_map(stack.engine_mod.sidecar_env(stack.engine) ++ stack.engine_env, fn {k, v} -> ["-e", "#{k}=#{v}"] end)
+    admin = if stack.engine_mod.name() == "cerbos", do: [{"CERBOS_ADMIN_USER", "cerbos"}, {"CERBOS_ADMIN_PASSWORD", "cerbosAdmin"}], else: []
+    Enum.flat_map(stack.engine_mod.sidecar_env(stack.engine) ++ stack.engine_env ++ admin, fn {k, v} -> ["-e", "#{k}=#{v}"] end)
   end
 
   defp sign(secret, text), do: "v1=" <> Base.encode16(:crypto.mac(:hmac, :sha256, secret, text), case: :lower)
@@ -322,6 +352,20 @@ defmodule Remote do
     for {k, v} <- values, do: Postgrex.query!(conn, "select set_config('#{k}', $1, false)", [v]) && Postgrex.query!(conn, "alter system set #{k} = '#{v}'", [])
     Postgrex.query!(conn, "select pg_reload_conf()", [])
     # the reload reaches the session at its next statement; set_config made it now
+  end
+
+  defp setup(conn, "cerbos") do
+    run_all(conn, [
+      "create table documents (id int primary key, title text not null, owner text not null, status text not null default 'draft')",
+      "grant select, insert, update, delete on documents to authenticated",
+      "insert into documents values (1, 'Roadmap', 'anne', 'published'), (2, 'Budget', 'anne', 'draft'),
+         (3, 'Launch plan', 'anne', 'draft'), (4, 'Hiring', 'carl', 'published'), (5, 'Pricing', 'carl', 'draft')"
+    ])
+
+    {name, file} = @files["cerbos"]
+    Postgrex.query!(conn, "select authz.set_rules($1, $2, $3)", ["cerbos", name, File.read!(Path.join(@rules, file))])
+    eventually(fn -> Postgrex.query!(conn, "select count(*) from authz.rules() where pushed_at is null", []).rows == [[0]] end) ||
+      raise("rules not pushed")
   end
 
   defp setup(conn, engine) do

@@ -269,17 +269,18 @@ engine does not serve marks every set stale.
 ## The sidecar over HTTPS
 
 `remote.exs` reaches the sidecar by URL (`pg_auth.sidecar_url`), with a test CA and a certificate
-made by openssl, and Postgres's socket pointing nowhere: the demo's story over HTTPS on OpenFGA
-and SpiceDB; a secret the sidecar does not hold, an `http://` URL and a certificate another CA
+made by openssl, and Postgres's socket pointing nowhere: the demo's story over HTTPS on OpenFGA,
+SpiceDB and Cerbos; a secret the sidecar does not hold, an `http://` URL and a certificate another CA
 signed each fail the statement; the sidecar refuses an unsigned request, one signed with another
 secret, one replayed a minute later and one whose body was changed, and signs its answers for the
 request; behind nginx terminating TLS in front of a sidecar on plain HTTP
 (`PG_AUTH_TLS_TERMINATED=1`), reads go through, a wrong secret still fails, an answer the proxy
-changes fails the statement, and the sidecar's plain port refuses unsigned requests; a sidecar
+changes fails the statement (more ids than the engine gave, or a Cerbos plan turned into "allow
+everything"), and the sidecar's plain port refuses unsigned requests; a sidecar
 listening without a secret, with a short one, or without TLS does not start.
 It also measures a round trip beyond the engine's time over the socket and over HTTPS.
 
-    elixir compare/remote.exs                           # OpenFGA, then SpiceDB
+    elixir compare/remote.exs                           # OpenFGA, SpiceDB, then Cerbos
     elixir compare/remote.exs --engine spicedb --no-build
 
 ## History

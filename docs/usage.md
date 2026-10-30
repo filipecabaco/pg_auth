@@ -43,8 +43,8 @@ preload an extension, and running the sidecar elsewhere over HTTPS does not chan
 6. **Or on another host, over HTTPS:** `PG_AUTH_LISTEN`, a secret and a certificate on the sidecar,
    `pg_auth.sidecar_url` and `pg_auth.sidecar_secret_file` in Postgres. Requests and answers are
    signed with the secret, and anything else is refused; a round trip costs about 0.2 ms more than
-   the socket, plus the network's. The sidecar's own connection to Postgres
-   (`PG_AUTH_DATABASE_URL`) does not use TLS yet, so keep it on a private network, and keep both
+   the socket, plus the network's. Give the sidecar's own connection to Postgres
+   `?sslmode=verify-full&sslrootcert=...` in `PG_AUTH_DATABASE_URL` (libpq's modes), and keep both
    hosts' clocks within 30 s of each other. See the sidecar's
    [README](https://github.com/filipecabaco/pg_auth/blob/main/sidecar/query/README.md#over-the-network);
    `docker/remote` runs it with `docker compose`.

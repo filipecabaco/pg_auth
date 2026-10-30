@@ -23,6 +23,8 @@ defmodule Remote do
   # also changes the answers on their way back
   @proxy "proxy.pg-auth.test"
   @tamper "tamper.pg-auth.test"
+  # Postgres, with TLS on: the sidecar's own connection checked against the test CA (sslmode)
+  @postgres "postgres.pg-auth.test"
   @tls "/run/pg_auth/tls"
   @secret "a-secret-the-sidecar-and-postgres-hold-0123456789"
   @deadline_ms 30_000
@@ -50,6 +52,7 @@ defmodule Remote do
       stack = Stack.start_engine(stack, @bare, [default: 1000], [engine: engine, sidecar_cache_ms: nil] ++ cerbos(engine))
       {conn, pg} = start_postgres(stack)
       for {name, path} <- certs, do: put(pg, path, "#{@tls}/#{name}")
+      tls_on(conn, pg)
       port = start_sidecar(stack, engine)
 
       settings(conn, %{
@@ -60,7 +63,7 @@ defmodule Remote do
       })
 
       setup(conn, engine)
-      story(conn, engine) ++ refusals(conn, engine) ++ gives_way(conn, stack) ++ attacks(port) ++ behind_a_proxy(conn, stack, dir(stack), engine) ++ cost(conn, stack) ++
+      story(conn, engine) ++ refusals(conn, engine) ++ gives_way(conn, stack) ++ attacks(port) ++ behind_a_proxy(conn, stack, dir(stack), engine) ++ database_tls(conn, stack) ++ cost(conn, stack) ++
         misconfigured(stack, engine)
     catch
       kind, reason ->
@@ -215,6 +218,30 @@ defmodule Remote do
     ]
   end
 
+  # The sidecar's own connection to Postgres: encrypted and checked (sslmode=verify-full), and a
+  # sidecar given another CA does not connect.
+  defp database_tls(conn, stack) do
+    [
+      check("the sidecar's connections to Postgres use TLS, the certificate checked", fn ->
+        Postgrex.query!(conn, "select count(*) filter (where s.ssl), count(*) from pg_stat_activity a join pg_stat_ssl s using (pid)
+                               where a.usename = 'sidecar'", []).rows
+        |> then(fn [[tls, all]] -> all > 0 and tls == all end)
+      end),
+      check("a sidecar given another CA does not connect to Postgres", fn ->
+        name = Stack.track(stack, "#{stack.id}-wrong-ca")
+        {_, 0} =
+          System.cmd("docker", ["run", "-d", "--rm", "--label", "pg_auth_compare=1", "--name", name] ++ Stack.pg_docker_args(stack) ++
+                       engine_env(stack) ++
+                       ["-e", "PG_AUTH_SOCKET=/tmp/unused.sock", "-e", "PG_AUTH_DATABASE_URL=#{database_url("verify-full", "other-ca.pem")}",
+                        Stack.sidecar_image()], stderr_to_stdout: true)
+        Process.sleep(8_000)
+        log = Docker.logs(name)
+        System.cmd("docker", ["stop", "-t", "0", name], stderr_to_stdout: true)
+        log =~ "certificate" or raise("no certificate error in: #{String.slice(log, 0, 400)}")
+      end)
+    ]
+  end
+
   # a sidecar told to listen without a secret, or without TLS, does not start
   defp misconfigured(stack, _engine) do
     starts = fn env ->
@@ -356,7 +383,7 @@ defmodule Remote do
     ssl.(~w(req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=sidecar -keyout server.key -out server.csr))
     File.write!(
       Path.join(dir, "ext.cnf"),
-      "subjectAltName=DNS:#{@host},DNS:#{@proxy},DNS:#{@tamper}\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n"
+      "subjectAltName=DNS:#{@host},DNS:#{@proxy},DNS:#{@tamper},DNS:#{@postgres}\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n"
     )
     ssl.(~w(x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 -extfile ext.cnf -out server.pem))
     File.write!(Path.join(dir, "secret"), @secret <> "\n")
@@ -378,7 +405,7 @@ defmodule Remote do
         Enum.flat_map(
           ["PG_AUTH_LISTEN=0.0.0.0:8443", "PG_AUTH_SECRET_FILE=#{@tls}/secret", "PG_AUTH_TLS_CERT=#{@tls}/server.pem",
            "PG_AUTH_TLS_KEY=#{@tls}/server.key", "PG_AUTH_SOCKET=/tmp/unused.sock", "CACHE_TTL_MS=1000",
-           "PG_AUTH_DATABASE_URL=postgres://sidecar:remote@#{stack.id}-postgres:5432/postgres"],
+           "PG_AUTH_DATABASE_URL=#{database_url("verify-full", "ca.pem")}"],
           &["-e", &1]
         )
     {^name, port} = Docker.run(name, Stack.sidecar_image(), 8443, [], ["--network-alias", @host] ++ Stack.pg_docker_args(stack) ++ env)
@@ -425,11 +452,25 @@ defmodule Remote do
       raise("relationships not delivered")
   end
 
+  # TLS on in Postgres, with the test CA's certificate for its name: its key the postgres user's own
+  defp tls_on(conn, pg) do
+    {_, 0} = System.cmd("docker", ["exec", pg, "sh", "-c",
+      "cp #{@tls}/server.key /var/lib/postgresql/server.key && chown postgres /var/lib/postgresql/server.key && chmod 600 /var/lib/postgresql/server.key"])
+    run_all(conn, [
+      "alter system set ssl_cert_file = '#{@tls}/server.pem'",
+      "alter system set ssl_key_file = '/var/lib/postgresql/server.key'",
+      "alter system set ssl = on",
+      "select pg_reload_conf()"
+    ])
+  end
+
+  defp database_url(mode, root), do: "postgres://sidecar:remote@#{@postgres}:5432/postgres?sslmode=#{mode}&sslrootcert=#{@tls}/#{root}"
+
   defp start_postgres(stack) do
     pg = Stack.track(stack, "#{stack.id}-postgres")
     {^pg, port} =
       Docker.run(pg, Stack.pg_image(), 5432, ["-c", "fsync=off"],
-        Stack.pg_docker_args(stack) ++ Docker.coverage_args("postgres") ++ ["-e", "POSTGRES_PASSWORD=remote"])
+        Stack.pg_docker_args(stack) ++ Docker.coverage_args("postgres") ++ ["-e", "POSTGRES_PASSWORD=remote", "--network-alias", @postgres])
     Stack.wait(fn -> match?({_, 0}, System.cmd("docker", ["exec", pg, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"])) end, pg)
     {:ok, conn} =
       retry(fn -> Postgrex.start_link(hostname: "127.0.0.1", port: port, username: "postgres", password: "remote", database: "postgres", pool_size: 1) end, 20)

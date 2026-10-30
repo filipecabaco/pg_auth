@@ -220,7 +220,8 @@ available beside it.
   when it starts: restart it after each change.
 - **TLS.** Its own certificate, or `PG_AUTH_TLS_TERMINATED=1` behind a platform that terminates
   TLS; without either it does not start, nor without the secret. Its own connection to Postgres
-  (`PG_AUTH_DATABASE_URL`) does not use TLS yet: keep it on a private network.
+  (`PG_AUTH_DATABASE_URL`) takes `sslmode` as libpq does (`src/pg.rs`): `prefer` by default, and
+  `verify-full` with `sslrootcert` to check the server's certificate and name.
 - **Health.** `GET /healthz` answers `ok` while the process runs; it does not check the engine or
   Postgres.
 - **Several replicas.** Each keeps its own answer cache: a revocation delivered by one shows on

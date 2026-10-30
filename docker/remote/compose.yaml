@@ -26,6 +26,8 @@ services:
       dockerfile: bench/docker/Dockerfile
     environment:
       POSTGRES_PASSWORD: postgres
+    # TLS for the sidecar's own connection, checked by it (sslmode=verify-full)
+    command: -c ssl=on -c ssl_cert_file=/etc/pg_auth/server.pem -c ssl_key_file=/etc/pg_auth/postgres.key
     ports:
       - 127.0.0.1:55432:5432
     volumes:
@@ -51,7 +53,7 @@ services:
       PG_AUTH_SECRET_FILE: /tls/secret
       PG_AUTH_TLS_CERT: /tls/server.pem
       PG_AUTH_TLS_KEY: /tls/server.key
-      PG_AUTH_DATABASE_URL: postgres://sidecar:sidecar@postgres:5432/postgres
+      PG_AUTH_DATABASE_URL: postgres://sidecar:sidecar@postgres:5432/postgres?sslmode=verify-full&sslrootcert=/tls/ca.pem
     volumes:
       - tls:/tls:ro
     depends_on:

@@ -29,7 +29,8 @@
 //!   ENGINE_TIMEOUT_MS                      default 4000; above OPENFGA_LIST_DEADLINE_MS, below the
 //!                                          extension's pg_auth.sidecar_timeout_ms (5000)
 //!   OPENFGA_LIST_DEADLINE_MS               default 3000: OpenFGA's listObjectsDeadline
-//!   PG_AUTH_DATABASE_URL                   optional: enables the permission index (sql/index.sql)
+//!   PG_AUTH_DATABASE_URL                   optional: enables the permission index (sql/index.sql);
+//!                                          its sslmode as libpq takes it (pg.rs)
 //!   INDEX_POLL_MS                          default 500: how often OpenFGA's change feed is read
 //!                                          (SpiceDB's Watch streams), and the retry interval; also
 //!                                          how often the relationship tables' outbox is read when
@@ -51,6 +52,7 @@ mod net;
 mod openfga;
 mod openfga_dsl;
 mod outbox;
+mod pg;
 mod protocol;
 mod rules;
 mod spicedb;

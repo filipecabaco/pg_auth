@@ -20,8 +20,9 @@ What makes it work:
   `pg_auth.sidecar_secret_file`, and the test CA in `pg_auth.sidecar_ca_file`. The sidecar logs in
   as `sidecar`, a role holding only `authz_sidecar`.
 - **The sidecar**: `PG_AUTH_LISTEN`, the same secret in `PG_AUTH_SECRET_FILE`, and its
-  certificate in `PG_AUTH_TLS_CERT` and `PG_AUTH_TLS_KEY`.
-- **`certs.sh`** makes the test CA, a certificate for the name `sidecar`, and the secret, into a
+  certificate in `PG_AUTH_TLS_CERT` and `PG_AUTH_TLS_KEY`. Its own connection to Postgres is
+  encrypted too, the server's certificate checked (`sslmode=verify-full`).
+- **`certs.sh`** makes the test CA, a certificate for the names `sidecar` and `postgres`, and the secret, into a
   volume both read. For an example only: a deployment gives each side only what it needs, the key
   to the sidecar alone.
 

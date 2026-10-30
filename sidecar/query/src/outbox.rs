@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio_postgres::{AsyncMessage, Client, NoTls};
+use tokio_postgres::{AsyncMessage, Client};
 
 /// Changes claimed per transaction.
 const CLAIM: i32 = 500;
@@ -33,7 +33,7 @@ pub fn start(url: String, engine: Arc<Engine>, poll: Duration, delivered: impl F
 
 /// Connect, listen for changes, and deliver until the connection fails.
 async fn deliver(url: &str, engine: &Engine, poll: Duration, delivered: &(impl Fn() + Send + Sync)) -> Result<(), String> {
-    let (mut client, mut connection) = tokio_postgres::connect(url, NoTls).await.map_err(|e| format!("postgres: {e}"))?;
+    let (mut client, mut connection) = crate::pg::connect(url).await?;
     let (wake, mut woken) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         let mut messages = futures_util::stream::poll_fn(move |cx| connection.poll_message(cx));

@@ -60,9 +60,9 @@ they found documentation gaps and bugs, not demand.
   and sales requests for relationship-based access.
 - **The setup a platform would run, measured:** a remote sidecar and an engine in or across
   regions, under concurrency.
-- **Operations a platform needs:** extension upgrade scripts, and TLS on the sidecar's own
-  connection to Postgres. (Logical backups keep pg_auth's configuration, and a statement waiting on
-  the sidecar gives way to a cancel, as of October 30.)
+- **Operations a platform needs:** extension upgrade scripts. (Logical backups keep pg_auth's
+  configuration, a statement waiting on the sidecar gives way to a cancel, and the sidecar's own
+  connection to Postgres is encrypted and checked, as of October 30.)
 - **A license, and an owner** for the code.
 
 ## Why it cannot run on hosted Supabase today
@@ -90,7 +90,7 @@ they found documentation gaps and bugs, not demand.
 |---|---|---|
 | 0. Self-hosted Supabase with a design partner | None | A license; a partner with sharing or teams |
 | 1. An opt-in image variant, loaded per database (`session_preload_libraries`), Unix socket only, `anon` and `authenticated` subject to it | Build and ship the variant | Upgrade scripts; loading per database tested |
-| 2. The sidecar on Compute | A sidecar per project | Compute reachable privately and kept awake; TLS to Postgres; the remote setup measured |
+| 2. The sidecar on Compute | A sidecar per project | Compute reachable privately and kept awake; the remote setup measured |
 | 3. A managed engine | Run an engine per project or region | Phase 1 and 2 adoption |
 
 Costs per phase (engineering time, a security review's scope, on-call, the engine and sidecar per

@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 
 /// Rows per insert while filling.
 const CHUNK: usize = 5000;
@@ -75,7 +75,7 @@ impl Db {
         match self.client.take() {
             Some(client) if !client.is_closed() => Ok(self.client.insert(client)),
             _ => {
-                let (client, connection) = tokio_postgres::connect(&self.url, NoTls).await.map_err(|e| format!("postgres: {e}"))?;
+                let (client, connection) = crate::pg::connect(&self.url).await?;
                 tokio::spawn(async move {
                     if let Err(e) = connection.await {
                         eprintln!("pg-auth-sidecar: index connection: {e}");

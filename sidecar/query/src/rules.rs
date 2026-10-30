@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio_postgres::{AsyncMessage, Client, NoTls};
+use tokio_postgres::{AsyncMessage, Client};
 
 /// Push the rules for as long as the sidecar runs; `pushed` is called after rules the engine took
 /// (the sidecar then forgets the answers it cached).
@@ -29,7 +29,7 @@ pub fn start(url: String, engine: Arc<Engine>, poll: Duration, pushed: impl Fn()
 }
 
 async fn push(url: &str, engine: &Engine, poll: Duration, pushed: &(impl Fn() + Send + Sync)) -> Result<(), String> {
-    let (mut client, mut connection) = tokio_postgres::connect(url, NoTls).await.map_err(|e| format!("postgres: {e}"))?;
+    let (mut client, mut connection) = crate::pg::connect(url).await?;
     let (wake, mut woken) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         let mut messages = futures_util::stream::poll_fn(move |cx| connection.poll_message(cx));

@@ -91,7 +91,8 @@ What an external sidecar needs:
   (1 s) and the permission index absorb most of it; a narrow subject's first statement and
   per-row batches pay it. Many of pg_auth's wins over row level security are sub-millisecond, so
   expectations come from measuring (below), not from these numbers.
-- **The sidecar's own Postgres connection** needs TLS (it connects with `NoTls` today).
+- **The sidecar's own Postgres connection** takes TLS as libpq does, from the URL's `sslmode`
+  (`verify-full` checks the certificate and the name; done 2026-10-30).
 - **Scale to zero is a correctness question.** The sidecar does work no request asks for: it
   delivers relationship changes when Postgres notifies it, ends grants when they are due, pushes
   rules, and follows the engine's change feed. Suspended, the feed misses changes while the

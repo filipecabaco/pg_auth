@@ -227,7 +227,7 @@ begin
                   ': rows with an end are written so (and `use expiration`)')) f(form, why)
         where w.subject is not null and f.form is not null
     ), lists as (
-        select n.object_type, string_agg(distinct n.name, ', ') filter (where n.kind <> 'type') as defined,
+        select n.object_type, string_agg(distinct n.name, ', ') filter (where n.kind not in ('type', 'attribute')) as defined,
                string_agg(distinct n.name, ', ') filter (where n.kind = 'relation') as relations
         from n group by n.object_type
     ), all_types as (
@@ -243,7 +243,7 @@ begin
     where case when u.p is null then not exists (select 1 from n where n.object_type = u.t)
                else exists (select 1 from n where n.object_type = u.t)
                     and not exists (select 1 from n
-                                    where n.object_type = u.t and n.kind <> 'type'
+                                    where n.object_type = u.t and n.kind not in ('type', 'attribute')
                                       and (n.name = u.p or (eng = 'cerbos' and (n.name = '*' or (n.name like '%:*' and starts_with(u.p, left(n.name, -1))))))) end
     union
     select t.item, format('%s has no type %s (its types: %s)', rules, t.t, (select types from all_types))
@@ -276,7 +276,25 @@ begin
     from decl d
     join n c on c.kind = 'condition' and c.name = d.condition,
          jsonb_object_keys(d.condition_context) p(key)
-    where not p.key = any(c.subjects);
+    where not p.key = any(c.subjects)
+    union
+    -- Cedar: each attribute a protected table sends, declared on its type, from a column holding
+    -- it as Cedar has it (a Long from an integer, a String from text, an entity's id from any)
+    select b.rel::text || case when b.name <> 'pg_auth' then ' (' || b.name || ')' else '' end,
+           case when x.name is null then format('the cedar schema declares no attribute %s on %s', p.attr, b.object_type)
+                else format('%s.%s is %s in the cedar schema: column %s (%s) does not hold one', b.object_type, p.attr, x.subjects[1],
+                            p.col, format_type(a.atttypid, a.atttypmod)) end
+    from authz_internal.bindings b
+    cross join lateral (select v, v from unnest(b.attributes) v union all select e.key, e.value from jsonb_each_text(b.attribute_map) e) p(attr, col)
+    join pg_attribute a on a.attrelid = b.rel and a.attname = p.col
+    left join n x on x.kind = 'attribute' and x.object_type = b.object_type and x.name = p.attr
+    where eng = 'cedar'
+      and (x.name is null
+           or not (exists (select 1 from n t where t.kind = 'type' and t.object_type = x.subjects[1])
+                   or (x.subjects[1] = 'String' and (select typcategory from pg_type where oid = a.atttypid) = 'S')
+                   or (x.subjects[1] = 'Long' and a.atttypid in ('int2'::regtype, 'int4'::regtype, 'int8'::regtype))
+                   or (x.subjects[1] in ('Bool', 'Boolean') and a.atttypid = 'bool'::regtype)
+                   or (x.subjects[1] like 'Set<%' and (select typcategory from pg_type where oid = a.atttypid) = 'A')));
 end
 $$;
 

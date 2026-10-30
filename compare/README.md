@@ -198,6 +198,15 @@ planner's filter), `cached` (one generic plan, reused by every principal on one 
 its own transaction) and `per_row` (`pg_auth.plan_lookup = off`: the plan evaluated per row, or
 Cerbos asked per row). On a mismatch it prints the plan. Exits 1 on any mismatch.
 
+`cedar.exs` does the same for Cedar, run by the sidecar: generated rows with nulls in optional and
+required columns, entity ids in an integer column, folders, groups and roles from the token, and
+for every subject the rows its compiled filter shows against the rows the per-row evaluation of
+the same plan shows (`pg_auth.plan_lookup = off`). The sidecar's own tests check that evaluation
+against Cedar's decision, row by row.
+
+    elixir compare/cedar.exs                                        # seed 1: 300 rows, 28 subjects
+    elixir compare/cedar.exs --no-build --rows 1000 --seed 3
+
 ## Relationship tables
 
 `relationships.exs` checks that an application with no backend can grant and revoke access by

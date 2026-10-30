@@ -117,6 +117,10 @@ impl<'a> Compiler<'_, 'a> {
                 let entity = param["kind"].as_str() == Some("entity") && matches!(op, "eq" | "ne");
                 let row = if entity { self.row_expr_as_is(row)? } else { self.row_expr(row)? };
                 let typ = catalog::expr_type(row);
+                // a comparison with null: whether the row has the value (CEL's `!= null`, Cedar's `has`)
+                if param["kind"].as_str() == Some("null") && matches!(op, "eq" | "ne") {
+                    return Some(m.null_test(row, op == "ne"));
+                }
                 if !entity && param["kind"].as_str() != Some(kind_of_type(typ)) {
                     // values of different kinds: unequal, and without order
                     return Some(match op {

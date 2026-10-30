@@ -108,6 +108,21 @@ fn skeleton(e: &Value, values: &mut Vec<Value>) -> Value {
     }
 }
 
+/// Whether value `n` of a skeleton (as text) is an entity's id, or a list of them.
+pub fn entity_param(skeleton: &str, n: i32) -> bool {
+    fn find(e: &Value, n: i64) -> Option<bool> {
+        match e {
+            Value::Object(map) if map.get("param").and_then(Value::as_i64) == Some(n) => {
+                Some(map.get("kind").and_then(Value::as_str) == Some("entity") || map.get("of").and_then(Value::as_str) == Some("entity"))
+            }
+            Value::Object(map) => map.values().find_map(|v| find(v, n)),
+            Value::Array(items) => items.iter().find_map(|v| find(v, n)),
+            _ => None,
+        }
+    }
+    serde_json::from_str::<Value>(skeleton).ok().and_then(|s| find(&s, i64::from(n))).unwrap_or(false)
+}
+
 fn push(values: &mut Vec<Value>, value: Value, mut placeholder: Value) -> Value {
     placeholder["param"] = values.len().into();
     values.push(value);

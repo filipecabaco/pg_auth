@@ -107,6 +107,20 @@ impl<'a> Memory<'a> {
         saop.node()
     }
 
+    /// `expr IS NULL`, or `IS NOT NULL` when `not`.
+    pub fn null_test(self, expr: Node<'a>, not: bool) -> Node<'a> {
+        let test = self.node::<pg_sys::NullTest>(NodeTag::T_NullTest);
+        // SAFETY: a new NullTest of this tree, its argument a live node of it
+        unsafe {
+            let raw = test.as_raw();
+            (*raw).arg = expr.as_raw().cast();
+            (*raw).nulltesttype = if not { pg_sys::NullTestType::IS_NOT_NULL } else { pg_sys::NullTestType::IS_NULL };
+            (*raw).argisrow = false;
+            (*raw).location = -1;
+        }
+        test.node()
+    }
+
     /// `coalesce(clause, otherwise)`, both boolean.
     pub fn coalesce_bool(self, clause: Node<'a>, otherwise: bool) -> Node<'a> {
         let coalesce = self.node::<pg_sys::CoalesceExpr>(NodeTag::T_CoalesceExpr);

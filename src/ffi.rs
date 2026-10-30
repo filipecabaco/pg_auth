@@ -211,6 +211,22 @@ pub fn valid_input(value: &str, typ: pg_sys::Oid) -> bool {
     }
 }
 
+/// `value`, valid input for `typ` (`valid_input`), as `typ` writes it back: `007` as an integer is
+/// `7`.
+pub fn text_form(value: &str, typ: pg_sys::Oid) -> Option<String> {
+    let text = std::ffi::CString::new(value).ok()?;
+    // SAFETY: the input and output functions of an existing type, called on input already known
+    // valid (no error to raise); the output is a new palloc'd C string, copied
+    unsafe {
+        let (mut input, mut ioparam, mut output, mut varlena) = (pg_sys::InvalidOid, pg_sys::InvalidOid, pg_sys::InvalidOid, false);
+        pg_sys::getTypeInputInfo(typ, &raw mut input, &raw mut ioparam);
+        pg_sys::getTypeOutputInfo(typ, &raw mut output, &raw mut varlena);
+        let datum = pg_sys::OidInputFunctionCall(input, text.as_ptr().cast_mut(), ioparam, -1);
+        let out = pg_sys::OidOutputFunctionCall(output, datum);
+        (!out.is_null()).then(|| std::ffi::CStr::from_ptr(out).to_string_lossy().into_owned())
+    }
+}
+
 /// Let Postgres act on a cancel or a timeout that arrived meanwhile (raises its error).
 pub fn check_for_interrupts() {
     pgrx::check_for_interrupts!();

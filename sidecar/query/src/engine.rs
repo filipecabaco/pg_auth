@@ -213,8 +213,9 @@ impl Engine {
                     message: "cerbos keeps no relationships: relationship tables need OpenFGA, SpiceDB or Cedar".into(),
                 });
             }
-            // in order, in one go: kept in Postgres by the outbox's transaction too (outbox.rs)
-            Engine::Cedar(e) => return e.apply(changes),
+            // read here; kept in Postgres by the outbox's transaction, and applied once it commits
+            // (outbox.rs)
+            Engine::Cedar(_) => return crate::cedar::Cedar::validate(changes).map(|_| ()),
         };
         for batch in batches(changes, max) {
             match self {

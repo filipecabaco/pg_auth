@@ -120,21 +120,28 @@ fn plan_shape_is(object_type: &str, permission: &str, shape: &str) -> bool {
 #[pg_extern(stable, parallel_restricted, security_definer)]
 #[search_path(pg_catalog, pg_temp)]
 fn plan_value(object_type: &str, permission: &str, n: i32, typ: pg_sys::Oid) -> Option<String> {
-    let (_, values) = plan_skeleton(object_type, permission)?;
-    valid_input(crate::condition::as_text(values.get(usize::try_from(n).ok()?)?)?, typ)
+    let (skeleton, values) = plan_skeleton(object_type, permission)?;
+    let exact = crate::condition::entity_param(&skeleton, n);
+    valid_input(crate::condition::as_text(values.get(usize::try_from(n).ok()?)?)?, typ, exact)
 }
 
 /// The same for a list value: its items valid for `typ`.
 #[pg_extern(stable, parallel_restricted, security_definer)]
 #[search_path(pg_catalog, pg_temp)]
 fn plan_values(object_type: &str, permission: &str, n: i32, typ: pg_sys::Oid) -> Option<Vec<String>> {
-    let (_, values) = plan_skeleton(object_type, permission)?;
+    let (skeleton, values) = plan_skeleton(object_type, permission)?;
+    let exact = crate::condition::entity_param(&skeleton, n);
     let items = values.get(usize::try_from(n).ok()?)?.as_array()?;
-    Some(items.iter().filter_map(crate::condition::as_text).filter_map(|v| valid_input(v, typ)).collect())
+    Some(items.iter().filter_map(crate::condition::as_text).filter_map(|v| valid_input(v, typ, exact)).collect())
 }
 
-fn valid_input(value: String, typ: pg_sys::Oid) -> Option<String> {
-    crate::ffi::valid_input(&value, typ).then_some(value)
+/// `value` when it is input for `typ`; with `exact` (an entity's id), only when the column's own
+/// text form of it is the same text: the id `007` is not the row `7`, as the engine has them.
+fn valid_input(value: String, typ: pg_sys::Oid, exact: bool) -> Option<String> {
+    if !crate::ffi::valid_input(&value, typ) {
+        return None;
+    }
+    (!exact || crate::ffi::text_form(&value, typ).as_deref() == Some(value.as_str())).then_some(value)
 }
 
 /// Prepare this backend for its first request, so none of it is paid while a query is planned:

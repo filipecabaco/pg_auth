@@ -41,6 +41,10 @@ impl Entry {
     fn action(resource: &str, action: &str) -> Self {
         Self { object_type: resource.to_owned(), name: Some(action.to_owned()), kind: "action", subjects: None }
     }
+
+    fn attribute(t: &str, name: &str, declared: &str) -> Self {
+        Self { object_type: t.to_owned(), name: Some(name.to_owned()), kind: "attribute", subjects: Some(vec![declared.to_owned()]) }
+    }
 }
 
 #[pg_extern(immutable, parallel_safe, schema = "authz_internal")]
@@ -382,8 +386,41 @@ fn cedar_word(s: &str, w: &str) -> Option<usize> {
     None
 }
 
-/// A Cedar schema's entity types (with their `in` parents) and actions (on each resource type they
-/// apply to). Policies define none.
+/// A record's attributes (`{ owner: User, "odd name"?: Long, tags: Set<String> }`, from its brace)
+/// and their declared types, as written.
+fn cedar_attributes(record: &str) -> Vec<(String, String)> {
+    let (mut depth, mut quoted, mut start) = (0i32, false, 1);
+    let mut items = Vec::new();
+    for (i, c) in record.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '{' | '<' | '[' if !quoted => depth += 1,
+            '}' | '>' | ']' if !quoted => {
+                depth -= 1;
+                if depth == 0 {
+                    items.push(&record[start..i]);
+                    break;
+                }
+            }
+            ',' if !quoted && depth == 1 => {
+                items.push(&record[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let (name, declared) = item.split_once(':')?;
+            Some((name.trim().trim_end_matches('?').trim().trim_matches('"').to_owned(), declared.trim().to_owned()))
+        })
+        .filter(|(name, _)| !name.is_empty())
+        .collect()
+}
+
+/// A Cedar schema's entity types (with their `in` parents and attributes) and actions (on each
+/// resource type they apply to). Policies define none.
 fn cedar(body: &str) -> Result<Vec<Entry>, String> {
     let (code, _) = cedar_comments(body);
     let mut names = Vec::new();
@@ -406,11 +443,13 @@ fn cedar(body: &str) -> Result<Vec<Entry>, String> {
                 Some(at) => (&head[..at], cedar_names(&head[at + 2..])),
                 None => (head, Vec::new()),
             };
+            let attributes = rest.find('{').map(|open| cedar_attributes(&rest[open..])).unwrap_or_default();
             for t in cedar_names(types) {
                 names.push(Entry::of_type(&t));
                 if !parents.is_empty() {
                     names.push(Entry::relation(&t, "in", parents.clone()));
                 }
+                names.extend(attributes.iter().map(|(a, declared)| Entry::attribute(&t, a, declared)));
             }
         } else if let Some(rest) = s.strip_prefix("action ") {
             let Some(applies) = cedar_word(rest, "appliesTo") else { continue };
@@ -526,12 +565,16 @@ mod tests {
                 "type Role",
                 "type User",
                 "relation User#in [Group, Role]",
+                "attribute User#dept [String]",
+                "attribute User#odd name [Long]",
                 "type Group",
                 "type Team",
                 "type Folder",
                 "relation Folder#in [Folder]",
                 "type Document",
                 "relation Document#in [Folder]",
+                "attribute Document#owner [User]",
+                "attribute Document#tags [Set<String>]",
                 "action Document#view",
                 "action Document#edit doc",
                 "action Folder#view",

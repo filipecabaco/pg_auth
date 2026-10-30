@@ -623,8 +623,14 @@ written through a relationship table clears every one of them:
 - **Memory.** Each backend keeps answers of its own: up to 10,000 lists, and a million ids of loaded
   index sets.
 - **Hosted OpenFGA with OAuth** (Okta FGA): the sidecar takes a static token only.
-- **Cedar.** No namespaces, templates or request context yet; an entity's own attributes other
-  than the principal's (from its claims) and the row's are unknown to it, so a policy reading a
-  parent's attributes does not apply; the permission index does not serve it. A sidecar that did
+- **Cedar.** No namespaces, templates or request context yet (an action requiring a context is
+  refused). An entity's own attributes other than the principal's (from its claims) and the row's
+  are unknown to it: a permit reading a parent's attributes grants nothing, and a forbid reading
+  them denies every row it could apply to. A principal whose type may be `in` a `Role` has its
+  roles only from its token, sent with plans and with checks of rows given their attributes: a
+  table protected without attributes is answered with them unknown, so a policy on roles decides
+  none of its rows (they are denied). The permission index does not serve Cedar. A sidecar that did
   not deliver a change reads the parents again after the delivery, a few milliseconds behind the
-  one that did.
+  one that did. A protected table's attributes come from columns of the type Cedar declares (a
+  Long from an integer, a String from text, an entity's id from any column, matched by its exact
+  text); another is refused when the setup is committed.

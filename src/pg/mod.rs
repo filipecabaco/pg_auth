@@ -142,6 +142,7 @@ node_structs!(
     Integer,
     PlanState,
     CoalesceExpr,
+    NullTest,
     FromExpr,
     TargetEntry,
     WithCheckOption,

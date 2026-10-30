@@ -1351,6 +1351,28 @@ mod tests {
             .unwrap_or_default()
             .contains("Document has no edit in the cedar schema (it has: in, view)")
         );
+        // an attribute is sent from a column holding it as Cedar types it, and declared
+        Spi::run("alter table public.cdocs add column size text, add column pages int").unwrap();
+        let protect = |extra: &str| {
+            error_at_commit(&format!(
+                "select authz_internal.protect('public.cdocs', type => 'Document', id => 'id', read => 'view', {extra})"
+            ))
+            .unwrap_or_default()
+        };
+        let undeclared = protect("attributes => array['pages']::name[]");
+        assert!(undeclared.contains("the cedar schema declares no attribute pages on Document"), "{undeclared}");
+        Spi::run(
+            "select authz.set_rules('cedar', 'schema', 'entity Group;
+                 entity User in [Group];
+                 entity Folder in [Folder];
+                 entity Document in [Folder] { owner: User, size: Long, pages: Long };
+                 action view appliesTo { principal: User, resource: Document };')",
+        )
+        .unwrap();
+        let mistyped = protect("attributes => array['size']::name[]");
+        assert!(mistyped.contains("Document.size is Long in the cedar schema: column size (text) does not hold one"), "{mistyped}");
+        // a Long from an integer, an entity's id from any column
+        assert_eq!(protect(r#"attributes => array['pages']::name[], attribute_map => '{"owner": "owner_id"}'"#), "");
         // every sidecar loads what the engine took: none yet, then the schema
         assert_eq!(Spi::get_one::<i64>("select count(*) from authz_sidecar.rules_in_force('cedar')").unwrap(), Some(0));
         Spi::run("select authz_sidecar.rules_pushed('cedar', 'schema', 1, null, 'abc')").unwrap();

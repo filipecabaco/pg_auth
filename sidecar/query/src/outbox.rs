@@ -134,9 +134,10 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
         }
     };
     tx.execute("select authz_sidecar.outbox_done($1)", &[&done]).await.map_err(pg)?;
-    // Cedar runs in every sidecar: what it took is kept in Postgres, where each one reads it
+    // Cedar runs in every sidecar: what it took is kept in Postgres, where each one reads it, and
+    // applied here once that commits
+    let taken: Vec<Change> = changes.iter().filter(|(id, _)| done.contains(id)).map(|(_, c)| c.clone()).collect();
     if engine.cedar().is_some() {
-        let taken: Vec<&Change> = changes.iter().filter(|(id, _)| done.contains(id)).map(|(_, c)| c).collect();
         let writes: Vec<bool> = taken.iter().map(|c| c.write).collect();
         let children: Vec<&str> = taken.iter().map(|c| c.object.as_str()).collect();
         let parents: Vec<&str> = taken.iter().map(|c| c.subject.as_str()).collect();
@@ -153,6 +154,9 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
         tx.execute("select pg_notify('pg_auth_delivered', $1)", &[&at]).await.map_err(pg)?;
     }
     tx.commit().await.map_err(pg)?;
+    if let Some(cedar) = engine.cedar() {
+        let _ = cedar.apply(&taken);
+    }
     let shown: Vec<String> = changes
         .iter()
         .filter(|(id, _)| done.contains(id))

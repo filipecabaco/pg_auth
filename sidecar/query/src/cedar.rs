@@ -170,10 +170,12 @@ impl Cedar {
 
     // ---- entities' parents
 
-    /// Relationship changes the outbox delivers: each an `in` (the object's parent is the subject).
-    pub fn apply(&self, changes: &[Change]) -> Result<(), CallError> {
+    /// Relationship changes the outbox delivers, each an `in` (the object's parent is the subject),
+    /// read: an error for one Cedar cannot take. They are applied (`apply`) once the delivery that
+    /// keeps them in Postgres has committed, so no read of Postgres meanwhile undoes them.
+    pub fn validate(changes: &[Change]) -> Result<Vec<(bool, Uid, Uid)>, CallError> {
         let permanent = |message: String| CallError { permanent: true, message };
-        let edges = changes
+        changes
             .iter()
             .map(|c| {
                 if c.relation != "in" {
@@ -184,7 +186,12 @@ impl Cedar {
                 }
                 Ok((c.write, uid_of(&c.object).map_err(permanent)?, uid_of(&c.subject).map_err(permanent)?))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect()
+    }
+
+    /// Delivered changes, committed: into this sidecar's parents.
+    pub fn apply(&self, changes: &[Change]) -> Result<(), CallError> {
+        let edges = Self::validate(changes)?;
         let mut store = self.store.write().map_err(|_| CallError { permanent: false, message: "cedar: store lock".into() })?;
         for (write, child, parent) in edges {
             if write {
@@ -249,8 +256,8 @@ impl Cedar {
         let loaded = self.loaded()?;
         let store = self.store.read().map_err(|_| "cedar: store lock")?;
         let principal_uid = uid_of(subject)?;
-        let mut entities = principal_entities(&loaded, &store, &principal_uid, principal);
-        entities.extend(ancestors_json(&loaded, &store, &principal_uid));
+        let principal_ancestors = principal_ancestors(&loaded, &store, &principal_uid, principal);
+        let entities = principal_entities(&loaded, &store, &principal_uid, principal, principal_ancestors.as_ref());
         let request = PartialRequest::new(
             PartialEntityUid::from_concrete(euid(&principal_uid)?),
             action(permission)?,
@@ -262,12 +269,30 @@ impl Cedar {
         let entities =
             PartialEntities::from_json_value(Value::Array(dedup(entities)), &loaded.schema).map_err(|e| format!("cedar: {e}"))?;
         let response = loaded.policies.tpe(&request, &entities, &loaded.schema).map_err(|e| format!("cedar: {e}"))?;
+        // rows given with attributes allow nothing when one Cedar requires is missing
+        let required = if with_attributes { required(&loaded, object_type) } else { Vec::new() };
+        let present = required
+            .into_iter()
+            .fold(Cond::True, |all, a| Cond::and(all, Cond::Expr(json!({"op": "ne", "args": [{"column": a}, {"value": null}]}))));
+        let outcome = |c: Cond| match c {
+            Cond::True => Plan::Always,
+            Cond::False => Plan::Never,
+            Cond::Check => Plan::Rows,
+            Cond::Expr(e) => Plan::Condition(e),
+        };
         match response.decision() {
-            Some(cedar_policy::Decision::Allow) => return Ok(Plan::Always),
+            Some(cedar_policy::Decision::Allow) => return Ok(outcome(present)),
             Some(cedar_policy::Decision::Deny) => return Ok(Plan::Never),
             None => {}
         }
-        let tr = Translate { resource_type: object_type, loaded: &loaded, store: &store, limit };
+        let tr = Translate {
+            resource_type: object_type,
+            loaded: &loaded,
+            store: &store,
+            limit,
+            principal: &principal_uid,
+            principal_ancestors: principal_ancestors.as_ref(),
+        };
         let mut permits = if response.true_permits().next().is_some() { Cond::True } else { Cond::False };
         let mut forbids = Cond::False;
         for policy in response.residual_policies() {
@@ -281,16 +306,7 @@ impl Cedar {
                 forbids = Cond::or(forbids, t);
             }
         }
-        let required = if with_attributes { required(&loaded, object_type) } else { Vec::new() };
-        let present = required
-            .into_iter()
-            .fold(Cond::True, |all, a| Cond::and(all, Cond::Expr(json!({"op": "ne", "args": [{"column": a}, {"value": null}]}))));
-        Ok(match Cond::and(present, Cond::and(permits, Cond::not(forbids))) {
-            Cond::True => Plan::Always,
-            Cond::False => Plan::Never,
-            Cond::Check => Plan::Rows,
-            Cond::Expr(e) => Plan::Condition(e),
-        })
+        Ok(outcome(Cond::and(present, Cond::and(permits, Cond::not(forbids)))))
     }
 
     /// The ids of `object_type` the subject may access when its policies name them (`resource ==`,
@@ -318,14 +334,13 @@ impl Cedar {
         let loaded = self.loaded()?;
         let store = self.store.read().map_err(|_| "cedar: store lock")?;
         let principal_uid = uid_of(subject)?;
-        let mut base = principal_entities(&loaded, &store, &principal_uid, principal);
-        base.extend(ancestors_json(&loaded, &store, &principal_uid));
+        let principal_ancestors = principal_ancestors(&loaded, &store, &principal_uid, principal);
+        let base = principal_entities(&loaded, &store, &principal_uid, principal, principal_ancestors.as_ref());
         let action = action(permission)?;
         ids.iter()
             .enumerate()
             .map(|(i, id)| {
                 let resource = (object_type.to_owned(), (*id).clone());
-                let mut entities = base.clone();
                 let mut entity = Map::new();
                 entity.insert("uid".into(), entity_json(&resource));
                 if let Some(given) = attrs.get(i).copied().flatten() {
@@ -333,7 +348,10 @@ impl Cedar {
                     entity.insert("attrs".into(), a);
                 }
                 entity.insert("parents".into(), Value::Array(ancestors(&loaded, &store, &resource).iter().map(entity_json).collect()));
-                entities.push(Value::Object(entity));
+                // the row first: kept over the same entity among the principal's ancestors (`dedup`),
+                // with the attributes it alone has
+                let mut entities = vec![Value::Object(entity)];
+                entities.extend(base.iter().cloned());
                 entities.extend(ancestors_json(&loaded, &store, &resource));
                 let request = PartialRequest::new(
                     PartialEntityUid::from_concrete(euid(&principal_uid)?),
@@ -364,6 +382,21 @@ fn compile(named: BTreeMap<String, String>) -> Result<Loaded, String> {
     let (fragment, _) = SchemaFragment::from_cedarschema_str(schema_text).map_err(|e| format!("cedar schema: {e}"))?;
     let shapes = fragment.to_json_value().map_err(|e| format!("cedar schema: {e}"))?;
     let types = shapes_of(&shapes)?;
+    // pg_auth asks with an empty context: an action that requires one would refuse every request
+    for (action, decl) in shapes[""]["actions"].as_object().into_iter().flatten() {
+        let context = &decl["appliesTo"]["context"];
+        let required = |attrs: &Map<String, Value>| attrs.values().any(|a| a.get("required").and_then(Value::as_bool).unwrap_or(true));
+        let takes = match context {
+            Value::Null => false,
+            c if c["type"] == "Record" => c["attributes"].as_object().is_some_and(required),
+            _ => true,
+        };
+        if takes {
+            return Err(format!(
+                "cedar schema: action {action} requires a context, which pg_auth does not send: make its attributes optional (`?`)"
+            ));
+        }
+    }
     let mut policies = PolicySet::new();
     for (name, text) in named.iter().filter(|(n, _)| !is_schema(n)) {
         let set = PolicySet::from_str(text).map_err(|e| format!("cedar policies {name}: {e}"))?;
@@ -479,30 +512,53 @@ fn ancestors_json(loaded: &Loaded, store: &Store, uid: &Uid) -> Vec<Value> {
         .collect()
 }
 
-/// The principal: its parents from the store, and from its roles when its type may be `in` a
-/// `Role`; its attributes from the principal's (claims, with `roles`), when every required one is
-/// there, else unknown.
-fn principal_entities(loaded: &Loaded, store: &Store, uid: &Uid, principal: Option<&Value>) -> Vec<Value> {
-    let shape = loaded.types.get(&uid.0);
-    let mut parents: HashSet<Uid> = ancestors(loaded, store, uid);
-    let roles: Vec<String> =
-        principal.and_then(|p| p["roles"].as_array()).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
-    if shape.is_some_and(|s| s.member_of.iter().any(|t| t == "Role")) {
-        parents.extend(roles.iter().map(|r| ("Role".to_owned(), r.clone())));
+fn roles_of(principal: Option<&Value>) -> Vec<String> {
+    principal.and_then(|p| p["roles"].as_array()).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect()
+}
+
+/// Every ancestor of the principal: from the store, its roles when its type may be `in` a `Role`,
+/// and theirs. None when they cannot be known, a principal of such a type given without its roles:
+/// Cedar then keeps every `principal in` open rather than take a set that may lack one.
+fn principal_ancestors(loaded: &Loaded, store: &Store, uid: &Uid, principal: Option<&Value>) -> Option<HashSet<Uid>> {
+    let mut all = ancestors(loaded, store, uid);
+    if may_be_in(loaded, &uid.0, "Role") {
+        for role in roles_of(Some(principal?)) {
+            let role = ("Role".to_owned(), role);
+            all.extend(ancestors(loaded, store, &role));
+            all.insert(role);
+        }
     }
+    Some(all)
+}
+
+/// The principal with its ancestors (`principal_ancestors`; unknown when None), each with its own;
+/// its attributes from the principal's (claims, with `roles`), when every required one is there,
+/// else unknown.
+fn principal_entities(
+    loaded: &Loaded,
+    store: &Store,
+    uid: &Uid,
+    principal: Option<&Value>,
+    ancestors_of: Option<&HashSet<Uid>>,
+) -> Vec<Value> {
     let mut entity = Map::new();
     entity.insert("uid".into(), entity_json(uid));
-    entity.insert("parents".into(), Value::Array(parents.iter().map(entity_json).collect()));
+    if let Some(all) = ancestors_of {
+        entity.insert("parents".into(), Value::Array(all.iter().map(entity_json).collect()));
+    }
     if let Some(p) = principal {
         let mut given = p["attr"].as_object().cloned().unwrap_or_default();
-        given.entry("roles").or_insert_with(|| json!(roles));
+        given.entry("roles").or_insert_with(|| json!(roles_of(principal)));
         if let Some(attrs) = attributes(loaded, &uid.0, &Value::Object(given)) {
             entity.insert("attrs".into(), attrs);
         }
     }
     let mut all = vec![Value::Object(entity)];
     all.extend(
-        roles.iter().filter(|_| loaded.types.contains_key("Role")).map(|r| json!({"uid": {"type": "Role", "id": r}, "parents": []})),
+        ancestors_of
+            .into_iter()
+            .flatten()
+            .map(|a| json!({"uid": entity_json(a), "parents": ancestors(loaded, store, a).iter().map(entity_json).collect::<Vec<_>>()})),
     );
     all
 }
@@ -527,10 +583,10 @@ fn attributes(loaded: &Loaded, ty: &str, given: &Value) -> Option<Value> {
 
 fn value_of(kind: &Kind, v: &Value) -> Option<Value> {
     Some(match (kind, v) {
+        // as the column holds it (authz_internal.rules_problems refuses a column of another type):
+        // no conversion the compiled filter would not make too
         (Kind::String, Value::String(_)) | (Kind::Bool, Value::Bool(_)) => v.clone(),
-        (Kind::String, Value::Number(n)) => json!(n.to_string()),
         (Kind::Long, Value::Number(n)) => json!(n.as_i64()?),
-        (Kind::Long, Value::String(s)) => json!(s.parse::<i64>().ok()?),
         (Kind::Entity(t), Value::String(id)) => json!({"__entity": {"type": t, "id": id}}),
         (Kind::Entity(t), Value::Number(n)) => json!({"__entity": {"type": t, "id": n.to_string()}}),
         (Kind::Set(k), Value::Array(items)) => Value::Array(items.iter().map(|i| value_of(k, i)).collect::<Option<_>>()?),
@@ -538,8 +594,8 @@ fn value_of(kind: &Kind, v: &Value) -> Option<Value> {
     })
 }
 
-/// Entities named more than once (the principal among a resource's ancestors) kept once, the
-/// first (fuller) one.
+/// Entities named more than once (a resource among the principal's ancestors) kept once: the
+/// first, which callers put fullest first.
 fn dedup(entities: Vec<Value>) -> Vec<Value> {
     let mut seen = HashSet::new();
     entities.into_iter().filter(|e| seen.insert(e["uid"].to_string())).collect()
@@ -616,6 +672,9 @@ struct Translate<'a> {
     loaded: &'a Loaded,
     store: &'a Store,
     limit: usize,
+    principal: &'a Uid,
+    /// its ancestors with its roles' (`principal_ancestors`), None when unknown
+    principal_ancestors: Option<&'a HashSet<Uid>>,
 }
 
 /// An operand: the row's attribute or id, or a value.
@@ -633,6 +692,10 @@ impl Translate<'_> {
         let (op, args) = expr.as_object().filter(|o| o.len() == 1)?.iter().next()?;
         match op.as_str() {
             "Value" => args.as_bool().map(|b| if b { Cond::True } else { Cond::False }),
+            // a boolean attribute as the condition itself
+            "." if is_resource(&args["left"]) => {
+                Some(Cond::Expr(json!({"op": "eq", "args": [{"column": args["attr"].as_str()?}, {"value": true}]})))
+            }
             "&&" => Some(Cond::and(self.cond(&args["left"])?, self.cond(&args["right"])?)),
             "||" => Some(Cond::or(self.cond(&args["left"])?, self.cond(&args["right"])?)),
             "!" => Some(Cond::not(self.cond(&args["arg"])?)),
@@ -651,9 +714,16 @@ impl Translate<'_> {
             "contains" => {
                 let items = args["left"]["Set"].as_array()?;
                 let values = items.iter().map(literal).collect::<Option<Vec<_>>>()?;
+                // entities by their ids, marked so; a set mixing entities and values is left to Cedar
+                let entities = items.iter().filter(|i| entity_literal(i).is_some()).count();
+                let list = match entities {
+                    0 => json!({"value": values}),
+                    n if n == items.len() => json!({"value": values, "entity": true}),
+                    _ => return None,
+                };
                 match operand(&args["right"])? {
                     Operand::Row(_) if values.is_empty() => Some(Cond::False),
-                    Operand::Row(row) => Some(Cond::Expr(json!({"op": "in", "args": [row, {"value": values}]}))),
+                    Operand::Row(row) => Some(Cond::Expr(json!({"op": "in", "args": [row, list]}))),
                     _ => None,
                 }
             }
@@ -697,8 +767,9 @@ impl Translate<'_> {
                     }
                     _ => return None,
                 };
-                let mut ids: Vec<String> =
-                    ancestors(self.loaded, self.store, &entity).into_iter().filter(|a| a.0 == target).map(|a| a.1).collect();
+                let above =
+                    if &entity == self.principal { self.principal_ancestors?.clone() } else { ancestors(self.loaded, self.store, &entity) };
+                let mut ids: Vec<String> = above.into_iter().filter(|a| a.0 == target).map(|a| a.1).collect();
                 if entity.0 == target {
                     ids.push(entity.1);
                 }
@@ -1026,15 +1097,23 @@ mod tests {
     fn roles_are_parents_when_the_schema_says_so() {
         let c = cedar();
         let admin = json!({"roles": ["admin"], "attr": {"dept": "x", "level": 0}});
-        assert_eq!(c.plan("User:carl", "edit", "Document", Some(&admin), 1000).unwrap(), Plan::Always);
+        // every document an admin's, but for one Cedar would not take (a required attribute missing)
+        let Plan::Condition(only_present) = c.plan("User:carl", "edit", "Document", Some(&admin), 1000).unwrap() else {
+            panic!("a condition")
+        };
+        let text = only_present.to_string();
+        assert!(text.contains(r#"{"value":null}"#) && !text.contains("check") && !text.contains(r#""op":"in""#), "{text}");
         assert_eq!(c.plan("User:carl", "edit", "Document", Some(&anne()), 1000).unwrap(), Plan::Never);
     }
 
     #[test]
     fn listing_answers_ids_when_the_policies_name_them() {
         let c = Cedar::new();
+        // a principal that cannot be in a Role: its parents are the store's, known without its token
+        let schema = "entity Group; entity User in [Group]; entity Folder in [Folder]; entity Document in [Folder];
+                      action view appliesTo { principal: User, resource: Document };";
         let rules =
-            [("schema", SCHEMA_TEXT), ("p", r#"permit(principal in Group::"eng", action == Action::"view", resource in Folder::"f1");"#)];
+            [("schema", schema), ("p", r#"permit(principal in Group::"eng", action == Action::"view", resource in Folder::"f1");"#)];
         c.load(BTreeMap::from(rules.map(|(n, b)| (n.to_owned(), b.to_owned())))).unwrap();
         c.apply(&[change("User:anne", "Group:eng"), change("Folder:f2", "Folder:f1"), change("Document:1", "Folder:f2")]).unwrap();
         let Listed::Ids(ids) = c.list("User:anne", "view", "Document", 1000).unwrap() else { panic!("ids") };
@@ -1112,5 +1191,84 @@ mod tenant_tests {
             let row = json!({"org": org});
             assert_eq!(c.check("User:anne", "view", "Document", &[&id.to_owned()], &[Some(&row)], None).unwrap(), [allowed], "{id}");
         }
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    fn load(schema: &str, policies: &str) -> Cedar {
+        let c = Cedar::new();
+        c.load(BTreeMap::from([("schema".to_owned(), schema.to_owned()), ("p".to_owned(), policies.to_owned())])).unwrap();
+        c
+    }
+
+    fn edge(child: &str, parent: &str) -> Change {
+        Change { write: true, object: child.into(), relation: "in".into(), subject: parent.into(), ..Change::default() }
+    }
+
+    fn condition(plan: Plan) -> String {
+        match plan {
+            Plan::Condition(c) => c.to_string(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn has_is_a_column_present_and_an_entity_list_keeps_its_marker() {
+        let c = load(
+            "entity User; entity Doc { approved_by?: User, owner: User, public: Bool };
+             action view appliesTo { principal: User, resource: Doc };",
+            r#"permit (principal, action, resource) when { resource has approved_by };
+               permit (principal, action, resource) when { resource.public };
+               forbid (principal, action, resource) when { [User::"1", User::"2"].contains(resource.owner) };"#,
+        );
+        let plan = condition(c.plan("User:anne", "view", "Doc", None, 1000).unwrap());
+        assert!(plan.contains(r#"{"op":"ne","args":[{"column":"approved_by"},{"value":null}]}"#), "{plan}");
+        assert!(plan.contains(r#"{"op":"eq","args":[{"column":"public"},{"value":true}]}"#), "{plan}");
+        assert!(plan.contains(r#"[{"column":"owner"},{"value":["1","2"],"entity":true}]"#), "{plan}");
+    }
+
+    const ROLES: &str = "entity Role in [Role]; entity User in [Role]; entity Doc { embargo: Role };
+                         action view appliesTo { principal: User, resource: Doc };";
+
+    #[test]
+    fn a_token_roles_ancestors_count() {
+        let c = load(ROLES, r#"permit (principal, action, resource); forbid (principal in Role::"restricted", action, resource);"#);
+        c.apply(&[edge("Role:contractor", "Role:restricted")]).unwrap();
+        let contractor = json!({"roles": ["contractor"], "attr": {}});
+        assert_eq!(c.plan("User:anne", "view", "Doc", Some(&contractor), 1000).unwrap(), Plan::Never);
+        assert_eq!(
+            c.check("User:anne", "view", "Doc", &[&"1".to_owned()], &[Some(&json!({"embargo": "x"}))], Some(&contractor)).unwrap(),
+            [false]
+        );
+        // no principal given: its roles are unknown, so nothing is decided on them
+        assert!(matches!(c.list("User:anne", "view", "Doc", 1000).unwrap(), Listed::TooMany));
+        assert_eq!(c.check("User:anne", "view", "Doc", &[&"1".to_owned()], &[None], None).unwrap(), [false]);
+    }
+
+    #[test]
+    fn a_principal_in_an_attribute_counts_its_token_roles() {
+        let c = load(
+            ROLES,
+            r"permit (principal, action, resource); forbid (principal, action, resource) when { principal in resource.embargo };",
+        );
+        let contractor = json!({"roles": ["contractor"], "attr": {}});
+        let plan = condition(c.plan("User:anne", "view", "Doc", Some(&contractor), 1000).unwrap());
+        assert!(plan.contains(r#"[{"column":"embargo"},{"value":["contractor"],"entity":true}]"#), "{plan}");
+        for (embargo, allowed) in [("contractor", false), ("staff", true)] {
+            let row = json!({"embargo": embargo});
+            assert_eq!(c.check("User:anne", "view", "Doc", &[&"1".to_owned()], &[Some(&row)], Some(&contractor)).unwrap(), [allowed]);
+        }
+    }
+
+    #[test]
+    fn an_action_requiring_a_context_is_refused() {
+        let schema = "entity User; entity Doc; action view appliesTo { principal: User, resource: Doc, context: { ip: String } };";
+        let refused = compile(BTreeMap::from([("schema".to_owned(), schema.to_owned())])).err().unwrap_or_default();
+        assert!(refused.contains("requires a context"), "{refused}");
+        let optional = "entity User; entity Doc; action view appliesTo { principal: User, resource: Doc, context: { ip?: String } };";
+        assert!(compile(BTreeMap::from([("schema".to_owned(), optional.to_owned())])).is_ok());
     }
 }

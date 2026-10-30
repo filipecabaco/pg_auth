@@ -23,8 +23,9 @@ sent as the resource's attributes.
   allowing `approve` only on `status == "open"` refuses the update that sets `status` to
   `approved`. Allow the action on the states it moves rows into (for example a condition on
   `status in ["open", "approved"]` for the fields it reads, with the column grant limited to
-  `status`). Do not guard a privileged function with `authz.can`: on Cerbos it sends no row
-  attributes or roles, and fails.
+  `status`), or do the transition in a privileged function that first checks the caller with
+  `authz.can('approve', 'expense:<id>')`: it reads the row's attributes and the caller's roles
+  as the policy does.
 - The policy's plan for the subject becomes a filter on the attribute columns, so index them as
   you would for RLS. Conditions beyond comparisons, `and`, `or`, `not` and `in` are evaluated per
   row.

@@ -50,15 +50,16 @@ complete example on each. This page is the reference.
   and the new row, so a change that takes the row out of what the rules allow is refused
   (approving an `open` expense when the policy only lets managers act on `open` ones). Give
   updates a permission the new row still satisfies: on Cerbos and Cedar, a policy condition that
-  also accepts the state the update moves the row into. A privileged function doing the
-  transition must check the caller itself, and cannot use `authz.can` for that on Cerbos or
-  Cedar: it sends no row attributes or roles, so it fails.
-- **Parent columns can move rows.** With `relations: {org: org_id}`, an `editor` may update
-  `org_id` and move the document into another org: the update is checked on the document as it
-  was. Leave parent columns out of the app role's update grant, revoking the table-wide one first
-  (Supabase grants `anon` and `authenticated` everything on `public` tables by default):
-  `revoke update on documents from anon, authenticated; grant update (title) on documents to
-  authenticated;`. Or refuse their change with a trigger.
+  also accepts the state the update moves the row into. Or do the transition in a privileged
+  function that first checks the caller with `authz.can('<action>', '<type>:<id>')`, which reads
+  the row's attributes and the caller's roles as the table's policy does.
+- **Declare `insert:` where rows have a parent.** pg_auth then checks an update that moves a row
+  to another parent (`org_id` changed) as creating it there: the user needs the `insert`
+  permission on the new parent. Without `insert:`, an update is decided by `write` on the row as
+  it was, so a writer may move it anywhere; keep parent columns out of the app role's update grant
+  then, revoking the table-wide grant first (Supabase grants `anon` and `authenticated` everything
+  on `public` tables by default): `revoke update on documents from anon, authenticated; grant
+  update (title) on documents to authenticated;`.
 - **Columns a policy trusts must be true.** An attribute copied onto a row (a share's `org_id`, for
   a Cedar policy reading `resource.org`) is what the engine decides on: hold it to its source with
   a foreign key (`foreign key (doc_id, org_id) references documents (id, org_id)`) or fill it in a

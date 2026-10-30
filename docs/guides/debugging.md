@@ -61,9 +61,12 @@ For Cerbos and Cedar, pass the roles the token would carry: `subject_roles => ar
 - An update refused although the user may change the row: updates are checked on the row before
   *and* after, so a change that takes the row out of what the rules allow (approving an `open`
   expense under a policy that only allows `open` ones) fails its check.
-- `authz.can` / `authz.check` failing or denying on a Cerbos or Cedar table: they ask about an id
-  only, without the row's attributes or the token's roles, which those engines decide on. Use
-  `authz.why` on the row (with `subject_roles`) instead.
+- `pg_auth: moving a row of <table> to <type>:<id> needs <permission> on it`: an update changed
+  the parent column of a table declaring `insert:`, and the user may not create rows under the
+  new parent.
+- `authz.check` on a Cerbos or Cedar table answers with the row's attributes; give the roles the
+  subject's token would carry: `authz.check('user:anne', 'view', 'expense:7', subject_roles =>
+  array['manager'])`.
 - `check_violation` on a relationship table: the role column names a relation the rules do not
   have for that subject (`owner` when the model has `admin` and `member`). The error lists them.
 - The very first row of a new org: nobody holds the permission yet. Seed it in a migration before

@@ -94,10 +94,9 @@ Notes on the example:
   `team_members`, anyone with the table grant could add themselves to any team and see what is
   shared with it.
 - The first admin of a team or an org is written by a privileged path (see the migrations skill).
-- `documents.org_id` decides which org's members see a document, and an `editor` may update it:
-  keep it out of the app's update grant, revoking the table-wide grant first (Supabase gives one by
-  default): `revoke update on documents from anon, authenticated; grant update (title) on documents
-  to authenticated;`.
+- `documents.org_id` decides which org's members see a document. Because `documents` declares
+  `insert: org#can_manage from org_id`, pg_auth checks an update of `org_id` as creating the
+  document in the new org: an editor cannot move it into an org they do not manage.
 - `shared_with` takes three subject forms, so each `shares` entry names `subject_type` (and
   `subject_relation` for the team).
 - `comments` protected by their document would be `comments: {type: document, id: document_id,

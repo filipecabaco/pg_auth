@@ -102,8 +102,9 @@ documents:
     org: org_id
 $yaml$);
 
--- the parent column stays out of update: an editor could otherwise move a document to another org.
--- Revoke first: Supabase grants anon and authenticated everything on public tables by default
+-- least privilege: the app updates titles and roles, nothing else (pg_auth also checks a move of
+-- org_id as creating the document there). Revoke first: Supabase grants anon and authenticated
+-- everything on public tables by default
 revoke all on public.documents, public.memberships from anon, authenticated;
 grant select, insert, delete on public.documents, public.memberships to authenticated;
 grant update (title) on public.documents to authenticated;

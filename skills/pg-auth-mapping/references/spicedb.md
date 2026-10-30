@@ -64,9 +64,8 @@ shares:
 $yaml$);
 ```
 
-As on OpenFGA: keep `documents.org_id` out of the app role's update grant (`revoke update on
-documents from anon, authenticated; grant update (title) on documents to authenticated;`), or an
-editor could move a document into another org; the update is checked on the document as it was.
+As on OpenFGA: `documents` declares `insert: org#can_manage from org_id`, so pg_auth checks an
+update of `org_id` as creating the document in the new org.
 
 ## Example: a caveat on the row's own value
 

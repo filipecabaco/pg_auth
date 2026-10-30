@@ -84,20 +84,23 @@ defmodule Demo do
   defp setup(conn, "cedar") do
     run_all(conn, [
       "select authz.configure(subject_type => 'User')",
-      "create table documents (id int primary key, org_id int not null, title text not null)",
+      "create table documents (id int primary key, org_id int not null, title text not null, unique (id, org_id))",
       "create table memberships (org_id int not null, user_id text not null, role text not null, primary key (org_id, user_id))",
       # as docker/demo/sql/cedar.sql: a share carries its document's org, filled in from the document
-      "create table shares (doc_id int not null, user_id text not null, expires_at timestamptz, org_id int, primary key (doc_id, user_id))",
+      # and held to it by the key, since the policy trusts it to decide who may share
+      "create table shares (doc_id int not null, user_id text not null, expires_at timestamptz, org_id int not null,
+                            primary key (doc_id, user_id), foreign key (doc_id, org_id) references documents (id, org_id))",
       "grant select, insert, update, delete on documents, memberships, shares to authenticated",
       """
-      create function share_org() returns trigger language plpgsql security definer set search_path = public as $$
+      create function share_org() returns trigger language plpgsql security definer
+      set search_path = pg_catalog, public, pg_temp as $$
       begin
-        new.org_id := (select d.org_id from documents d where d.id = new.doc_id);
+        new.org_id := (select d.org_id from public.documents d where d.id = new.doc_id);
         return new;
       end
       $$
       """,
-      "create trigger share_org before insert or update of doc_id on shares for each row execute function share_org()",
+      "create trigger share_org before insert or update of doc_id, org_id on shares for each row execute function share_org()",
       "insert into documents values (1, 1, 'Roadmap'), (2, 1, 'Budget'), (3, 1, 'Launch plan'), (4, 2, 'Hiring'), (5, 2, 'Pricing')",
       "insert into memberships values (1, 'anne', 'admin'), (2, 'carl', 'admin')"
     ])
@@ -109,7 +112,12 @@ defmodule Demo do
       "create table documents (id int primary key, org_id int not null, title text not null)",
       "create table memberships (org_id int not null, user_id text not null, role text not null, primary key (org_id, user_id))",
       "create table shares (doc_id int not null, user_id text not null, expires_at timestamptz, primary key (doc_id, user_id))",
-      "grant select, insert, update, delete on documents, memberships, shares to authenticated",
+      # as docker/demo/sql/relationships.sql: the parent columns stay out of update, or an editor
+      # could move a document to another org
+      "grant select, insert, delete on documents, memberships, shares to authenticated",
+      "grant update (title) on documents to authenticated",
+      "grant update (role) on memberships to authenticated",
+      "grant update (expires_at) on shares to authenticated",
       "insert into documents values (1, 1, 'Roadmap'), (2, 1, 'Budget'), (3, 1, 'Launch plan'), (4, 2, 'Hiring'), (5, 2, 'Pricing')",
       "insert into memberships values (1, 'anne', 'admin'), (2, 'carl', 'admin')"
     ])

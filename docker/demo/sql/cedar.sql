@@ -6,20 +6,25 @@ create extension pg_auth;
 -- Cedar's types are capitalised: the subject is a User
 select authz.configure(subject => 'jwt', subject_type => 'User');
 
-create table documents (id int primary key, org_id int not null, title text not null);
+create table documents (id int primary key, org_id int not null, title text not null, unique (id, org_id));
 create index on documents (org_id);
 create table memberships (org_id int not null, user_id text not null, role text not null, primary key (org_id, user_id));
-create table shares (doc_id int not null, user_id text not null, expires_at timestamptz, org_id int, primary key (doc_id, user_id));
+-- a share's org is part of its document's key: a share cannot claim another org than its
+-- document's, which the policy trusts to decide who may share
+create table shares (doc_id int not null, user_id text not null, expires_at timestamptz, org_id int not null,
+                     primary key (doc_id, user_id), foreign key (doc_id, org_id) references documents (id, org_id));
 grant select, insert, update, delete on documents, memberships, shares to authenticated;
 
--- a share's org is its document's (read as the owner: the policy then decides who may share)
-create function share_org() returns trigger language plpgsql security definer set search_path = public as $$
+-- a share's org is filled in from its document (read as the owner: the policy then decides who
+-- may share), so the demo's statements are the same as on OpenFGA and SpiceDB
+create function share_org() returns trigger language plpgsql security definer
+set search_path = pg_catalog, public, pg_temp as $$
 begin
-  new.org_id := (select d.org_id from documents d where d.id = new.doc_id);
+  new.org_id := (select d.org_id from public.documents d where d.id = new.doc_id);
   return new;
 end
 $$;
-create trigger share_org before insert or update of doc_id on shares for each row execute function share_org();
+create trigger share_org before insert or update of doc_id, org_id on shares for each row execute function share_org();
 
 insert into documents values (1, 1, 'Roadmap'), (2, 1, 'Budget'), (3, 1, 'Launch plan'), (4, 2, 'Hiring'), (5, 2, 'Pricing');
 insert into memberships values (1, 'anne', 'admin'), (2, 'carl', 'admin');
@@ -37,7 +42,7 @@ commit;
 -- The page calls this when the demo boots and when a visitor switches engines: every table back as
 -- the demo starts (rows added removed, rows deleted put back), so each visit tells the same story.
 -- It runs as its owner (a superuser), and every change it makes reaches Cedar like any other.
-create function demo_reset() returns void language sql security definer set search_path = public as $$
+create function demo_reset() returns void language sql security definer set search_path = pg_catalog, public, pg_temp as $$
   delete from shares;
   delete from memberships where (org_id, user_id) not in ((1, 'anne'), (2, 'carl'));
   insert into memberships values (1, 'anne', 'admin'), (2, 'carl', 'admin')

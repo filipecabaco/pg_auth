@@ -23,6 +23,8 @@ pg_test = []
 pgrx = "=0.19.3"
 base64 = "0.23"
 hmac = "0.13"
+# the signal mask of the thread an HTTPS request runs on (src/ffi.rs)
+libc = "0.2"
 sha2 = "0.11"
 p256 = { version = "0.14", features = ["ecdsa"] }
 serde_json = "1"

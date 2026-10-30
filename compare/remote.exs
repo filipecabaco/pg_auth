@@ -60,7 +60,7 @@ defmodule Remote do
       })
 
       setup(conn, engine)
-      story(conn, engine) ++ refusals(conn, engine) ++ attacks(port) ++ behind_a_proxy(conn, stack, dir(stack), engine) ++ cost(conn, stack) ++
+      story(conn, engine) ++ refusals(conn, engine) ++ gives_way(conn, stack) ++ attacks(port) ++ behind_a_proxy(conn, stack, dir(stack), engine) ++ cost(conn, stack) ++
         misconfigured(stack, engine)
     catch
       kind, reason ->
@@ -136,6 +136,45 @@ defmodule Remote do
         fails.("pg_auth.sidecar_ca_file", "#{@tls}/other-ca.pem", "kim", "invalid peer certificate: UnknownIssuer")
       end),
       check("and with the settings back, the statement reads again", fn -> visible(conn, "anne") == anne_sees(engine) end)
+    ]
+  end
+
+  # A sidecar that takes the connection and never answers, not even TLS's handshake: the statement
+  # still ends at its own statement_timeout, not at pg_auth.sidecar_timeout_ms.
+  defp gives_way(conn, stack) do
+    hole = Stack.track(stack, "#{stack.id}-blackhole")
+    {_, 0} =
+      System.cmd("docker", ["run", "-d", "--rm", "--label", "pg_auth_compare=1", "--name", hole, "--network", stack.net,
+                            "--network-alias", "blackhole.pg-auth.test", "alpine:3.22", "sh", "-c", "while true; do sleep 3600 | nc -l -p 8443; done"],
+        stderr_to_stdout: true)
+    Process.sleep(1000)
+
+    [
+      check("a sidecar that never answers: statement_timeout still ends the wait", fn ->
+        settings(conn, %{"pg_auth.sidecar_url" => "https://blackhole.pg-auth.test:8443", "pg_auth.sidecar_timeout_ms" => "10000"})
+        {us, result} =
+          :timer.tc(fn ->
+            # pg_auth asks the sidecar after the claims change too (a new subject's breadth), so
+            # whichever statement waits first is the one cancelled
+            Postgrex.transaction(conn, fn c ->
+              Enum.reduce_while(
+                [{"set local statement_timeout = 300", []},
+                 {"select set_config('request.jwt.claims', $1, true)", [JSON.encode!(%{sub: "lena", role: "authenticated"})]},
+                 {"set local role authenticated", []}, {"select id from documents", []}],
+                :ok,
+                fn {q, args}, _ ->
+                  case Postgrex.query(c, q, args) do
+                    {:ok, _} -> {:cont, :ok}
+                    {:error, e} -> {:halt, Postgrex.rollback(c, e)}
+                  end
+                end
+              )
+            end)
+          end)
+        settings(conn, %{"pg_auth.sidecar_url" => "https://#{@host}:8443", "pg_auth.sidecar_timeout_ms" => "5000"})
+        ok = match?({:error, %Postgrex.Error{postgres: %{code: :query_canceled}}}, result)
+        (ok and us > 250_000 and us < 1_500_000) or raise("after #{div(us, 1000)} ms: #{inspect(result) |> String.slice(0, 300)}")
+      end)
     ]
   end
 

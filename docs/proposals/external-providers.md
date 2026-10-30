@@ -136,7 +136,8 @@ The response's signature binds the answer to the question it answers. The endpoi
 its name, `/v1/ask`, whatever path a proxy forwards it under.
 
 **Measured** (`compare/remote.exs`, one host, no network between): a round trip beyond the
-engine's own time is about 190 µs over HTTPS, its connection kept, against 22 µs over the socket.
+engine's own time is about 250 µs over HTTPS, its connection kept and its wait cancellable,
+against about 30 µs over the socket.
 A deployment adds its network's round trip, 0.3 to 1 ms in one region.
 
 **The sidecar.** `PG_AUTH_LISTEN=host:port` opens the network listener (the socket can stay

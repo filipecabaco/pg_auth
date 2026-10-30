@@ -672,6 +672,35 @@ mod tests {
     }
 
     #[pg_test]
+    fn a_wait_on_the_sidecar_gives_way_to_a_cancel() {
+        fixture();
+        assert_eq!(error_of("select 1"), None);
+        // the sidecar answers `hang` after 600 ms, well inside its timeout: a cancel at 100 ms
+        // (pg_cancel_backend's signal) has to end the wait first
+        Spi::run("set local pg_auth.sidecar_timeout_ms = 5000").unwrap();
+        as_subject("hang");
+        let started = std::time::Instant::now();
+        // `when others` does not catch a cancel: this helper names it
+        Spi::run(
+            "create function pg_temp.cancelled(q text) returns text language plpgsql as $f$
+             begin execute q; return null; exception when query_canceled then return sqlerrm; end $f$",
+        )
+        .unwrap();
+        crate::ffi::cancel_in(100);
+        let e = Spi::get_one_with_args::<String>("select pg_temp.cancelled($1)", &["select count(*) from public.docs".into()])
+            .unwrap()
+            .unwrap_or_default();
+        let waited = started.elapsed();
+        reset_role();
+        assert!(e.contains("canceling statement due to user request"), "{e}");
+        assert!(waited < std::time::Duration::from_millis(450), "cancelled after {waited:?}");
+        // and the next request gets its own answer, not the one the cancelled request left behind
+        as_subject("alice");
+        assert_eq!(count("select count(*) from public.docs"), 5);
+        reset_role();
+    }
+
+    #[pg_test]
     fn allowed_reads_only_protected_columns() {
         fixture();
         assert_eq!(error_of("select 1"), None);

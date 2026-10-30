@@ -221,6 +221,36 @@ pub fn check_for_interrupts() {
     pgrx::check_for_interrupts!();
 }
 
+/// Start a thread that holds nothing of Postgres's (src/remote.rs): with every signal blocked from
+/// its first instruction, so a cancel, a timeout or a shutdown signal always reaches the backend.
+pub fn spawn_without_signals<T: Send + 'static>(
+    name: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<T>> {
+    // SAFETY: sets this thread's signal mask around the spawn (the new thread inherits it) and
+    // puts it back; the sets live on this stack.
+    unsafe {
+        let mut all: libc::sigset_t = std::mem::zeroed();
+        let mut before: libc::sigset_t = std::mem::zeroed();
+        libc::sigfillset(&raw mut all);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &raw const all, &raw mut before);
+        let spawned = std::thread::Builder::new().name(name.to_owned()).spawn(f);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &raw const before, std::ptr::null_mut());
+        spawned
+    }
+}
+
+/// Test only: cancel this backend's statement in `ms`, as pg_cancel_backend does (SIGINT to the
+/// backend, from a thread that blocks it, so the backend's own handler takes it).
+#[cfg(any(test, feature = "pg_test"))]
+pub fn cancel_in(ms: u64) {
+    let _ = spawn_without_signals("pg_auth test cancel", move || {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        // SAFETY: sends a signal to this process; touches no memory.
+        unsafe { libc::kill(libc::getpid(), libc::SIGINT) };
+    });
+}
+
 /// Whether a setting currently holds `value` (None: unset or empty), as `config_option` reads
 /// it, without copying it: a per-row check compares the request settings it was resolved from.
 pub fn config_option_is(name: &CStr, value: Option<&str>) -> bool {

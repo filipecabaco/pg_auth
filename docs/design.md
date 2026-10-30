@@ -310,6 +310,10 @@ conditional is denied. Subjects may be usersets (`group:eng#member`).
 
 - **Fail closed.** Unreachable sidecar, engine error or malformed answer: the statement errors.
   No subject: no rows. Missing check results: denied.
+- **Waits give way.** A statement waiting on the sidecar reads its answer in 100 ms slices (on the
+  socket) or waits on a thread of its own that blocks every signal (over HTTPS), checking for a
+  cancel or `statement_timeout` between them; a wait given up on drops its connection or its
+  thread, so a late answer is never read as the next request's.
 - **Who may steer decisions.** `pg_auth.sidecar_socket`, `pg_auth.sidecar_url`,
   `pg_auth.sidecar_secret_file`, `pg_auth.sidecar_ca_file` and `pg_auth.sidecar_timeout_ms` are
   superuser-only; the socket is created 0660 for the Postgres OS group. The secret file is read by

@@ -227,8 +227,8 @@ available beside it.
   the others once their cache expires (1 s) and, on SpiceDB, within the engine's revision window.
 - **Try it.** `docker/remote` runs Postgres, SpiceDB and the sidecar in separate containers with
   `docker compose`, the sidecar reached only over HTTPS.
-- **Cost.** About 0.17 ms a round trip more than the socket, measured on one host
-  (`compare/remote.exs`: 190 µs beyond the engine, against 22 µs), plus the network's own round
+- **Cost.** About 0.2 ms a round trip more than the socket, measured on one host
+  (`compare/remote.exs`: about 250 µs beyond the engine, against about 30 µs), plus the network's own round
   trip.
 
 ## Postgres side

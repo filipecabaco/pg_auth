@@ -79,29 +79,103 @@ fn send(url: &str, body: &str, reread: bool) -> Result<Value, Refused> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string();
     let signature = sign_request(&secret, &timestamp, body.as_bytes());
     let endpoint = format!("{}{ENDPOINT}", url.trim_end_matches('/'));
-    let agent = agent(url)?;
-    let mut response = agent
-        .post(&endpoint)
-        .header(TIMESTAMP, &timestamp)
-        .header(SIGNATURE, &signature)
-        .content_type("application/json")
-        .send(body.as_bytes())
-        .map_err(|e| e.to_string())?;
-    let status = response.status().as_u16();
+    let (status, signed, answer) = post(agent(url)?, endpoint, timestamp, signature.clone(), body.to_owned())?;
     if status == 401 {
         return Err(Refused::Signature);
     }
     if status != 200 {
         return Err(Refused::Other(format!("HTTP {status}")));
     }
-    let signed = response.headers().get(SIGNATURE).and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let answer = response.body_mut().with_config().limit(MAX_ANSWER).read_to_vec().map_err(|e| e.to_string())?;
     // an answer that is not the sidecar's, to this question, is no answer
     let signed = signed.ok_or_else(|| "an unsigned answer, refused".to_string())?;
     if !verify_response(&secret, &signature, status, &answer, &signed) {
         return Err(Refused::Other("an answer not signed with the secret, refused".into()));
     }
     serde_json::from_slice(&answer).map_err(|e| Refused::Other(format!("bad sidecar response: {e}")))
+}
+
+/// A request for the worker: the client, the endpoint, the timestamp, the signature, the body.
+type Job = (ureq::Agent, String, String, String, String);
+/// -> (status, the answer's signature, the answer)
+type Answered = Result<(u16, Option<String>, Vec<u8>), String>;
+
+/// A thread per backend that sends its requests, holding nothing of Postgres's, while the backend
+/// waits in short slices: a cancel or statement_timeout applies meanwhile, rather than once the
+/// client's timeout has passed. `busy` until its answer is taken: a wait given up on (a cancel
+/// unwinding, a timeout) leaves it busy, and the next request starts a new worker, so an answer
+/// arriving late is never read as another request's. The old one ends with its request.
+struct Worker {
+    jobs: std::sync::mpsc::Sender<Job>,
+    answers: std::sync::mpsc::Receiver<Answered>,
+    busy: bool,
+}
+
+thread_local! {
+    static WORKER: RefCell<Option<Worker>> = const { RefCell::new(None) };
+}
+
+fn worker() -> Result<Worker, String> {
+    let (jobs, inbox) = std::sync::mpsc::channel::<Job>();
+    let (outbox, answers) = std::sync::mpsc::channel::<Answered>();
+    crate::ffi::spawn_without_signals("pg_auth https", move || {
+        for (agent, endpoint, timestamp, signature, body) in inbox {
+            let asked = || -> Answered {
+                let mut response = agent
+                    .post(&endpoint)
+                    .header(TIMESTAMP, &timestamp)
+                    .header(SIGNATURE, &signature)
+                    .content_type("application/json")
+                    .send(body.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                let status = response.status().as_u16();
+                let signed = response.headers().get(SIGNATURE).and_then(|v| v.to_str().ok()).map(str::to_owned);
+                let answer = response.body_mut().with_config().limit(MAX_ANSWER).read_to_vec().map_err(|e| e.to_string())?;
+                Ok((status, signed, answer))
+            };
+            if outbox.send(asked()).is_err() {
+                return;
+            }
+        }
+    })
+    .map_err(|e| format!("starting the request thread: {e}"))?;
+    Ok(Worker { jobs, answers, busy: false })
+}
+
+fn post(agent: ureq::Agent, endpoint: String, timestamp: String, signature: String, body: String) -> Answered {
+    let mut current = WORKER.with(|w| w.borrow_mut().take()).filter(|w| !w.busy);
+    let w = match current.take() {
+        Some(w) => w,
+        None => worker()?,
+    };
+    w.jobs.send((agent, endpoint, timestamp, signature, body)).map_err(|_| "the request thread ended".to_string())?;
+    // busy until the answer is taken; put back first, so a cancel unwinding from the wait leaves
+    // it marked busy for the next request to replace
+    WORKER.with(|c| *c.borrow_mut() = Some(Worker { busy: true, ..w }));
+    let timeout = Duration::from_millis(u64::try_from(TIMEOUT_MS.get().max(1)).unwrap_or(1));
+    let deadline = std::time::Instant::now() + timeout + Duration::from_millis(100);
+    loop {
+        let got = WORKER.with(|c| c.borrow().as_ref().map(|w| w.answers.recv_timeout(Duration::from_millis(50))));
+        match got {
+            Some(Ok(answered)) => {
+                WORKER.with(|c| {
+                    if let Some(w) = c.borrow_mut().as_mut() {
+                        w.busy = false;
+                    }
+                });
+                return answered;
+            }
+            Some(Err(std::sync::mpsc::RecvTimeoutError::Timeout)) if std::time::Instant::now() < deadline => {
+                crate::ffi::check_for_interrupts();
+            }
+            Some(Err(std::sync::mpsc::RecvTimeoutError::Timeout)) => {
+                return Err(format!("did not answer within pg_auth.sidecar_timeout_ms ({} ms)", TIMEOUT_MS.get()));
+            }
+            Some(Err(std::sync::mpsc::RecvTimeoutError::Disconnected)) | None => {
+                WORKER.with(|c| c.borrow_mut().take());
+                return Err("the request thread ended without an answer".into());
+            }
+        }
+    }
 }
 
 /// This backend's client for `url`, made again when the URL or the roots changed.

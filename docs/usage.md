@@ -42,7 +42,7 @@ preload an extension, and running the sidecar elsewhere over HTTPS does not chan
    `alter system set pg_auth.sidecar_socket = '/run/pg_auth/pg_auth.sock'`.
 6. **Or on another host, over HTTPS:** `PG_AUTH_LISTEN`, a secret and a certificate on the sidecar,
    `pg_auth.sidecar_url` and `pg_auth.sidecar_secret_file` in Postgres. Requests and answers are
-   signed with the secret, and anything else is refused; a round trip costs about 0.17 ms more than
+   signed with the secret, and anything else is refused; a round trip costs about 0.2 ms more than
    the socket, plus the network's. The sidecar's own connection to Postgres
    (`PG_AUTH_DATABASE_URL`) does not use TLS yet, so keep it on a private network, and keep both
    hosts' clocks within 30 s of each other. See the sidecar's
@@ -559,8 +559,9 @@ written through a relationship table clears every one of them:
   and the changes not yet delivered (`compare/dump.exs`); the permission index is made again. Restored
   next to the same engine it goes on as before. Next to an empty one, the rules and the
   relationships are recorded as already pushed, and nothing pushes them again yet.
-- **Cancelling a wait.** A statement waiting on the sidecar is not cancelled until
-  `pg_auth.sidecar_timeout_ms` passes (5 s by default; a fill wait is the exception). Keep it low.
+- **Connecting to the socket** has no timeout of its own: it waits only while the sidecar's
+  queue of connections is full. Once connected, a wait on the sidecar gives way to a cancel or a
+  `statement_timeout` within about 100 ms, on the socket and over HTTPS.
 - **Several sidecars on one database.** Each keeps its own cache: a revocation delivered by one
   shows on the others once their cache expires (1 s) and, on SpiceDB, within the engine's
   revision window.

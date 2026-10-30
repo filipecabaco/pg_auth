@@ -46,7 +46,7 @@ rows", and gets hard quickly after that:
 | Correctness | Parity suites compare every subject's rows with each engine's own answers, including plans reused across users |
 | Tests | 103 extension tests on Postgres 15 to 18 in CI; end-to-end suites against real engines run locally |
 | Grant latency | 4 to 34 ms from commit to visible, one sidecar |
-| Sidecar over HTTPS | Requests and answers signed; about 0.17 ms per round trip more than the socket, on one host, network not included |
+| Sidecar over HTTPS | Requests and answers signed; about 0.2 ms per round trip more than the socket, on one host, network not included |
 | Live demo | Postgres 18, pg_auth and all three engines booting in a browser tab |
 
 Persona reviews were run by AI agents playing users (a Supabase app builder, a self-hosted team, a
@@ -60,9 +60,9 @@ they found documentation gaps and bugs, not demand.
   and sales requests for relationship-based access.
 - **The setup a platform would run, measured:** a remote sidecar and an engine in or across
   regions, under concurrency.
-- **Operations a platform needs:** extension upgrade scripts, logical backups that keep
-  pg_auth's configuration, cancelling a statement while it waits on the sidecar, and TLS on the
-  sidecar's own connection to Postgres.
+- **Operations a platform needs:** extension upgrade scripts, and TLS on the sidecar's own
+  connection to Postgres. (Logical backups keep pg_auth's configuration, and a statement waiting on
+  the sidecar gives way to a cancel, as of October 30.)
 - **A license, and an owner** for the code.
 
 ## Why it cannot run on hosted Supabase today
@@ -89,7 +89,7 @@ they found documentation gaps and bugs, not demand.
 | Phase | Platform work | Must be true first |
 |---|---|---|
 | 0. Self-hosted Supabase with a design partner | None | A license; a partner with sharing or teams |
-| 1. An opt-in image variant, loaded per database (`session_preload_libraries`), Unix socket only, `anon` and `authenticated` subject to it | Build and ship the variant | Upgrade scripts, logical backups, cancellable waits; loading per database tested |
+| 1. An opt-in image variant, loaded per database (`session_preload_libraries`), Unix socket only, `anon` and `authenticated` subject to it | Build and ship the variant | Upgrade scripts; loading per database tested |
 | 2. The sidecar on Compute | A sidecar per project | Compute reachable privately and kept awake; TLS to Postgres; the remote setup measured |
 | 3. A managed engine | Run an engine per project or region | Phase 1 and 2 adoption |
 

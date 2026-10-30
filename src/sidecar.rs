@@ -417,7 +417,9 @@ fn round_trip(request: &Value) -> Result<Value, String> {
         return crate::remote::exchange(&url, request);
     }
     let line = format!("{request}\n");
-    let read = |conn: &mut BufReader<UnixStream>| read_answer(conn);
+    let deadline = Instant::now() + Duration::from_millis(unsigned(TIMEOUT_MS.get().max(1)));
+    let late = format!("the sidecar did not answer within pg_auth.sidecar_timeout_ms ({} ms)", TIMEOUT_MS.get());
+    let read = |conn: &mut BufReader<UnixStream>| read_until(conn, deadline, &late);
     match exchange(&line, read) {
         Err((true, _)) => exchange(&line, read).map_err(|(_, e)| e),
         result => result.map_err(|(_, e)| e),
@@ -441,15 +443,26 @@ fn exchange(line: &str, read: impl FnOnce(&mut BufReader<UnixStream>) -> Result<
     Ok(value)
 }
 
-fn read_answer(conn: &mut BufReader<UnixStream>) -> Result<Vec<u8>, (bool, String)> {
+/// Read one answer line by `deadline`, in short slices: a cancel or statement_timeout applies
+/// while the sidecar has not answered (and drops the connection, see exchange), rather than once
+/// pg_auth.sidecar_timeout_ms has passed.
+fn read_until(conn: &mut BufReader<UnixStream>, deadline: Instant, late: &str) -> Result<Vec<u8>, (bool, String)> {
     let mut answer = Vec::new();
-    match conn.read_until(b'\n', &mut answer) {
-        Ok(0) => Err((true, "sidecar closed the connection".into())),
-        Ok(_) => Ok(answer),
-        Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
-            Err((false, format!("the sidecar did not answer within pg_auth.sidecar_timeout_ms ({} ms)", TIMEOUT_MS.get())))
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err((false, late.to_owned()));
         }
-        Err(e) => Err((broken(&e), e.to_string())),
+        let slice = left.min(Duration::from_millis(100)).max(Duration::from_millis(1));
+        conn.get_ref().set_read_timeout(Some(slice)).map_err(|e| (false, e.to_string()))?;
+        match conn.read_until(b'\n', &mut answer) {
+            Ok(0) => return Err((true, "sidecar closed the connection".into())),
+            Ok(_) if answer.ends_with(b"\n") => return Ok(answer),
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+            Err(e) => return Err((broken(&e), e.to_string())),
+        }
+        crate::ffi::check_for_interrupts();
     }
 }
 
@@ -1057,28 +1070,7 @@ fn wait_for_fill_remotely(subject: &str, object_type: &str, permission: &str, li
 /// cancel or statement_timeout still applies meanwhile (and drops the connection, see exchange).
 fn round_trip_waiting(request: &Value, limit: Duration) -> Result<Value, String> {
     let deadline = Instant::now() + limit + Duration::from_millis(unsigned(TIMEOUT_MS.get().max(1)));
-    let read = |conn: &mut BufReader<UnixStream>| {
-        let timeout = |conn: &BufReader<UnixStream>, ms: u64| {
-            conn.get_ref().set_read_timeout(Some(Duration::from_millis(ms))).map_err(|e| (false, e.to_string()))
-        };
-        timeout(conn, 100)?;
-        let mut answer = Vec::new();
-        loop {
-            match conn.read_until(b'\n', &mut answer) {
-                Ok(0) => return Err((true, "sidecar closed the connection".into())),
-                Ok(_) => break,
-                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
-                    if Instant::now() > deadline {
-                        return Err((false, "sidecar did not answer the fill wait in time".into()));
-                    }
-                    crate::ffi::check_for_interrupts();
-                }
-                Err(e) => return Err((broken(&e), e.to_string())),
-            }
-        }
-        timeout(conn, unsigned(TIMEOUT_MS.get().max(1)))?;
-        Ok(answer)
-    };
+    let read = |conn: &mut BufReader<UnixStream>| read_until(conn, deadline, "sidecar did not answer the fill wait in time");
     exchange(&format!("{request}\n"), read).map_err(|(_, e)| e)
 }
 

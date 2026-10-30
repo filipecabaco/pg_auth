@@ -272,24 +272,38 @@ create table authz_internal.settings (
     key   text primary key,
     value text not null
 );
-insert into authz_internal.settings values
-    ('subject_source', 'guc'),
-    ('subject_type', 'user'),
-    ('claim', 'sub'),
-    -- the principal's roles, for an engine that decides on them (Cerbos): Supabase sets role
-    ('roles_claim', 'role'),
-    -- Cerbos's scope (a tenant claim) and policy version: none by default, so scoped policies need one
-    ('scope_claim', ''),
-    ('policy_version', ''),
-    -- what each request gives OpenFGA conditions and SpiceDB caveats: {"parameter": source}, a
-    -- source being "now" (the time the engine is asked), {"claim": "region"} (the token's claim) or
-    -- {"setting": "request.headers", "key": "x-forwarded-for"} (a setting, or a key of its JSON)
-    ('context', ''),
-    ('claims_setting', 'request.jwt.claims'),
-    ('token_setting', 'request.headers'),
-    ('token_header', 'authorization'),
-    ('clock_skew_seconds', '30'),
-    ('version', '1');
+-- What authz.configure has not set. The table holds only what it set, so a logical dump carries
+-- exactly that (sql/grants.sql) and a restore meets no rows made by the extension.
+create function authz_internal.setting_defaults() returns table (key text, value text)
+language sql immutable as $$
+    values
+        ('subject_source', 'guc'),
+        ('subject_type', 'user'),
+        ('claim', 'sub'),
+        -- the principal's roles, for an engine that decides on them (Cerbos): Supabase sets role
+        ('roles_claim', 'role'),
+        -- Cerbos's scope (a tenant claim) and policy version: none by default, so scoped policies need one
+        ('scope_claim', ''),
+        ('policy_version', ''),
+        -- what each request gives OpenFGA conditions and SpiceDB caveats: {"parameter": source}, a
+        -- source being "now" (the time the engine is asked), {"claim": "region"} (the token's claim) or
+        -- {"setting": "request.headers", "key": "x-forwarded-for"} (a setting, or a key of its JSON)
+        ('context', ''),
+        ('claims_setting', 'request.jwt.claims'),
+        ('token_setting', 'request.headers'),
+        ('token_header', 'authorization'),
+        ('clock_skew_seconds', '30'),
+        ('version', '1')
+$$;
+
+-- The settings in force: the defaults, with what authz.configure set over them.
+create function authz_internal.settings_in_force() returns table (key text, value text)
+language sql stable as $$
+    select s.key, s.value from authz_internal.settings s
+    union all
+    select d.key, d.value from authz_internal.setting_defaults() d
+    where not exists (select 1 from authz_internal.settings s where s.key = d.key)
+$$;
 
 create function authz.configure(
     subject text default null,
@@ -345,8 +359,11 @@ begin
     where v is not null
     on conflict (key) do update set value = excluded.value;
 
-    -- the statement trigger on authz_internal.settings makes every backend reload it
-    update authz_internal.settings set value = (value::bigint + 1)::text where key = 'version';
+    -- a new version (verified tokens are kept per version); the statement trigger on
+    -- authz_internal.settings makes every backend reload them
+    insert into authz_internal.settings (key, value)
+    select 'version', (value::bigint + 1)::text from authz_internal.settings_in_force() where key = 'version'
+    on conflict (key) do update set value = excluded.value;
 end
 $$;
 

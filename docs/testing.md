@@ -20,6 +20,7 @@ goes wrong. Four layers do that, and a coverage measurement shows what they reac
 | the demo's rules, and who decides | `compare/notes.exs` | the demo's rules files loaded unchanged into a real OpenFGA, SpiceDB and Cerbos, their notes the whole setup; then that the engine decides each row: the policies only call pg_auth, rows follow the engine changed behind Postgres's back, and with the engine or the sidecar stopped every statement fails | the same |
 | the index across restarts | `compare/restarts.exs` | on a real OpenFGA and SpiceDB: a second sidecar starting, or one restarted, keeps a broad subject's index set when nothing changed; a relationship deleted from the engine while no sidecar ran is caught on start; a position the engine does not serve marks the sets stale | the same |
 | the sidecar over HTTPS | `compare/remote.exs` | the demo's story over HTTPS on OpenFGA, SpiceDB and Cerbos with Postgres's socket pointing nowhere; a wrong secret, an `http://` URL and an untrusted certificate fail the statement; the sidecar refuses unsigned, wrongly signed, replayed and altered requests; behind nginx terminating TLS, an answer the proxy changes is refused; the round trip measured against the socket | before changing the transport |
+| logical dumps | `compare/dump.exs` | pg_dump and pg_restore of a database set up from the demo's rules with changes waiting: the settings, protected and relationship tables, rules, setup versions, waiting changes, policies and triggers all the same after, and a change after the restore taking the next outbox id | before changing pg_auth's tables |
 | security scenarios | `bench/docker/scenarios` | the correctness scenarios of the [RLS issues catalogue](research/rls-issues.md) (leaking views, recursion, partitions, leaky functions, pooled identity, bypass paths), each with pg_auth's verdict in its README | with the benchmarks |
 
 Neither the extension's tests nor the parity checks run a Postgres built with assertions: the
@@ -41,6 +42,7 @@ elixir compare/conditions.exs                             # the same
 elixir compare/notes.exs                                  # OpenFGA, SpiceDB, then Cerbos
 elixir compare/restarts.exs                               # OpenFGA, then SpiceDB
 elixir compare/remote.exs                                 # OpenFGA, SpiceDB, then Cerbos
+elixir compare/dump.exs                                   # Postgres alone
 (cd docker/remote && docker compose up --build -d && ./try.sh && docker compose down -v)
 ```
 

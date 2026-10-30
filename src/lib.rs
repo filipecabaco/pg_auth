@@ -2396,6 +2396,37 @@ mod tests {
     }
 
     #[pg_test]
+    fn a_logical_dump_carries_the_configuration_and_nothing_derived() {
+        assert_eq!(
+            Spi::get_one::<String>(
+                "select string_agg(c::regclass::text, ' ' order by c::regclass::text)
+                 from pg_extension e, unnest(e.extconfig) c where e.extname = 'pg_auth'"
+            )
+            .unwrap()
+            .as_deref(),
+            Some(
+                "authz_internal.bindings authz_internal.hierarchies authz_internal.outbox authz_internal.outbox_id_seq \
+                 authz_internal.relationships authz_internal.rules authz_internal.settings authz_internal.setups \
+                 authz_internal.setups_version_seq"
+            )
+        );
+        // the defaults are no rows, so a restore meets none: only what configure set is a row
+        Spi::run("delete from authz_internal.settings; select authz.configure(claim => 'user_id')").unwrap();
+        assert_eq!(
+            Spi::get_one::<String>("select string_agg(key, ' ' order by key) from authz_internal.settings").unwrap().as_deref(),
+            Some("claim version")
+        );
+        assert_eq!(
+            Spi::get_one::<String>("select value from authz_internal.settings_in_force() where key = 'subject_type'").unwrap().as_deref(),
+            Some("user")
+        );
+        assert_eq!(
+            Spi::get_one::<String>("select value from authz_internal.settings where key = 'version'").unwrap().as_deref(),
+            Some("2")
+        );
+    }
+
+    #[pg_test]
     fn the_feed_position_is_kept_per_engine_for_the_next_feed() {
         assert_eq!(Spi::get_one::<String>("select authz_sidecar.feed_position('openfga')").unwrap(), None);
         Spi::run(

@@ -113,7 +113,7 @@ create function authz.status() returns table (item text, value text)
 language sql stable as $$
     select 'engine', authz.engine()
     union all select 'sidecar socket', current_setting('pg_auth.sidecar_socket')
-    union all select 'subject source', (select value from authz_internal.settings where key = 'subject_source')
+    union all select 'subject source', (select value from authz_internal.settings_in_force() where key = 'subject_source')
     union all
     select 'protected ' || b.rel::text || case when b.name = 'pg_auth' then '' else ' (' || b.name || ')' end,
            b.object_type || '#' || b.permission
@@ -310,9 +310,9 @@ begin
     -- a scoped override, deny rules included, never applies
     if engine = 'cerbos' then
         check_name := 'cerbos scope';
-        if coalesce((select value from authz_internal.settings where key = 'scope_claim'), '') <> '' then
+        if coalesce((select value from authz_internal.settings_in_force() where key = 'scope_claim'), '') <> '' then
             status := 'ok'; fix := null;
-            detail := 'the scope comes from the claim ' || (select value from authz_internal.settings where key = 'scope_claim');
+            detail := 'the scope comes from the claim ' || (select value from authz_internal.settings_in_force() where key = 'scope_claim');
         else
             status := 'info';
             detail := 'no scope is sent (pg_auth.subject_scope aside): Cerbos policies with a scope: are not applied, so a scoped deny does not hide rows';
@@ -323,9 +323,9 @@ begin
 
     check_name := 'subject source';
     status := 'ok'; fix := null;
-    detail := (select string_agg(key || ' = ' || value, ', ' order by key) from authz_internal.settings
+    detail := (select string_agg(key || ' = ' || value, ', ' order by key) from authz_internal.settings_in_force()
                where key in ('subject_source', 'claims_setting', 'claim', 'subject_type', 'roles_claim'));
-    if (select value from authz_internal.settings where key = 'subject_source') = 'jwt' then
+    if (select value from authz_internal.settings_in_force() where key = 'subject_source') = 'jwt' then
         status := 'info';
         detail := detail || '. The claims are trusted as they are: only a trusted API (PostgREST) may set them';
         fix := 'select authz.configure(subject => ''jwt_signed'', jwks => ...); -- to verify the token instead';

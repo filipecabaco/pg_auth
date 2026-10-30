@@ -22,6 +22,18 @@ begin
 end
 $$;
 
+-- What a logical dump (pg_dump) carries with the extension: the configuration, and changes not yet
+-- delivered. Not the permission index or the feed's position, which are derived and made again.
+select pg_catalog.pg_extension_config_dump('authz_internal.settings', '');
+select pg_catalog.pg_extension_config_dump('authz_internal.bindings', '');
+select pg_catalog.pg_extension_config_dump('authz_internal.relationships', '');
+select pg_catalog.pg_extension_config_dump('authz_internal.hierarchies', '');
+select pg_catalog.pg_extension_config_dump('authz_internal.rules', '');
+select pg_catalog.pg_extension_config_dump('authz_internal.setups', '');
+select pg_catalog.pg_extension_config_dump('authz_internal.setups_version_seq', '');
+select pg_catalog.pg_extension_config_dump('authz_internal.outbox', '');
+select pg_catalog.pg_extension_config_dump('authz_internal.outbox_id_seq', '');
+
 revoke all on schema authz_internal, authz_sidecar from public;
 revoke all on all tables in schema authz_internal from public;
 revoke execute on all functions in schema authz_internal, authz_sidecar from public;

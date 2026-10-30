@@ -555,9 +555,10 @@ written through a relationship table clears every one of them:
 
 - **Upgrades.** There are no extension update scripts: a new version is `drop extension` and
   `create extension` again, which drops pg_auth's policies, so the rules are stored again after.
-- **Logical dumps.** `pg_dump` leaves out pg_auth's configuration (its tables belong to the
-  extension and are not marked to be dumped): after a restore, configure the subject and store the
-  rules again.
+- **Restoring next to another engine.** A logical dump carries pg_auth's configuration, its rules
+  and the changes not yet delivered (`compare/dump.exs`); the permission index is made again. Restored
+  next to the same engine it goes on as before. Next to an empty one, the rules and the
+  relationships are recorded as already pushed, and nothing pushes them again yet.
 - **Cancelling a wait.** A statement waiting on the sidecar is not cancelled until
   `pg_auth.sidecar_timeout_ms` passes (5 s by default; a fill wait is the exception). Keep it low.
 - **Several sidecars on one database.** Each keeps its own cache: a revocation delivered by one

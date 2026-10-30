@@ -266,6 +266,17 @@ engine does not serve marks every set stale.
     elixir compare/restarts.exs                         # OpenFGA, then SpiceDB
     elixir compare/restarts.exs --engine spicedb --no-build
 
+## Logical dumps
+
+`dump.exs` sets pg_auth up from the demo's rules with relationship changes still waiting, dumps the
+database with `pg_dump`, restores it into another with `pg_restore`, and compares the two: the
+settings in force, the protected and relationship tables, the rules, the setup versions, the
+waiting changes, the policies and the triggers. A change after the restore must take the next
+outbox id. Postgres alone, no engine.
+
+    elixir compare/dump.exs                             # builds the image first
+    elixir compare/dump.exs --no-build
+
 ## The sidecar over HTTPS
 
 `remote.exs` reaches the sidecar by URL (`pg_auth.sidecar_url`), with a test CA and a certificate

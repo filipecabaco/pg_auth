@@ -129,7 +129,7 @@ thread_local! {
     static SETTINGS: RefCell<Option<(u64, Settings)>> = const { RefCell::new(None) };
 }
 
-const SETTINGS_QUERY: &str = "SELECT coalesce(jsonb_object_agg(key, value), '{}')::text FROM authz_internal.settings";
+const SETTINGS_QUERY: &str = "SELECT coalesce(jsonb_object_agg(key, value), '{}')::text FROM authz_internal.settings_in_force()";
 const SUBJECT_QUERY: &str = "SELECT authz.subject_type() || ':' || authz.subject_id()";
 
 /// The queries subject resolution runs, for a warm-up to prepare (authz.warm).

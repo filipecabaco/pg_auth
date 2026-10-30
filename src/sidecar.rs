@@ -90,7 +90,7 @@ pub fn init() {
         c"Answer subjects with too many objects to list from the permission index (sql/index.sql).",
         c"When off, their rows are checked with the engine, and no sets are filled.",
         &PERMISSION_INDEX,
-        GucContext::Userset,
+        GucContext::Suset,
         GucFlags::default(),
     );
     GucRegistry::define_int_guc(
@@ -100,7 +100,7 @@ pub fn init() {
         &FILL_WAIT_MS,
         0,
         600_000,
-        GucContext::Userset,
+        GucContext::Suset,
         GucFlags::UNIT_MS,
     );
     GucRegistry::define_int_guc(
@@ -110,7 +110,7 @@ pub fn init() {
         &FILL_WAIT_AFTER,
         1,
         i32::MAX,
-        GucContext::Userset,
+        GucContext::Suset,
         GucFlags::default(),
     );
     GucRegistry::define_int_guc(

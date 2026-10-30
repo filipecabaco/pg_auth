@@ -281,6 +281,14 @@ impl OpenFga {
         Ok(())
     }
 
+    /// Another sidecar wrote relationships: read past OpenFGA's caches for a while, as after a
+    /// write of this one's.
+    pub fn wrote_elsewhere(&self) {
+        if let Ok(mut f) = self.fresh_until.lock() {
+            *f = Some(Instant::now() + FRESH_AFTER_WRITE);
+        }
+    }
+
     /// One BatchCheck call (up to MAX_BATCH ids): an answer per id, in order; missing or errored
     /// results are denials.
     pub async fn check(

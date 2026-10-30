@@ -6,6 +6,7 @@ use pgrx::prelude::*;
 
 mod access;
 mod advice;
+mod applying;
 mod condition;
 mod explain;
 #[allow(unsafe_code)]
@@ -256,6 +257,13 @@ mod tests {
         Spi::run("reset role").unwrap();
     }
 
+    /// A superuser-only setting (one that changes what the sidecar is asked), set as the superuser
+    /// the test runs as, then back to the role the test was in.
+    fn as_superuser(sql: &str) {
+        let role = Spi::get_one::<String>("select current_user::text").unwrap().unwrap_or_default();
+        Spi::run(&format!("reset role; {sql}; set local role \"{role}\"")).unwrap();
+    }
+
     /// Does `sql` raise an error? Runs it in a subtransaction, so the test can carry on.
     fn fails(sql: &str) -> bool {
         Spi::run(
@@ -314,7 +322,7 @@ mod tests {
     fn rls_only_shows_permitted_rows_in_both_modes() {
         fixture();
         for mode in ["off", "on"] {
-            Spi::run(&format!("set pg_auth.plan_lookup = {mode}")).unwrap();
+            as_superuser(&format!("set pg_auth.plan_lookup = {mode}"));
             as_subject("alice");
             assert_eq!(count("select count(*) from public.docs"), 5, "mode {mode}");
             assert_eq!(count("select count(*) from public.docs where org_id = 2"), 0, "mode {mode}");
@@ -530,12 +538,12 @@ mod tests {
         for (table, alice, one, wide) in cases {
             for mode in ["on", "off"] {
                 // the listed filter (on), and the per-row check it must agree with (off)
-                Spi::run(&format!("set pg_auth.plan_lookup = {mode}")).unwrap();
+                as_superuser(&format!("set pg_auth.plan_lookup = {mode}"));
                 assert_eq!(visible_ids("alice", table), alice, "{table}, plan_lookup {mode}");
                 assert_eq!(visible_ids("one", table), one, "{table}, plan_lookup {mode}");
                 assert_eq!(visible_ids("wide", table), wide, "{table}, plan_lookup {mode}");
             }
-            Spi::run("reset pg_auth.plan_lookup").unwrap();
+            as_superuser("reset pg_auth.plan_lookup");
             as_subject("alice");
             assert!(explain(&format!("select * from {table}")).contains("id = ANY ((InitPlan"), "{table}: the listed filter");
             reset_role();
@@ -612,10 +620,10 @@ mod tests {
         for (subject, want) in expected {
             let want = Spi::get_one::<String>(want).unwrap().unwrap_or_default();
             for mode in ["on", "off"] {
-                Spi::run(&format!("set local pg_auth.plan_lookup = {mode}")).unwrap();
+                as_superuser(&format!("set local pg_auth.plan_lookup = {mode}"));
                 assert_eq!(visible_ids(subject, "public.files"), want, "{subject}, plan_lookup {mode}");
             }
-            Spi::run("set local pg_auth.plan_lookup = on").unwrap();
+            as_superuser("set local pg_auth.plan_lookup = on");
             as_subject(subject);
             let rows = explained("select * from public.files");
             assert!(rows[0].contains("compiled condition"), "{subject}: {rows:?}");
@@ -1245,6 +1253,11 @@ mod tests {
         // migrations: the rules, the setup and the lower level, but not the sidecar's
         assert!(runs("authz_test_migrator", "authz.set_rules(text, text, text)") && schema("authz_test_migrator", "authz_internal"));
         assert!(!schema("authz_test_migrator", "authz_sidecar"));
+        // it writes the configuration, and only reads what pg_auth derives
+        let table = |t: &str, p: &str| reaches("authz_test_migrator", &format!("select has_table_privilege($role, '{t}', '{p}')"));
+        assert!(table("authz_internal.bindings", "insert") && table("authz_internal.settings", "update"));
+        assert!(table("authz_internal.permitted", "select") && !table("authz_internal.permitted", "insert"));
+        assert!(!table("authz_internal.outbox", "delete") && !table("authz_internal.permission_sets", "update"));
 
         // an admin protects the tables it owns, and no other: Postgres checks ownership
         assert_eq!(error_at_commit("select 1"), None);
@@ -1425,13 +1438,13 @@ mod tests {
         // and lock only rows the write permission allows, which wide does not have
         assert_eq!(count("select count(*) from (select id from public.docs for update) d"), 0);
 
-        Spi::run("set local pg_auth.batch_check = off").unwrap();
+        as_superuser("set local pg_auth.batch_check = off");
         assert!(explain(sql).contains("permits"), "batching off: per-row check");
         assert_eq!(count("select count(*) from public.docs"), 10);
         reset_role();
 
         as_subject("alice");
-        Spi::run("set local pg_auth.plan_lookup = off; set local pg_auth.batch_check = on").unwrap();
+        as_superuser("set local pg_auth.plan_lookup = off; set local pg_auth.batch_check = on");
         assert!(explain(sql).contains("AuthzBatch"), "lookup off: rows are checked in batches");
         assert_eq!(count("select count(*) from public.docs"), 5);
         reset_role();
@@ -1784,7 +1797,7 @@ mod tests {
 
         // switched off: the engine answers again, so 7 is gone
         as_subject("wide");
-        Spi::run("set local pg_auth.permission_index = off").unwrap();
+        as_superuser("set local pg_auth.permission_index = off");
         let ids = Spi::get_one::<String>("select string_agg(id::text, ',' order by id) from public.items").unwrap();
         assert_eq!(ids.as_deref(), Some("5,50,150"));
         reset_role();
@@ -1852,12 +1865,12 @@ mod tests {
         };
         // too many orgs to list: the rows of org 1 pass on one check of org 1
         as_subject("wide");
-        Spi::run("set local pg_auth.permission_index = off").unwrap();
+        as_superuser("set local pg_auth.permission_index = off");
         assert!(explain("select id from public.docs where org_id = 1").contains("AuthzBatch"));
         assert_eq!(counted("select count(*) from public.docs where org_id = 1"), (200, 1));
         // allowed org 1 only: org 2's rows are not read, one check says no
         as_subject("wide_alice");
-        Spi::run("set local pg_auth.permission_index = off").unwrap();
+        as_superuser("set local pg_auth.permission_index = off");
         assert_eq!(counted("select count(*) from public.docs where org_id = 2"), (0, 1));
         assert_eq!(counted("select count(*) from public.docs where org_id = 1 and id > 100"), (150, 1));
         // not pinned: rows are checked (one id per distinct org)
@@ -1874,7 +1887,7 @@ mod tests {
         ];
         let want: Vec<Option<String>> = queries.iter().map(|q| Spi::get_one::<String>(q).unwrap()).collect();
         as_subject("wide");
-        Spi::run("set local pg_auth.permission_index = off").unwrap();
+        as_superuser("set local pg_auth.permission_index = off");
         for (q, want) in queries.iter().zip(&want) {
             assert_eq!(&Spi::get_one::<String>(q).unwrap(), want, "{q}");
         }
@@ -2335,7 +2348,7 @@ mod tests {
         )
         .unwrap();
         as_subject("alice");
-        Spi::run("set local pg_auth.permission_index = off").unwrap();
+        as_superuser("set local pg_auth.permission_index = off");
         assert!(explain("select id from public.files").contains("AuthzBatch"));
         assert_eq!(count("select count(*) from public.files"), 1506);
         assert_eq!(count("select count(*) from public.files where id < 100"), 5);
@@ -2386,9 +2399,9 @@ mod tests {
             // a subject answered from its loaded index set (7 is in the index, not the engine)
             as_subject("wide");
             assert_eq!(permitted("item", "view", "5,7,8,50,150,151").as_deref(), Some("5,7,50,150"));
-            Spi::run("set local pg_auth.permission_index = off").unwrap();
+            as_superuser("set local pg_auth.permission_index = off");
             assert_eq!(permitted("item", "view", "5,7,8,50,150,151").as_deref(), Some("5,50,150"), "index off: the engine");
-            Spi::run("set local pg_auth.permission_index = on").unwrap();
+            as_superuser("set local pg_auth.permission_index = on");
             reset_role();
         }
     }
@@ -2400,7 +2413,7 @@ mod tests {
         FILLS.lock().unwrap().clear();
         as_subject("wide");
         // batches of 16, 32, 64: the fourth batch has passed 100 ids sent to the engine
-        Spi::run("set local pg_auth.fill_wait_after = 100; set local pg_auth.fill_wait_ms = 50").unwrap();
+        as_superuser("set local pg_auth.fill_wait_after = 100; set local pg_auth.fill_wait_ms = 50");
         let rows = advice_for("select count(*) from public.items");
         let advice = rows[0].3.as_deref().unwrap_or_default();
         assert!(advice.contains("waited") && advice.contains("did not become fresh"), "{advice}");
@@ -2418,7 +2431,7 @@ mod tests {
         FILLS.lock().unwrap().clear();
         as_subject("wide");
         // per-row checks, as a large write makes: past 100 ids sent to the engine, it waits once
-        Spi::run("set local pg_auth.fill_wait_after = 100; set local pg_auth.fill_wait_ms = 50").unwrap();
+        as_superuser("set local pg_auth.fill_wait_after = 100; set local pg_auth.fill_wait_ms = 50");
         assert_eq!(count("select count(*) from generate_series(1, 200) g where authz.permits('item', 'view', g::text)"), 3);
         assert_eq!(*FILLS.lock().unwrap(), ["user:wide item#view", "user:wide item#view waited"]);
         reset_role();
@@ -2532,7 +2545,7 @@ mod tests {
 
         // index off: say so (another subject, whose rows are not cached yet)
         as_subject("wide2");
-        Spi::run("set local pg_auth.permission_index = off").unwrap();
+        as_superuser("set local pg_auth.permission_index = off");
         let rows = advice_for("select count(*) from public.items");
         assert!(rows[0].3.as_deref().unwrap_or_default().contains("pg_auth.permission_index is off"), "{:?}", rows[0].3);
         reset_role();
@@ -2542,7 +2555,7 @@ mod tests {
         index_set("user:wide2", &["5", "50", "150"], true);
         crate::sidecar::forget_answers();
         as_subject("wide2");
-        Spi::run("set local pg_auth.permission_index = on").unwrap();
+        as_superuser("set local pg_auth.permission_index = on");
         let plan_advice =
             Spi::get_one_with_args::<String>("select advice from authz.explain($1)", &["select * from public.items".into()]).unwrap();
         let plan_advice = plan_advice.unwrap_or_default();
@@ -2969,7 +2982,7 @@ mod tests {
         let rows = explained("select * from public.docs");
         assert!(rows[0].contains("batched check") && rows[0].contains("more org objects than the engine lists"), "{rows:?}");
 
-        Spi::run("set local pg_auth.plan_lookup = off").unwrap();
+        as_superuser("set local pg_auth.plan_lookup = off");
         let rows = explained("select * from public.docs");
         assert!(rows[0].contains("plan_lookup is off"), "{rows:?}");
         reset_role();
@@ -3090,6 +3103,24 @@ mod tests {
         assert_eq!(count("select count(*) from public.late_events_2"), 0, "created after bind");
         assert_eq!(count("select count(*) from public.late_events_3"), 0, "attached after bind");
         reset_role();
+    }
+
+    #[pg_test]
+    fn no_setting_turns_off_protecting_new_partitions() {
+        fixture();
+        Spi::run(
+            "create table public.held (id int, org_id int not null) partition by list (org_id);
+             select authz_internal.bind('public.held', 'org_id', 'org', 'view');
+             set local authz.applying = 'on';
+             create table public.held_1 partition of public.held for values in (1);",
+        )
+        .unwrap();
+        assert_eq!(
+            Spi::get_one::<i64>("select count(*) from pg_policy where polrelid = 'public.held_1'::regclass").unwrap(),
+            Some(1),
+            "the new partition has pg_auth's policy"
+        );
+        assert_eq!(Spi::get_one::<bool>("select authz_internal.applying()").unwrap(), Some(false), "and the flag is down after");
     }
 
     #[pg_test]

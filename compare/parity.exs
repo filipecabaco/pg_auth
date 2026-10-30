@@ -379,8 +379,9 @@ defmodule Parity do
         s != nil do
       {:ok, xid} =
         Postgrex.transaction(ctx.conn, fn c ->
-          as_subject(c, :per_row, s)
+          # superuser-only settings first, before the subject's role
           for sql <- settings, do: q!(c, sql)
+          as_subject(c, :per_row, s)
           q!(c, "select count(*) from #{t.name}")
           q!(c, "select count(*) from #{t.name} where id = 1")
           q!(c, "select mode from authz.explain($1)", ["select id from #{t.name}"])
@@ -407,9 +408,9 @@ defmodule Parity do
       s ->
         {:ok, {us, rows, advice}} =
           Postgrex.transaction(ctx.conn, fn c ->
-            as_subject(c, :per_row, s)
             q!(c, "set local pg_auth.fill_wait_after = 1")
             q!(c, "set local pg_auth.fill_wait_ms = 30000")
+            as_subject(c, :per_row, s)
             {us, %{rows: rows}} = :timer.tc(fn -> q!(c, "select id from #{t.name}") end)
             {us, rows, q!(c, "select index_lookups, advice from authz.last_statement_advice()").rows}
           end)

@@ -230,8 +230,10 @@ available beside it.
   `verify-full` with `sslrootcert` to check the server's certificate and name.
 - **Health.** `GET /healthz` answers `ok` while the process runs; it does not check the engine or
   Postgres.
-- **Several replicas.** Each keeps its own answer cache: a revocation delivered by one shows on
-  the others once their cache expires (1 s) and, on SpiceDB, within the engine's revision window.
+- **Several replicas.** Each keeps its own answer cache, and the one that delivers a change tells
+  the others (`NOTIFY pg_auth_delivered`, with SpiceDB's ZedToken): each forgets what it cached
+  and reads the engine at least as fresh, so a revocation shows through all of them at once
+  (`compare/notes.exs`). Each remembers the requests it has seen on its own.
 - **Try it.** `docker/remote` runs Postgres, SpiceDB and the sidecar in separate containers with
   `docker compose`, the sidecar reached only over HTTPS.
 - **Cost.** About 0.2 ms a round trip more than the socket, measured on one host

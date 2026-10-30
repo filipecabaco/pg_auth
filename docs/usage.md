@@ -70,7 +70,8 @@ create role sidecar login password '...' in role authz_sidecar;        -- PG_AUT
 
 A function added to `authz_internal` or `authz_sidecar` is closed until a role is granted it. The
 admin functions run as their caller, so protecting a table still needs owning it: `authz_admin`
-cannot add policies to someone else's table.
+cannot add policies to someone else's table. It writes the configuration tables, and only reads
+the permission index, the outbox and the feed's position, which pg_auth's own functions write.
 
 ### On self-hosted Supabase
 
@@ -473,6 +474,10 @@ time reaches it, for clients that never call `last_statement_advice()`.
 
 ## 6. Settings
 
+The ones that change how much the sidecar and the engine are asked are superuser-only, so a role
+cannot turn them against the engine others share (`ALTER ROLE ... SET` by a superuser still
+sets them per role).
+
 | setting | default | what it does |
 |---|---|---|
 | `pg_auth.sidecar_socket` | `/tmp/pg_auth.sock` | the sidecar's Unix socket (superuser) |
@@ -482,11 +487,11 @@ time reaches it, for clients that never call `last_statement_advice()`.
 | `pg_auth.sidecar_timeout_ms` | 5000 | fail the query when the sidecar takes longer (superuser) |
 | `pg_auth.subject_id`, `pg_auth.subject_type` | | the subject for `subject => 'guc'` |
 | `pg_auth.subject_roles` | | its roles, comma separated, for an engine that decides on attributes |
-| `pg_auth.plan_lookup` | on | shape protected scans at planning; off checks every row through `authz.permits` |
-| `pg_auth.batch_check` | on | check rows in batches (AuthzBatch) where ids cannot be listed |
-| `pg_auth.permission_index` | on | answer broad subjects from the permission index, and ask the sidecar to fill it |
+| `pg_auth.plan_lookup` | on | shape protected scans at planning; off checks every row through `authz.permits` (superuser) |
+| `pg_auth.batch_check` | on | check rows in batches (AuthzBatch) where ids cannot be listed (superuser) |
+| `pg_auth.permission_index` | on | answer broad subjects from the permission index, and ask the sidecar to fill it (superuser) |
 | `pg_auth.index_list_limit` | 0 | list a broad subject whose fresh index set has at most this many objects (`col = ANY(...)`) instead of checking rows against it; worth it only where broad subjects mostly scan, since every statement builds the array |
-| `pg_auth.fill_wait_ms`, `pg_auth.fill_wait_after` | 10000, 2000 | how long, and after how many engine-checked ids, a heavy statement waits for its subject's index set |
+| `pg_auth.fill_wait_ms`, `pg_auth.fill_wait_after` | 10000, 2000 | how long, and after how many engine-checked ids, a heavy statement waits for its subject's index set (superuser) |
 | `pg_auth.replan_on_breadth` | on | rebuild this backend's cached plans for a subject much broader or narrower than they were built for |
 | `pg_auth.warn_ms` | off | warn when a statement's engine time reaches this |
 
@@ -562,9 +567,6 @@ written through a relationship table clears every one of them:
 - **Connecting to the socket** has no timeout of its own: it waits only while the sidecar's
   queue of connections is full. Once connected, a wait on the sidecar gives way to a cancel or a
   `statement_timeout` within about 100 ms, on the socket and over HTTPS.
-- **Several sidecars on one database.** Each keeps its own cache: a revocation delivered by one
-  shows on the others once their cache expires (1 s) and, on SpiceDB, within the engine's
-  revision window.
 - **Read replicas.** Not tested; a replica's permission index follows the primary's with the
   replay's lag.
 - **The first admin.** A relationship table protected with `write` lets only those who hold it add

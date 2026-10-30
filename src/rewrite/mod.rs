@@ -91,7 +91,7 @@ pub fn init() {
         c"Ask the authorization sidecar at planning time to shape protected scans.",
         c"When off, every protected row is checked through authz.permits.",
         &PLAN_LOOKUP,
-        GucContext::Userset,
+        GucContext::Suset,
         GucFlags::default(),
     );
     GucRegistry::define_bool_guc(
@@ -99,7 +99,7 @@ pub fn init() {
         c"Check the rows of reads that cannot use listed ids in batches (AuthzBatch scan).",
         c"When off, such rows are checked one by one through authz.permits.",
         &BATCH_CHECK,
-        GucContext::Userset,
+        GucContext::Suset,
         GucFlags::default(),
     );
     GucRegistry::define_bool_guc(

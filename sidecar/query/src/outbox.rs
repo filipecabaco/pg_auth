@@ -7,6 +7,11 @@
 //! is rolled back and delivered again later; the engines' writes and deletes are idempotent. It
 //! wakes on the trigger's NOTIFY, and every `poll` in case one was missed. Optional: enabled by
 //! PG_AUTH_DATABASE_URL, with the permission index.
+//!
+//! A delivery is announced to every sidecar on the database (NOTIFY pg_auth_delivered, with where
+//! the engine's write left it, SpiceDB's ZedToken): each forgets the answers it cached and reads
+//! the engine at least as fresh, so a revocation shows on all of them, not only the one that
+//! delivered it.
 
 use crate::engine::{Change, Engine};
 use futures_util::StreamExt;
@@ -21,6 +26,7 @@ const CLAIM: i32 = 500;
 /// Deliver the outbox for as long as the sidecar runs; `delivered` is called after each batch the
 /// engine took (the sidecar then forgets the answers it cached).
 pub fn start(url: String, engine: Arc<Engine>, poll: Duration, delivered: impl Fn() + Send + Sync + 'static) {
+    let delivered: Arc<dyn Fn() + Send + Sync> = Arc::new(delivered);
     tokio::spawn(async move {
         loop {
             if let Err(e) = deliver(&url, &engine, poll, &delivered).await {
@@ -32,13 +38,19 @@ pub fn start(url: String, engine: Arc<Engine>, poll: Duration, delivered: impl F
 }
 
 /// Connect, listen for changes, and deliver until the connection fails.
-async fn deliver(url: &str, engine: &Engine, poll: Duration, delivered: &(impl Fn() + Send + Sync)) -> Result<(), String> {
+async fn deliver(url: &str, engine: &Arc<Engine>, poll: Duration, delivered: &Arc<dyn Fn() + Send + Sync>) -> Result<(), String> {
     let (mut client, mut connection) = crate::pg::connect(url).await?;
     let (wake, mut woken) = mpsc::unbounded_channel();
+    let (heard_engine, heard) = (engine.clone(), delivered.clone());
     tokio::spawn(async move {
         let mut messages = futures_util::stream::poll_fn(move |cx| connection.poll_message(cx));
         while let Some(message) = messages.next().await {
             match message {
+                // a sidecar (this one too) delivered changes: what was cached is stale
+                Ok(AsyncMessage::Notification(n)) if n.channel() == "pg_auth_delivered" => {
+                    heard_engine.wrote_elsewhere(Some(n.payload()).filter(|p| !p.is_empty()));
+                    heard();
+                }
                 Ok(AsyncMessage::Notification(_)) => {
                     let _ = wake.send(());
                 }
@@ -50,7 +62,7 @@ async fn deliver(url: &str, engine: &Engine, poll: Duration, delivered: &(impl F
             }
         }
     });
-    client.batch_execute("listen pg_auth_outbox").await.map_err(|e| format!("postgres: {e}"))?;
+    client.batch_execute("listen pg_auth_outbox; listen pg_auth_delivered").await.map_err(|e| format!("postgres: {e}"))?;
     loop {
         match once(&mut client, engine).await {
             Ok(0) => {
@@ -128,6 +140,9 @@ async fn once(client: &mut Client, engine: &Engine) -> Result<usize, String> {
     }
     if !done.is_empty() {
         tx.execute("select authz_sidecar.answers_changed()", &[]).await.map_err(pg)?;
+        // to every sidecar, at commit: where the engine's write left it
+        let at = engine.written().unwrap_or_default();
+        tx.execute("select pg_notify('pg_auth_delivered', $1)", &[&at]).await.map_err(pg)?;
     }
     tx.commit().await.map_err(pg)?;
     let shown: Vec<String> = changes

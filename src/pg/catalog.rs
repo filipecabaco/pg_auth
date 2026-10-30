@@ -17,6 +17,16 @@ pub fn namespace(name: &CStr) -> Option<Oid> {
     (oid != pg_sys::InvalidOid).then_some(oid)
 }
 
+/// Whether function `funcid` belongs to the extension `name`, installed in this database (made by
+/// its script, not one of the same name a user wrote).
+pub fn function_of_extension(funcid: Oid, name: &CStr) -> bool {
+    // SAFETY: catalog lookups by name and by object; missing_ok, so no error when not installed
+    unsafe {
+        let ext = pg_sys::get_extension_oid(name.as_ptr(), true);
+        ext != pg_sys::InvalidOid && pg_sys::getExtensionOfObject(pg_sys::ProcedureRelationId, funcid) == ext
+    }
+}
+
 /// `schema.table`, as `authz.explain` shows it.
 pub fn relation_name(relid: Oid) -> String {
     // SAFETY: syscache lookups of an existing relation and its schema

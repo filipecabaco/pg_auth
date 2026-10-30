@@ -84,6 +84,29 @@ pub struct Context<'a> {
 
 impl Engine {
     /// The name `ping` answers with.
+    /// Where this sidecar's last relationship write left the engine, for the other sidecars on
+    /// the database to read from (SpiceDB's ZedToken; OpenFGA has none to give).
+    pub fn written(&self) -> Option<String> {
+        match self {
+            Engine::SpiceDb(e) => e.written(),
+            Engine::OpenFga(_) | Engine::Cerbos(_) => None,
+        }
+    }
+
+    /// Another sidecar delivered relationship changes (at `position`, when the engine gives one):
+    /// this one's reads see them too, as they would its own.
+    pub fn wrote_elsewhere(&self, position: Option<&str>) {
+        match self {
+            Engine::SpiceDb(e) => {
+                if let Some(token) = position {
+                    e.wrote_elsewhere(token);
+                }
+            }
+            Engine::OpenFga(e) => e.wrote_elsewhere(),
+            Engine::Cerbos(_) => {}
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Engine::OpenFga(_) => "openfga",

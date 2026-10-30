@@ -42,10 +42,22 @@ grant usage on schema authz_sidecar to authz_sidecar;
 grant execute on all functions in schema authz_sidecar to authz_sidecar;
 
 grant usage on schema authz_internal to authz_admin;
-grant all on all tables in schema authz_internal to authz_admin;
-grant usage on all sequences in schema authz_internal to authz_admin;
+-- the configuration it writes through authz.configure, set_rules, protect, relate and setup (which
+-- run as their caller); the permission index, the outbox and the feed's position only to read,
+-- since only pg_auth's own functions write them
+grant select, insert, update, delete on authz_internal.settings, authz_internal.bindings, authz_internal.relationships,
+    authz_internal.hierarchies, authz_internal.rules, authz_internal.setups to authz_admin;
+grant usage on sequence authz_internal.setups_version_seq to authz_admin;
+grant select on authz_internal.permission_sets, authz_internal.permitted, authz_internal.outbox,
+    authz_internal.feed_positions to authz_admin;
 grant execute on all functions in schema authz_internal to authz_admin;
 grant execute on function authz.set_rules(text, text, text), authz.rules(text),
     authz.configure(text, text, text, jsonb, text, text, text, int, text, text, text, jsonb),
     authz.check(text, text, text), authz.status(), authz.why(regclass, text, text, name, text[], text),
     authz.doctor(), authz.lint() to authz_admin;
+
+-- Last, once every function it calls exists (the extension's own DDL fires it too): partitions
+-- created or attached later take their table's policies (authz_internal.on_ddl).
+create event trigger pg_auth_protect_partitions on ddl_command_end
+    when tag in ('CREATE TABLE', 'ALTER TABLE')
+    execute function authz_internal.on_ddl();

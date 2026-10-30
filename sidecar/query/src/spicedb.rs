@@ -367,6 +367,18 @@ impl SpiceDb {
 
     /// Read from now on at least as fresh as this schema revision: an older one has not its
     /// definitions (`type not found`). Whether it is new here.
+    /// The revision of this sidecar's last relationship write (its ZedToken), for the others.
+    pub fn written(&self) -> Option<String> {
+        self.written_at.lock().ok()?.as_ref().and_then(|w| w.get("token")).and_then(Value::as_str).map(str::to_owned)
+    }
+
+    /// Another sidecar wrote relationships at `token`: read at least as fresh from now on.
+    pub fn wrote_elsewhere(&self, token: &str) {
+        if let Ok(mut w) = self.written_at.lock() {
+            *w = Some(json!({"token": token}));
+        }
+    }
+
     pub fn use_schema(&self, token: &str) -> bool {
         let Ok(mut at) = self.schema_at.lock() else { return false };
         if at.as_deref() == Some(token) {

@@ -32,7 +32,7 @@ defmodule Dump do
 
     try do
       wait(name)
-      steps = setup(name) ++ round_trip(name)
+      steps = setup(name) ++ round_trip(name) ++ not_ours(name)
       for {step, outcome} <- steps, do: IO.puts("#{String.pad_trailing(step, 58)} #{outcome}")
       ok = Enum.all?(steps, fn {_, o} -> not String.starts_with?(o, "FAILED") end)
       IO.puts(if ok, do: "All steps passed.", else: "Failures.")
@@ -87,6 +87,25 @@ defmodule Dump do
          {"the subject settings hold in the restored database",
           if(one(c, "restored", "select value from authz_internal.settings_in_force() where key = 'claim'") == "user_id", do: "ok", else: "FAILED")}]
     end
+  end
+
+  # A database without pg_auth, though Postgres preloads it: a schema of its own named authz, with
+  # a permits() of its own in a policy, is the user's, not pg_auth's to rewrite.
+  defp not_ours(c) do
+    sql!(c, "postgres", "create database plain")
+    sql!(c, "plain", """
+    create schema authz;
+    create function authz.permits(t text, p text, id text) returns boolean language sql immutable as $$ select id::int % 2 = 1 $$;
+    create table things (id int primary key);
+    insert into things select generate_series(1, 6);
+    alter table things enable row level security;
+    create policy odd on things using (authz.permits('thing', 'view', id::text));
+    create role reader;
+    grant usage on schema authz to reader;
+    grant select on things to reader;
+    """)
+    got = one(c, "plain", "set role reader; select string_agg(id::text, ',' order by id) from things")
+    [{"a database without pg_auth keeps its own authz schema", if(got == "1,3,5", do: "ok", else: "FAILED: #{inspect(got)}")}]
   end
 
   defp wait(c, n \\ 60) do

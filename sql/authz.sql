@@ -203,11 +203,16 @@ begin
             attributes = excluded.attributes
     returning * into b;
 
-    perform set_config('authz.applying', 'on', true);
-    for part in select p_rel union select relid from pg_partition_tree(p_rel) loop
-        perform authz_internal.apply_policies(part, b);
-    end loop;
-    perform set_config('authz.applying', '', true);
+    perform authz_internal.applying_begin();
+    begin
+        for part in select p_rel union select relid from pg_partition_tree(p_rel) loop
+            perform authz_internal.apply_policies(part, b);
+        end loop;
+    exception when others then
+        perform authz_internal.applying_end();
+        raise;
+    end;
+    perform authz_internal.applying_end();
 end
 $$;
 
@@ -234,35 +239,37 @@ declare
     b    authz_internal.bindings;
     part regclass;
 begin
-    -- apply_policies runs ALTER TABLE, which fires this trigger again
-    if current_setting('authz.applying', true) = 'on' then
+    -- apply_policies runs ALTER TABLE, which fires this trigger again (src/applying.rs)
+    if authz_internal.applying() then
         return;
     end if;
-    perform set_config('authz.applying', 'on', true);
-
-    for b in
-        select distinct on (bi.rel, bi.name) bi.*
-        from pg_event_trigger_ddl_commands() cmd
-        join authz_internal.bindings bi
-          on cmd.objid in (select relid from pg_partition_tree(bi.rel))
-          or bi.rel in (select relid from pg_partition_ancestors(cmd.objid))
-        where cmd.object_type in ('table', 'table column')
-    loop
-        for part in
-            select t.relid from pg_partition_tree(b.rel) t
-            where not exists (select 1 from pg_policy p
-                              where p.polrelid = t.relid and p.polname = b.name || '_select')
+    perform authz_internal.applying_begin();
+    begin
+        for b in
+            select distinct on (bi.rel, bi.name) bi.*
+            from pg_event_trigger_ddl_commands() cmd
+            join authz_internal.bindings bi
+              on cmd.objid in (select relid from pg_partition_tree(bi.rel))
+              or bi.rel in (select relid from pg_partition_ancestors(cmd.objid))
+            where cmd.object_type in ('table', 'table column')
         loop
-            perform authz_internal.apply_policies(part, b);
+            for part in
+                select t.relid from pg_partition_tree(b.rel) t
+                where not exists (select 1 from pg_policy p
+                                  where p.polrelid = t.relid and p.polname = b.name || '_select')
+            loop
+                perform authz_internal.apply_policies(part, b);
+            end loop;
         end loop;
-    end loop;
-    perform set_config('authz.applying', '', true);
+    exception when others then
+        perform authz_internal.applying_end();
+        raise;
+    end;
+    perform authz_internal.applying_end();
 end
 $$;
 
-create event trigger pg_auth_protect_partitions on ddl_command_end
-    when tag in ('CREATE TABLE', 'ALTER TABLE')
-    execute function authz_internal.on_ddl();
+-- (the event trigger that calls it is made last, in sql/grants.sql, once every function exists)
 
 -- How the current subject is identified. Exactly one source is used:
 --   'guc'         pg_auth.subject_id (superuser-only; GRANT SET ON PARAMETER to the API role)

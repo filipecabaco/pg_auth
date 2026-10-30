@@ -71,9 +71,24 @@ pub fn usable_key(key: Node<'_>) -> bool {
     key_varno(key).is_some() && !catalog::is_volatile(key) && !catalog::has_sublink(key)
 }
 
-/// The authz schema, when the extension is installed.
+thread_local! {
+    /// The `authz` schema found to be pg_auth's, by its oid: checked once, not at every planning.
+    static OURS: std::cell::Cell<Oid> = const { std::cell::Cell::new(pg_sys::InvalidOid) };
+}
+
+/// The authz schema, when it is pg_auth's: a schema of that name in a database without the
+/// extension (a user's own, with a permits of its own) is never mistaken for it.
 pub fn authz_namespace() -> Option<Oid> {
-    catalog::namespace(c"authz")
+    let nsp = catalog::namespace(c"authz")?;
+    if OURS.with(std::cell::Cell::get) == nsp {
+        return Some(nsp);
+    }
+    let text = [pg_sys::TEXTOID; 3];
+    let permits = catalog::function("authz", "permits", &text)?;
+    catalog::function_of_extension(permits, c"pg_auth").then(|| {
+        OURS.with(|o| o.set(nsp));
+        nsp
+    })
 }
 
 /// Shape every pg_auth policy of the query (and its subqueries) with the engine's answer.

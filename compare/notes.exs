@@ -54,7 +54,7 @@ defmodule Notes do
 
       conn = start_postgres(stack)
       setup(conn, engine)
-      steps(conn, engine) ++ engine_decides(conn, engine, stack)
+      steps(conn, engine) ++ every_sidecar(conn, engine, stack) ++ engine_decides(conn, engine, stack)
     catch
       kind, reason ->
         for {c, log} <- Stack.logs(stack), do: IO.puts(:stderr, "---- #{c}\n#{String.slice(log, -3000, 3000)}")
@@ -136,6 +136,26 @@ defmodule Notes do
         as(conn, "anne", "insert into documents values (6, 1, 'Plan')") == 1 and
           refused?(conn, "dan", "insert into documents values (7, 1, 'Plan B')") and
           eventually(fn -> visible(conn, "anne") == [1, 2, 3, 6] end)
+      end)
+    ]
+  end
+
+  # Two sidecars on the database: a revocation one delivers shows through the other at once, not
+  # once its cache and the engine's own catch up.
+  defp every_sidecar(_conn, "cerbos", _stack), do: []
+
+  defp every_sidecar(conn, _relationships, stack) do
+    [
+      check("a revocation shows through every sidecar at once, not only the one delivering it", fn ->
+        Stack.start_sidecars(stack, [second: 1000])
+        second = Stack.socket("second")
+        eventually(fn -> visible(conn, "anne", second) == [1, 2, 3, 6] end) or raise("anne through the second sidecar")
+        Postgrex.query!(conn, "delete from memberships where user_id = 'anne'", [])
+        {us, gone} = :timer.tc(fn -> eventually(fn -> visible(conn, "anne", second) == [] end) end)
+        # anne back, as the steps after expect her
+        Postgrex.query!(conn, "insert into memberships values (1, 'anne', 'admin')", [])
+        eventually(fn -> visible(conn, "anne") == [1, 2, 3, 6] end) or raise("anne not back")
+        (gone and us < 700_000) or raise("after #{div(us, 1000)} ms: #{inspect(visible(conn, "anne", second))}")
       end)
     ]
   end
@@ -296,6 +316,18 @@ defmodule Notes do
   defp visible(conn, user) do
     {:ok, r} = as_result(conn, user, "select id from documents order by id")
     List.flatten(r.rows)
+  end
+
+  # through the sidecar on `socket` (set first: a superuser-only setting)
+  defp visible(conn, user, socket) do
+    {:ok, ids} =
+      Postgrex.transaction(conn, fn c ->
+        Postgrex.query!(c, "select set_config('pg_auth.sidecar_socket', $1, true)", [socket])
+        Postgrex.query!(c, "select set_config('request.jwt.claims', $1, true)", [JSON.encode!(%{sub: user, role: "authenticated"})])
+        Postgrex.query!(c, "set local role authenticated", [])
+        List.flatten(Postgrex.query!(c, "select id from documents order by id", []).rows)
+      end)
+    ids
   end
 end
 

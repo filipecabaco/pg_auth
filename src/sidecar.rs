@@ -16,6 +16,12 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 pub static SOCKET: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(Some(c"/tmp/pg_auth.sock"));
+/// The sidecar reached over HTTPS instead of the socket (src/remote.rs), its requests signed with
+/// the secret in SECRET_FILE, and its certificate checked against CA_FILE's roots or else the
+/// public ones.
+pub static URL: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
+pub static SECRET_FILE: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
+pub static CA_FILE: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 /// Long enough for the sidecar to batch-check a few thousand ids (OpenFGA: 1.5–3 ms each) and
 /// above its own per-request ENGINE_TIMEOUT_MS (4 s), so engine errors arrive instead of a timeout.
 pub static TIMEOUT_MS: GucSetting<i32> = GucSetting::<i32>::new(5000);
@@ -41,6 +47,31 @@ pub fn init() {
         c"Unix socket of the pg-auth-sidecar that answers authorization questions.",
         c"Superuser-only, since the sidecar's answers decide what every query may read.",
         &SOCKET,
+        GucContext::Suset,
+        GucFlags::default(),
+    );
+    // Superuser-only too: whoever points pg_auth at a URL, or holds its secret, decides as much
+    GucRegistry::define_string_guc(
+        c"pg_auth.sidecar_url",
+        c"https:// URL of a pg-auth-sidecar reached over the network instead of pg_auth.sidecar_socket.",
+        c"Requests are signed with the secret in pg_auth.sidecar_secret_file, and answers must be signed with it.",
+        &URL,
+        GucContext::Suset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_string_guc(
+        c"pg_auth.sidecar_secret_file",
+        c"File holding the secret requests to pg_auth.sidecar_url are signed with (at least 32 bytes).",
+        c"Read by each backend; the secret itself is never a setting.",
+        &SECRET_FILE,
+        GucContext::Suset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_string_guc(
+        c"pg_auth.sidecar_ca_file",
+        c"PEM roots to check pg_auth.sidecar_url's certificate against instead of the public ones.",
+        c"",
+        &CA_FILE,
         GucContext::Suset,
         GucFlags::default(),
     );
@@ -332,8 +363,10 @@ fn arm_cache_reset() {
     register_xact_callback(PgXactCallbackEvent::Abort, reset);
 }
 
+/// Where the sidecar is: its URL when it is reached by one, else its socket. Also what answers
+/// kept across transactions are kept by (another sidecar is another answer).
 fn socket_path() -> String {
-    SOCKET.get().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+    crate::remote::url().unwrap_or_else(|| SOCKET.get().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
 fn connect(path: &str) -> Result<BufReader<UnixStream>, String> {
@@ -380,6 +413,9 @@ fn call(request: &Value) -> Result<Value, String> {
 /// Send one request line and read one response line, once more on a new connection when the
 /// sidecar had closed this one (restarted, say); a timeout is not retried.
 fn round_trip(request: &Value) -> Result<Value, String> {
+    if let Some(url) = crate::remote::url() {
+        return crate::remote::exchange(&url, request);
+    }
     let line = format!("{request}\n");
     let read = |conn: &mut BufReader<UnixStream>| read_answer(conn);
     match exchange(&line, read) {
@@ -978,11 +1014,15 @@ fn wait_for_fill(subject: &str, object_type: &str, permission: &str) -> bool {
     }
     arm_cache_reset();
     let started = Instant::now();
-    let request = json!({"op": "fill", "subject": subject, "permission": permission, "type": object_type, "wait_ms": wait});
-    let fresh = round_trip_waiting(&request, Duration::from_millis(unsigned(wait)))
-        .ok()
-        .and_then(|v| v.get("fresh").and_then(Value::as_bool))
-        .unwrap_or(false);
+    let fresh = if crate::remote::url().is_some() {
+        wait_for_fill_remotely(subject, object_type, permission, Duration::from_millis(unsigned(wait)))
+    } else {
+        let request = json!({"op": "fill", "subject": subject, "permission": permission, "type": object_type, "wait_ms": wait});
+        round_trip_waiting(&request, Duration::from_millis(unsigned(wait)))
+            .ok()
+            .and_then(|v| v.get("fresh").and_then(Value::as_bool))
+            .unwrap_or(false)
+    };
     record(key.clone(), |a| a.fill_wait = Some((started.elapsed(), fresh)));
     if fresh {
         // found again, with a snapshot that sees it
@@ -990,6 +1030,27 @@ fn wait_for_fill(subject: &str, object_type: &str, permission: &str) -> bool {
         FRESH_READS.with(|f| *f.borrow_mut() = true);
     }
     fresh
+}
+
+/// A fill wait with the sidecar reached by URL: no request is held open for it. The fill is
+/// queued, then the set is looked for in Postgres every 100 ms, with a snapshot that sees it,
+/// until it is fresh or `limit` passes; a cancel or statement_timeout applies meanwhile.
+fn wait_for_fill_remotely(subject: &str, object_type: &str, permission: &str, limit: Duration) -> bool {
+    let request = json!({"op": "fill", "subject": subject, "permission": permission, "type": object_type});
+    if !call(&request).ok().and_then(|v| v.get("queued").and_then(Value::as_bool)).unwrap_or(false) {
+        return false;
+    }
+    let deadline = Instant::now() + limit;
+    loop {
+        if crate::ffi::read_one_fresh::<Vec<String>>(INDEXED_SET, &[object_type.into(), permission.into()]).is_some() {
+            return true;
+        }
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        crate::ffi::check_for_interrupts();
+    }
 }
 
 /// A request the sidecar answers after up to `limit` (a fill wait). Reads in short slices so a

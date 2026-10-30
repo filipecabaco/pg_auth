@@ -266,6 +266,19 @@ engine does not serve marks every set stale.
     elixir compare/restarts.exs                         # OpenFGA, then SpiceDB
     elixir compare/restarts.exs --engine spicedb --no-build
 
+## The sidecar over HTTPS
+
+`remote.exs` reaches the sidecar by URL (`pg_auth.sidecar_url`), with a test CA and a certificate
+made by openssl, and Postgres's socket pointing nowhere: the demo's story over HTTPS on OpenFGA
+and SpiceDB; a secret the sidecar does not hold, an `http://` URL and a certificate another CA
+signed each fail the statement; the sidecar refuses an unsigned request, one signed with another
+secret, one replayed a minute later and one whose body was changed, and signs its answers for the
+request; a sidecar listening without a secret, with a short one, or without TLS does not start.
+It also measures a round trip beyond the engine's time over the socket and over HTTPS.
+
+    elixir compare/remote.exs                           # OpenFGA, then SpiceDB
+    elixir compare/remote.exs --engine spicedb --no-build
+
 ## History
 
 This harness first compared OpenFGA with the authorization engine pg_auth used to embed

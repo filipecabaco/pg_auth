@@ -1,6 +1,8 @@
 # Proposal: external providers, and a sidecar away from Postgres
 
-Status: exploration (2026-10-30). Nothing implemented. It revisits a decision recorded in
+Status: phase 1 implemented (2026-10-30): the sidecar reached over HTTPS with signed requests
+(`pg_auth.sidecar_url`, `src/remote.rs`; `PG_AUTH_LISTEN`, `sidecar/query/src/net.rs`), checked
+by `compare/remote.exs`. The HTTP provider and Compute are not started. It revisits a decision recorded in
 [permission-index.md](permission-index.md) (2026-10-28): that the sidecar runs next to Postgres on
 a Unix socket. How things work now is in [design.md](../design.md).
 
@@ -106,6 +108,62 @@ sidecar (a TCP relay inserting 0.5, 1 and 2 ms, the extension speaking TCP), and
 ratios against best-practice row level security per scenario, as `docs/benchmarks.md` does. That
 says which workloads a remote sidecar suits.
 
+### Transport and authentication (decided 2026-10-30)
+
+HTTPS only, and both ends prove themselves: Postgres must know it talks to its sidecar (a fake one
+could answer "allow everything"), and the sidecar must know the caller is Postgres (anyone else
+could ask what any user may see). Requests are signed rather than carrying a token, so nothing a
+proxy sees or logs can be reused, and it works behind a platform that terminates TLS in front of
+the service, which Compute likely does and which strips client certificates.
+
+**Settings**, superuser-only like `pg_auth.sidecar_socket`:
+
+| setting | |
+|---|---|
+| `pg_auth.sidecar_url` | `https://...`: when set, used instead of the socket. `http://` is refused |
+| `pg_auth.sidecar_secret_file` | a file holding the shared secret (at least 32 bytes), read by the backend: the secret is never in `pg_settings`. Required with the URL |
+| `pg_auth.sidecar_ca_file` | PEM roots to trust instead of the public ones (Mozilla's), for a private CA |
+
+**On the wire.** `POST <url>/v1/ask`, the body the request's JSON, as one line on the socket is;
+the response body the answer's JSON.
+
+```text
+pg-auth-timestamp: 1793350000
+pg-auth-signature: v1=<hex HMAC-SHA256(secret, "v1\n<timestamp>\nPOST\n/v1/ask\n<body>")>
+                              response: v1=<hex HMAC-SHA256(secret, "v1 response\n<request signature>\n<status>\n<body>")>
+```
+
+The response's signature binds the answer to the question it answers. The endpoint is signed by
+its name, `/v1/ask`, whatever path a proxy forwards it under.
+
+**Measured** (`compare/remote.exs`, one host, no network between): a round trip beyond the
+engine's own time is about 190 µs over HTTPS, its connection kept, against 22 µs over the socket.
+A deployment adds its network's round trip, 0.3 to 1 ms in one region.
+
+**The sidecar.** `PG_AUTH_LISTEN=host:port` opens the network listener (the socket can stay
+beside it). `PG_AUTH_SECRET_FILE` is required: one secret per line, any of them accepted, so a
+secret is rotated by adding the new one, moving Postgres to it, then removing the old one; the
+response is signed with the secret that verified the request. TLS from `PG_AUTH_TLS_CERT` and
+`PG_AUTH_TLS_KEY`; without them it refuses to start unless `PG_AUTH_TLS_TERMINATED=1` says a
+platform in front of it terminates TLS (signatures are still required). It answers 401 to a
+missing or wrong signature or a timestamp more than 30 s from its clock, 413 to a body over 16
+MiB, 404 to anything but `POST /v1/ask` and `GET /healthz` (which says only "ok"), and compares
+signatures in constant time.
+
+**The extension** verifies the certificate (the public roots, Mozilla's, or the CA file), signs each
+request, keeps a connection per backend, and verifies the response's signature. Any failure fails
+the statement, as a sidecar that does not answer does now. A fill wait is short waits (250 ms) one
+after another, so a cancel or `statement_timeout` still applies.
+
+| attack | what stops it |
+|---|---|
+| someone who reaches the sidecar asks what a user may see | no secret, no signature: 401 |
+| a captured request sent again | refused after 30 s; before, it only asks the same question again, and its answer travels encrypted to the sender |
+| a request changed on its way | the body is signed |
+| a fake sidecar (DNS, a misrouted service) answers "allow everything" | the certificate does not verify; behind TLS termination, it cannot sign the answer without the secret |
+| a proxy or platform logs the traffic | the logs hold signatures, never the secret |
+| a role points pg_auth at its own sidecar, or reads the secret | the settings are superuser-only; the secret is in a file the postgres OS user reads |
+
 ## Cerbos
 
 - **Nothing to resume.** Cerbos keeps no relationships, so there is no permission index or change
@@ -132,7 +190,7 @@ says which workloads a remote sidecar suits.
 
 ## Phases
 
-1. The HTTP provider (Part 1), with its contract and an end-to-end check like the engines'.
-2. The latency measurement, with a network transport behind `pg_auth.sidecar_url`.
-3. If the numbers hold and Supabase answers yes: HTTPS framing, the token, TLS to Postgres, and a
-   deployment guide for Compute.
+1. The transport (Part 2): HTTPS and signed requests in the extension and the sidecar, checked
+   end to end against the engines, and the latency it adds measured against the socket.
+2. The HTTP provider (Part 1), with its contract and an end-to-end check like the engines'.
+3. If Supabase answers yes: TLS from the sidecar to Postgres, and a deployment guide for Compute.

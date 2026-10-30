@@ -17,6 +17,11 @@ planner hook shapes each query so that checking is cheap. Postgres 15 to 18. How
   [README](https://github.com/filipecabaco/pg_auth/blob/main/sidecar/query/README.md).
 - Point Postgres at it (superuser only, since its answers decide what every query reads):
   `alter system set pg_auth.sidecar_socket = '/run/pg_auth/default.sock'`.
+- Or run the sidecar elsewhere and reach it over HTTPS: `PG_AUTH_LISTEN`, a secret and a certificate
+  on the sidecar, `pg_auth.sidecar_url` and `pg_auth.sidecar_secret_file` in Postgres. Requests and
+  answers are signed with the secret, and anything else is refused; a round trip costs about
+  0.17 ms more than the socket, plus the network's. See the sidecar's
+  [README](https://github.com/filipecabaco/pg_auth/blob/main/sidecar/query/README.md#over-the-network).
 - Optional: give the sidecar `PG_AUTH_DATABASE_URL` to keep the permission index in Postgres
   (subjects with more objects than the engine lists are then answered from Postgres).
 
@@ -430,6 +435,9 @@ time reaches it, for clients that never call `last_statement_advice()`.
 | setting | default | what it does |
 |---|---|---|
 | `pg_auth.sidecar_socket` | | the sidecar's Unix socket (superuser) |
+| `pg_auth.sidecar_url` | | an `https://` URL: reach the sidecar over the network instead of the socket (superuser) |
+| `pg_auth.sidecar_secret_file` | | the file holding the secret requests to the URL are signed with (superuser) |
+| `pg_auth.sidecar_ca_file` | | PEM roots to check the URL's certificate against, instead of the public ones (superuser) |
 | `pg_auth.sidecar_timeout_ms` | 5000 | fail the query when the sidecar takes longer (superuser) |
 | `pg_auth.subject_id`, `pg_auth.subject_type` | | the subject for `subject => 'guc'` |
 | `pg_auth.subject_roles` | | its roles, comma separated, for an engine that decides on attributes |

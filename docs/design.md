@@ -61,7 +61,10 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
 - **Sidecar.** A separate process next to Postgres that speaks one small protocol (`list`,
   `check`, `fill`, `ping`) and translates it to an engine's API: OpenFGA's or SpiceDB's, chosen by
   its configuration (§4). Network calls and engine credentials stay outside the database. The
-  extension does not know which engine answers.
+  extension does not know which engine answers. It reaches the sidecar on a Unix socket, or over
+  HTTPS by URL (`pg_auth.sidecar_url`, `src/remote.rs`): there each request is signed with a secret
+  both ends hold and each answer with the same secret over it and its request, and anything else
+  fails the statement (docs/proposals/external-providers.md).
 - **Subject.** Who is asking comes from a superuser-only GUC (granted per API role), a JWT claim,
   or a bearer token verified in Postgres against a JWKS (`authz.configure`). The planner and the
   scans run as the querying role, so they resolve it through the security definer functions

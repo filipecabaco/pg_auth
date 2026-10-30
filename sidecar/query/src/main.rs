@@ -34,12 +34,20 @@
 //!                                          (SpiceDB's Watch streams), and the retry interval; also
 //!                                          how often the relationship tables' outbox is read when
 //!                                          no NOTIFY says it changed
+//!   PG_AUTH_LISTEN                         optional, host:port: also answer over HTTPS, for an
+//!                                          extension that reaches the sidecar by URL
+//!                                          (pg_auth.sidecar_url; net.rs). Needs:
+//!   PG_AUTH_SECRET_FILE                    the secrets requests are signed with, one per line, each
+//!                                          at least 32 bytes
+//!   PG_AUTH_TLS_CERT, PG_AUTH_TLS_KEY      the certificate chain and its key (PEM); without them
+//!   PG_AUTH_TLS_TERMINATED=1               says a platform in front terminates TLS
 
 #![forbid(unsafe_code)]
 
 mod cerbos;
 mod engine;
 mod index;
+mod net;
 mod openfga;
 mod openfga_dsl;
 mod outbox;
@@ -284,6 +292,8 @@ async fn run() -> Result<(), String> {
             answers.plans.clear();
         });
     }
+
+    net::start(&state).await?;
 
     let path = env("PG_AUTH_SOCKET").unwrap_or_else(|| "/tmp/pg_auth.sock".into());
     let _ = std::fs::remove_file(&path);

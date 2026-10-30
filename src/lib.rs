@@ -16,6 +16,7 @@ mod nodetree;
 mod notes;
 #[allow(unsafe_code)]
 mod pg;
+mod remote;
 mod rewrite;
 mod rules;
 mod sidecar;

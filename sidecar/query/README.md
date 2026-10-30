@@ -180,6 +180,10 @@ the socket.
 | `CERBOS_URL` | required for Cerbos | its HTTP API (port 3592) |
 | `CERBOS_ADMIN_USER`, `CERBOS_ADMIN_PASSWORD` | none | its Admin API's credentials, to push the policies kept in Postgres |
 | `PG_AUTH_SOCKET` | `/tmp/pg_auth.sock` | created with mode 0660 |
+| `PG_AUTH_LISTEN` | none | `host:port`: also answer over HTTPS, for an extension that reaches the sidecar by URL (below) |
+| `PG_AUTH_SECRET_FILE` | required with `PG_AUTH_LISTEN` | the secrets requests are signed with, one per line, each at least 32 bytes |
+| `PG_AUTH_TLS_CERT`, `PG_AUTH_TLS_KEY` | required with `PG_AUTH_LISTEN` | its certificate chain and key (PEM) |
+| `PG_AUTH_TLS_TERMINATED` | off | `1` instead of the certificate, behind a platform that terminates TLS in front of it; signatures are still required |
 | `LIST_LIMIT` | 1000 | OpenFGA: match its `listObjectsMaxResults`; SpiceDB: any, the sidecar pages |
 | `CACHE_TTL_MS` | 1000 | answers are cached this long; 0 disables (staleness vs. load). A list or plan answered from the cache past half its TTL is refreshed in the background, and the extension keeps it until that half-life, so a subject asking steadily never waits on the engine |
 | `REFRESH_ACTIVE_MS` | 30000 | lists and plans used within this long are refreshed before they expire even when nobody asks, so a subject back after a pause does not wait on the engine either (an idle backend's planning: 2.6 ms -> 0.5 ms with Cerbos); answers neither fresh nor active are dropped. 0 refreshes only what is asked for. Costs about two engine calls per second per active list or plan, never more than `REFRESH_CONCURRENCY` at once |
@@ -193,10 +197,37 @@ the socket.
 Run it as a user in the Postgres OS user's group so the socket (0660) is reachable only by
 Postgres. The code forbids `unsafe`.
 
+## Over the network
+
+`PG_AUTH_LISTEN` makes the sidecar answer the same protocol over HTTPS, one `POST /v1/ask` per
+request (`src/net.rs`), for an extension that reaches it by URL instead of a socket: a sidecar
+on another host, or on a platform that runs services next to the database. The socket stays
+available beside it.
+
+- **Signed.** Each request carries `pg-auth-timestamp` and `pg-auth-signature`, an HMAC-SHA256
+  over the timestamp, the endpoint and the body with a secret both ends hold; each answer carries
+  the sidecar's signature over it and the request's signature. A request without one, with a
+  wrong one, or with a timestamp more than 30 s from the sidecar's clock is refused (401), and the
+  secret never crosses the wire.
+- **Rotation.** `PG_AUTH_SECRET_FILE` holds one secret per line, any of them accepted: add the new
+  one, move Postgres to it, remove the old one.
+- **TLS.** Its own certificate, or `PG_AUTH_TLS_TERMINATED=1` behind a platform that terminates
+  TLS; without either it does not start, nor without the secret.
+- **Health.** `GET /healthz` answers `ok`, and nothing else.
+- **Cost.** About 0.17 ms a round trip more than the socket, measured on one host
+  (`compare/remote.exs`: 190 µs beyond the engine, against 22 µs), plus the network's own round
+  trip.
+
 ## Postgres side
 
     ALTER SYSTEM SET pg_auth.sidecar_socket = '/run/pg_auth/openfga.sock';  -- superuser-only
     ALTER SYSTEM SET pg_auth.sidecar_timeout_ms = 5000;   -- the default; keep it above ENGINE_TIMEOUT_MS
+    SELECT pg_reload_conf();
+
+    -- or a sidecar reached over the network
+    ALTER SYSTEM SET pg_auth.sidecar_url = 'https://sidecar.internal:8443';
+    ALTER SYSTEM SET pg_auth.sidecar_secret_file = '/etc/pg_auth/secret';  -- readable by the postgres OS user
+    ALTER SYSTEM SET pg_auth.sidecar_ca_file = '/etc/pg_auth/ca.pem';      -- for a private CA; else the public roots
     SELECT pg_reload_conf();
     SELECT * FROM authz.status();   -- 'engine' row: openfga or spicedb, or why it is unreachable
 

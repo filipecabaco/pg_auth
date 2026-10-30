@@ -932,13 +932,19 @@ name = "pg-auth-sidecar"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "hmac",
+ "http-body-util",
  "humantime",
+ "hyper",
+ "hyper-util",
  "reqwest",
  "serde",
  "serde_json",
  "serde_norway",
+ "sha2",
  "tokio",
  "tokio-postgres",
+ "tokio-rustls",
  "wiremock",
 ]
 
@@ -1230,6 +1236,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "rustls-pki-types",
  "rustls-webpki",

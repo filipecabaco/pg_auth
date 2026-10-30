@@ -1,6 +1,6 @@
 # Publish a re-zero: the table bench/docker/pg_auth_table.exs printed goes into
-# bench/docker/README.md, docs/research/rls-issues.md, docs/benchmarks.md and the landing page
-# (overrides/home.html, between its `bench:` markers). From the repo root:
+# bench/docker/README.md, docs/research/rls-issues.md, docs/benchmarks.md and the landing page's
+# figures (overrides/home.html, between its `bench:stats` markers). From the repo root:
 #   elixir bench/docker/pg_auth_table.exs <results dir> > table.md
 #   elixir bench/docker/apply_zero.exs table.md <date> <commit>
 # A run against SpiceDB (run.exs --engine spicedb) goes into docs/benchmarks.md's SpiceDB block
@@ -9,9 +9,20 @@
 # Every engine side by side (bench/docker/engines_table.exs) goes into its "All engines" block:
 #   elixir bench/docker/engines_table.exs <openfga run> <spicedb run> > engines.md
 #   elixir bench/docker/apply_zero.exs engines.md <date> <commit> engines
+# and each engine's lane on the landing page (its `bench:engines` markers):
+#   elixir bench/docker/engines_table.exs --home <openfga run> <spicedb run> > lanes.jinja
+#   elixir bench/docker/apply_zero.exs lanes.jinja <date> <commit> home
 [table_file, date, commit | engine] = System.argv()
 table = File.read!(table_file) |> String.trim()
 [summary | _] = String.split(table, "\n", parts: 2)
+
+if engine == ["home"] do
+  f = "overrides/home.html"
+  s = Regex.replace(~r/(\{# bench:engines:start #\}\n).*?(\n\{# bench:engines:end #\})/s, File.read!(f), fn _, a, b -> a <> table <> b end)
+  File.write!(f, s)
+  IO.puts("overrides/home.html: each engine's lane")
+  System.halt(0)
+end
 
 if engine == ["engines"] do
   f = "docs/benchmarks.md"
@@ -64,24 +75,11 @@ s = File.read!(f)
 block = "<!-- results:start -->\nCommit `#{commit}`, #{date}.\n" <> table <> "\n<!-- results:end -->"
 File.write!(f, Regex.replace(~r/<!-- results:start -->.*<!-- results:end -->/s, s, fn _ -> block end))
 
-# home.html: the expectations section's figures and its strip's rows, sorted
+# home.html: the expectations section's figures
 [_, pairs, ratio] = Regex.run(~r/Over all (\d+) pairs pg_auth is at ([0-9.]+)x/, summary)
-# each dot on the lowest row where it clears the last one by 3% of the strip's width (its log
-# scale, 0.2x to 2x): dots at nearly the same ratio stack instead of overlapping
-at = fn v -> (:math.log(v) - :math.log(0.2)) / (:math.log(2) - :math.log(0.2)) end
-{placed, _} =
-  geo
-  |> Enum.map(fn {id, g} -> {id, g |> String.trim_trailing("x") |> String.to_float()} end)
-  |> Enum.sort_by(fn {id, v} -> {v, id} end)
-  |> Enum.map_reduce(%{}, fn {id, v}, last ->
-    row = Enum.find(Stream.iterate(0, &(&1 + 1)), fn r -> not Map.has_key?(last, r) or at.(v) - last[r] >= 0.03 end)
-    {{id, v, row}, Map.put(last, row, at.(v))}
-  end)
-rows = Enum.map_join(placed, "\n", fn {id, v, row} -> "  (\"#{id}\", #{:erlang.float_to_binary(v, decimals: 2)}, #{row}),"  end)
 stats = ~s({% set bench = {"ratio": #{ratio}, "pairs": #{pairs}, "scenarios": #{map_size(geo)}} %})
 f = "overrides/home.html"
 s = File.read!(f)
 s = Regex.replace(~r/(\{# bench:stats:start #\}\n).*?(\s*\{# bench:stats:end #\})/s, s, fn _, a, b -> a <> String.trim_trailing(stats) <> b end)
-s = Regex.replace(~r/(\{# bench:rows:start #\}\n\s*\{% set rows = \[\n).*?(\n\s*\] %\})/s, s, fn _, a, b -> a <> rows <> b end)
 File.write!(f, s)
 IO.puts(summary)

@@ -5,19 +5,36 @@
 # pg_auth_table.exs measures it.
 #
 #   elixir bench/docker/engines_table.exs <openfga results dir> <spicedb results dir>
+#   elixir bench/docker/engines_table.exs --home <openfga results dir> <spicedb results dir>
+#
+# --home prints the landing page's lanes instead (overrides/home.html, between its
+# `bench:engines` markers, written by apply_zero.exs's `home` mode): each engine's figure and one
+# dot per scenario.
 
 defmodule EnginesTable do
   # engine, the run it is in, the variant measuring it
   @engines [{"OpenFGA", :openfga, "pg_auth"}, {"SpiceDB", :spicedb, "pg_auth"}, {"Cerbos", :openfga, "pg_auth_cerbos"}, {"Cedar", :openfga, "pg_auth_cedar"}]
 
-  def run([openfga, spicedb]) do
-    runs = %{openfga: load(openfga), spicedb: load(spicedb)}
+  # the lanes' log scale (overrides/home.html, .pa-lanes)
+  @lo 0.2
+  @hi 3
 
-    # per engine and scenario: its (ratio, same rows) pairs against best-practice RLS
-    measured =
-      for {name, run, variant} <- @engines, {scenario, r} <- runs[run], pairs = pairs(r, variant), pairs != [], into: %{} do
-        {{name, scenario}, pairs}
-      end
+  def run(["--home", openfga, spicedb]) do
+    measured = measure(openfga, spicedb)
+    IO.puts("{% set engines = [")
+
+    for {name, _, _} <- @engines do
+      mine = for {{^name, scenario}, pairs} <- measured, do: {scenario, geomean(Enum.map(pairs, &elem(&1, 0)))}
+      all = for {{^name, _}, pairs} <- measured, {r, _} <- pairs, do: r
+      dots = Enum.map_join(stack(mine), ",\n", fn {id, v, row} -> ~s|    ("#{id}", #{decimals(v)}, #{row})| end)
+      IO.puts(~s|  {"name": "#{name}", "ratio": #{decimals(geomean(all))}, "scenarios": #{length(mine)}, "dots": [\n#{dots}\n  ]},|)
+    end
+
+    IO.puts("] %}")
+  end
+
+  def run([openfga, spicedb]) do
+    measured = measure(openfga, spicedb)
 
     IO.puts("| engine | decides on | scenarios | pairs | vs best-practice RLS | faster in | same rows |")
     IO.puts("|---|---|---|---|---|---|---|")
@@ -45,7 +62,32 @@ defmodule EnginesTable do
     end
   end
 
-  def run(_), do: IO.puts(:stderr, "usage: engines_table.exs <openfga results dir> <spicedb results dir>") && System.halt(1)
+  def run(_), do: IO.puts(:stderr, "usage: engines_table.exs [--home] <openfga results dir> <spicedb results dir>") && System.halt(1)
+
+  # per engine and scenario: its (ratio, same rows) pairs against best-practice RLS
+  defp measure(openfga, spicedb) do
+    runs = %{openfga: load(openfga), spicedb: load(spicedb)}
+
+    for {name, run, variant} <- @engines, {scenario, r} <- runs[run], pairs = pairs(r, variant), pairs != [], into: %{} do
+      {{name, scenario}, pairs}
+    end
+  end
+
+  # each dot on the lowest row where it clears the last one by 3% of the lane's width: dots at
+  # nearly the same ratio stack instead of overlapping
+  defp stack(dots) do
+    at = fn v -> (:math.log(v) - :math.log(@lo)) / (:math.log(@hi) - :math.log(@lo)) end
+
+    dots
+    |> Enum.sort_by(fn {id, v} -> {v, id} end)
+    |> Enum.map_reduce(%{}, fn {id, v}, last ->
+      row = Enum.find(Stream.iterate(0, &(&1 + 1)), fn r -> not Map.has_key?(last, r) or at.(v) - last[r] >= 0.03 end)
+      {{id, v, row}, Map.put(last, row, at.(v))}
+    end)
+    |> elem(0)
+  end
+
+  defp decimals(x), do: :erlang.float_to_binary(x * 1.0, decimals: 2)
 
   defp decides("Cerbos"), do: "the row's fields"
   defp decides("Cedar"), do: "fields and parents"

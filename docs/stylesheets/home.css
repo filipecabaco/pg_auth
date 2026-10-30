@@ -587,7 +587,7 @@
 }
 
 .md-typeset .pa-proof a,
-.md-typeset .pa-strip figcaption a {
+.md-typeset .pa-lanes figcaption a {
   white-space: nowrap;
   text-underline-offset: 0.15em;
 }
@@ -711,10 +711,12 @@
 .pa-expect__item:first-child {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-  grid-template-areas: "head strip" "text strip";
-  column-gap: 2.4rem;
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "head" "text" "strip";
+}
+
+.md-typeset .pa-expect__item:first-child p {
+  max-width: 44rem;
 }
 
 .pa-expect__item:first-child h3 {
@@ -739,9 +741,12 @@
   margin: 0;
 }
 
-/* The strip: one dot per scenario on a log scale from 0.2x to 2x */
+/* The lanes: one per engine, one dot per scenario, on a shared log scale from 0.2x to 3x
+   (bench/docker/engines_table.exs --home writes them and stacks the dots) */
 
-.md-typeset .pa-strip {
+.md-typeset .pa-lanes {
+  --label: 8.5rem;
+  --gap: 0.6rem;
   grid-area: strip;
   display: block;
   width: auto;
@@ -749,67 +754,87 @@
   margin: 0.2rem 0 0;
 }
 
-.pa-strip__plot {
+.pa-lanes__plot {
   position: relative;
-  /* as many rows as the densest ratio needs (bench/docker/apply_zero.exs stacks the dots) */
-  height: calc(1.3rem + var(--rows, 3) * 0.75rem);
-  margin-inline: 0.5rem;
+  padding-top: 1rem;
+}
+
+.pa-lanes__lane {
+  display: grid;
+  grid-template-columns: var(--label) minmax(0, 1fr);
+  column-gap: var(--gap);
+  align-items: end;
+  padding-top: 0.7rem;
+}
+
+.pa-lanes__name {
+  padding-bottom: 0.2rem;
+  text-align: left;
+  font: 0.58rem/1.35 var(--pa-mono);
+  color: var(--pa-muted);
+}
+
+.pa-lanes__name b {
+  display: block;
+  font-weight: 600;
+  font-size: 0.62rem;
+  color: var(--md-default-fg-color);
+}
+
+.pa-lanes__track {
+  position: relative;
+  height: calc(1.1rem + var(--rows, 1) * 0.6rem);
   border-bottom: 1px solid var(--pa-line);
 }
 
-.pa-strip__plot i,
-.pa-strip__even,
-.pa-strip__overall,
-.pa-strip__axis span {
-  --pos: calc((log(var(--v)) - log(0.2)) / (log(2) - log(0.2)) * 100%);
+.pa-lanes__track i,
+.pa-lanes__overall,
+.pa-lanes__axis span {
+  --pos: calc((log(var(--v)) - log(0.2)) / (log(3) - log(0.2)) * 100%);
   position: absolute;
   left: var(--pos);
 }
 
-.pa-strip__even {
+/* the same time, across every lane: placed over the tracks' column */
+.pa-lanes__even {
+  --frac: calc((log(var(--v)) - log(0.2)) / (log(3) - log(0.2)));
+  position: absolute;
   top: 0;
   bottom: 0;
+  left: calc(var(--label) + var(--gap) + (100% - var(--label) - var(--gap)) * var(--frac));
   border-left: 1px dashed var(--pa-muted);
 }
 
-.pa-strip__even span {
+.pa-lanes__even span {
   position: absolute;
-  top: -0.2rem;
+  top: -0.1rem;
   left: 0.3rem;
-  font: 0.6rem var(--pa-mono);
+  font: 0.58rem var(--pa-mono);
   color: var(--pa-muted);
   white-space: nowrap;
 }
 
-/* the overall figure: a solid green line, its label to the left (the even line's is to the right) */
-.pa-strip__overall {
-  top: 0;
+/* each engine's overall figure, the one its label gives */
+.pa-lanes__overall {
+  top: 0.2rem;
   bottom: 0;
-  border-left: 1px solid var(--pa-green);
-}
-
-.pa-strip__overall span {
-  position: absolute;
-  top: -0.2rem;
-  right: 0.3rem;
-  font: 600 0.6rem var(--pa-mono);
-  color: var(--pa-green);
-  white-space: nowrap;
+  border-left: 2px solid var(--md-default-fg-color);
+  opacity: 0.55;
 }
 
 /* a hit target larger than the mark */
-.pa-strip__plot i {
-  bottom: calc(0.35rem + var(--row) * 0.75rem);
-  width: 0.9rem;
-  height: 0.9rem;
-  margin-left: -0.45rem;
+.pa-lanes__track i {
+  bottom: calc(0.15rem + var(--row) * 0.6rem);
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-left: -0.4rem;
   display: grid;
   place-items: center;
   outline-offset: 0;
   border-radius: 50%;
 }
 
-.pa-strip__plot i::before {
+.pa-lanes__track i::before {
   content: "";
   width: 0.45rem;
   height: 0.45rem;
@@ -818,16 +843,16 @@
   box-shadow: 0 0 0 2px var(--md-default-bg-color);
 }
 
-.pa-strip__plot i:hover::before,
-.pa-strip__plot i:focus-visible::before {
+.pa-lanes__track i:hover::before,
+.pa-lanes__track i:focus-visible::before {
   background: var(--md-default-fg-color);
 }
 
-.pa-strip__plot i:hover::after,
-.pa-strip__plot i:focus-visible::after {
+.pa-lanes__track i:hover::after,
+.pa-lanes__track i:focus-visible::after {
   content: attr(data-tip);
   position: absolute;
-  bottom: 1.2rem;
+  bottom: 1.1rem;
   left: 50%;
   translate: -50% 0;
   padding: 0.3rem 0.45rem;
@@ -840,20 +865,37 @@
   pointer-events: none;
 }
 
-.pa-strip__axis {
+.pa-lanes__axis {
   position: relative;
   height: 1rem;
-  margin-inline: 0.5rem;
+  margin-left: calc(var(--label) + var(--gap));
 }
 
-.pa-strip__axis span {
+.pa-lanes__axis span {
   top: 0.25rem;
   translate: -50% 0;
-  font: 0.6rem var(--pa-mono);
+  font: 0.58rem var(--pa-mono);
   color: var(--pa-muted);
 }
 
-.md-typeset .pa-strip figcaption {
+/* on a phone each engine's name sits above its lane, which takes the full width */
+@media (max-width: 40em) {
+  .md-typeset .pa-lanes {
+    --label: 0rem;
+    --gap: 0rem;
+  }
+
+  .pa-lanes__lane {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pa-lanes__track i::before {
+    width: 0.38rem;
+    height: 0.38rem;
+  }
+}
+
+.md-typeset .pa-lanes figcaption {
   margin: 0.8rem 0 0;
   font-style: normal;
   max-width: none;
@@ -941,13 +983,8 @@
   }
 
   .pa-compare,
-  .pa-install,
-  .pa-expect__item:first-child {
+  .pa-install {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .pa-expect__item:first-child {
-    grid-template-areas: "head" "text" "strip";
   }
 
   .pa-expect__grid {

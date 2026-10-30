@@ -476,114 +476,153 @@ $$);</code></pre>
 {# bench:stats:start #}
 {% set bench = {"ratio": 0.79, "pairs": 489, "scenarios": 35} %}
 {# bench:stats:end #}
-{# bench:rows:start #}
-{% set rows = [
-  ("nested-rls-chain", 0.20, 0),
-  ("order-by-limit-selective-policy", 0.24, 0),
-  ("hierarchical-permissions", 0.25, 1),
-  ("large-membership-array-overhead", 0.31, 0),
-  ("supabase-storage-paths", 0.35, 0),
-  ("secdef-helper-oracle", 0.45, 0),
-  ("saas-project-hierarchy", 0.47, 1),
-  ("supabase-owner-or-role", 0.47, 2),
-  ("marketplace-two-party-orders", 0.63, 0),
-  ("large-events-timeseries", 0.68, 0),
-  ("larger-than-memory", 0.70, 1),
-  ("rls-write-path", 0.78, 0),
-  ("membership-subplan-no-pullup", 0.81, 1),
-  ("drive-nested-group-sharing", 0.91, 0),
-  ("supabase-chat-rooms", 0.95, 1),
-  ("large-fulltext-search", 0.96, 2),
-  ("partitioned-rls-no-pruning", 0.97, 3),
-  ("prepared-plan-role-revalidation", 0.98, 0),
-  ("view-owner-bypass", 0.98, 4),
-  ("org-membership", 1.01, 5),
-  ("rls-bypass-paths", 1.08, 0),
-  ("update-delete-bulk-rls-cost", 1.09, 1),
-  ("non-leakproof-operators-lose-index", 1.13, 2),
-  ("leaky-function-and-leakproof-marking", 1.15, 3),
-  ("policy-recursion-42p17", 1.15, 4),
-  ("rls-best-case-tenant-column", 1.28, 0),
-  ("update-select-coupling", 1.33, 1),
-  ("supabase-claims-rbac", 1.35, 2),
-  ("per-row-function-in-policy", 1.36, 3),
-  ("missing-policy-index", 1.51, 0),
-  ("pool-session-state-leak", 1.60, 1),
-  ("partition-direct-access", 1.61, 2),
-  ("jwt-claims-parsed-per-row", 1.73, 0),
-  ("join-two-rls-tables", 1.81, 1),
-  ("tenant-skew-bad-estimates", 1.87, 0),
+{# bench:engines:start #}
+{% set engines = [
+  {"name": "OpenFGA", "ratio": 0.79, "scenarios": 35, "dots": [
+    ("nested-rls-chain", 0.20, 0),
+    ("order-by-limit-selective-policy", 0.24, 0),
+    ("hierarchical-permissions", 0.25, 1),
+    ("large-membership-array-overhead", 0.31, 0),
+    ("supabase-storage-paths", 0.35, 0),
+    ("secdef-helper-oracle", 0.45, 0),
+    ("saas-project-hierarchy", 0.47, 1),
+    ("supabase-owner-or-role", 0.47, 2),
+    ("marketplace-two-party-orders", 0.63, 0),
+    ("large-events-timeseries", 0.68, 0),
+    ("larger-than-memory", 0.70, 1),
+    ("rls-write-path", 0.78, 0),
+    ("membership-subplan-no-pullup", 0.81, 1),
+    ("drive-nested-group-sharing", 0.91, 0),
+    ("supabase-chat-rooms", 0.95, 1),
+    ("large-fulltext-search", 0.96, 2),
+    ("partitioned-rls-no-pruning", 0.97, 3),
+    ("prepared-plan-role-revalidation", 0.98, 4),
+    ("view-owner-bypass", 0.98, 5),
+    ("org-membership", 1.01, 0),
+    ("rls-bypass-paths", 1.08, 1),
+    ("update-delete-bulk-rls-cost", 1.09, 2),
+    ("non-leakproof-operators-lose-index", 1.13, 0),
+    ("leaky-function-and-leakproof-marking", 1.15, 3),
+    ("policy-recursion-42p17", 1.15, 4),
+    ("rls-best-case-tenant-column", 1.28, 0),
+    ("update-select-coupling", 1.33, 1),
+    ("supabase-claims-rbac", 1.35, 2),
+    ("per-row-function-in-policy", 1.36, 3),
+    ("missing-policy-index", 1.51, 0),
+    ("pool-session-state-leak", 1.60, 1),
+    ("partition-direct-access", 1.61, 2),
+    ("jwt-claims-parsed-per-row", 1.73, 0),
+    ("join-two-rls-tables", 1.81, 1),
+    ("tenant-skew-bad-estimates", 1.87, 2)
+  ]},
+  {"name": "SpiceDB", "ratio": 0.93, "scenarios": 35, "dots": [
+    ("hierarchical-permissions", 0.26, 0),
+    ("order-by-limit-selective-policy", 0.27, 1),
+    ("nested-rls-chain", 0.31, 0),
+    ("large-membership-array-overhead", 0.33, 1),
+    ("supabase-storage-paths", 0.37, 0),
+    ("secdef-helper-oracle", 0.39, 1),
+    ("saas-project-hierarchy", 0.52, 0),
+    ("marketplace-two-party-orders", 0.67, 0),
+    ("larger-than-memory", 0.69, 1),
+    ("large-events-timeseries", 0.73, 2),
+    ("update-delete-bulk-rls-cost", 0.79, 0),
+    ("drive-nested-group-sharing", 0.82, 1),
+    ("membership-subplan-no-pullup", 0.82, 2),
+    ("rls-write-path", 0.93, 0),
+    ("large-fulltext-search", 0.94, 1),
+    ("supabase-owner-or-role", 0.95, 2),
+    ("prepared-plan-role-revalidation", 0.99, 3),
+    ("per-row-function-in-policy", 1.01, 4),
+    ("partitioned-rls-no-pruning", 1.17, 0),
+    ("rls-best-case-tenant-column", 1.24, 1),
+    ("rls-bypass-paths", 1.40, 0),
+    ("view-owner-bypass", 1.42, 1),
+    ("org-membership", 1.48, 2),
+    ("leaky-function-and-leakproof-marking", 1.48, 3),
+    ("supabase-claims-rbac", 1.53, 0),
+    ("update-select-coupling", 1.54, 1),
+    ("pool-session-state-leak", 1.55, 4),
+    ("non-leakproof-operators-lose-index", 1.65, 2),
+    ("policy-recursion-42p17", 1.68, 0),
+    ("join-two-rls-tables", 1.82, 0),
+    ("partition-direct-access", 1.92, 1),
+    ("supabase-chat-rooms", 2.08, 0),
+    ("jwt-claims-parsed-per-row", 2.09, 1),
+    ("missing-policy-index", 2.45, 0),
+    ("tenant-skew-bad-estimates", 2.61, 1)
+  ]},
+  {"name": "Cerbos", "ratio": 0.69, "scenarios": 2, "dots": [
+    ("supabase-owner-or-role", 0.38, 0),
+    ("rls-best-case-tenant-column", 1.41, 0)
+  ]},
+  {"name": "Cedar", "ratio": 0.79, "scenarios": 4, "dots": [
+    ("supabase-owner-or-role", 0.46, 0),
+    ("hierarchical-permissions", 0.49, 1),
+    ("org-membership", 1.01, 0),
+    ("rls-best-case-tenant-column", 1.58, 0)
+  ]},
 ] %}
-{# bench:rows:end #}
+{# bench:engines:end #}
 <section class="pa-section pa-expect" id="cost">
   <h2 class="pa-h2">What to expect</h2>
   <div class="pa-expect__grid">
     <div class="pa-expect__item">
       <h3>A protected query costs about what a well-written policy does</h3>
       <p>
-        Overall, {{ '%.2f' | format(bench.ratio) }}x the time of a best-practice policy, planning and
-        execution together: {{ bench.scenarios }} scenarios taken from problems people hit with row
-        level security, {{ bench.pairs }} query and subject pairs, measured with OpenFGA (0.93x with
-        SpiceDB; 0.69x with Cerbos and 0.79x with Cedar on the scenarios their rules express).
-        Statements
-        that finish in well under a millisecond pay for pg_auth's planning work, so expect those to
-        take somewhat longer. A rule on a row's own values (a report's level against a reader's
-        clearance) is checked row by row on OpenFGA: fine for reads by key, slow for scans.
+        Each engine against best-practice row level security, planning and execution together, on
+        {{ bench.scenarios }} scenarios taken from problems people hit with it. Statements well under
+        a millisecond pay for pg_auth's planning, so expect those to be a little slower.
       </p>
-      <figure class="pa-strip">
-        <div class="pa-strip__plot" style="--rows: {{ rows | map(attribute='2') | max + 1 }}" role="img" aria-label="Each scenario's pg_auth time as a share of best-practice row level security: from {{ '%.2f' | format(rows[0][1]) }}x to {{ '%.2f' | format(rows[-1][1]) }}x, {{ '%.2f' | format(bench.ratio) }}x overall">
-          <span class="pa-strip__even" style="--v: 1"><span>same time</span></span>
-          <span class="pa-strip__overall" style="--v: {{ bench.ratio }}"><span>{{ '%.2f' | format(bench.ratio) }}x overall</span></span>
-          {%- for name, v, row in rows %}
-          <i tabindex="0" style="--v: {{ v }}; --row: {{ row }}" data-tip="{{ name }} · {{ '%.2f' | format(v) }}x"></i>
+      <figure class="pa-lanes">
+        <div class="pa-lanes__plot">
+          <span class="pa-lanes__even" style="--v: 1" aria-hidden="true"><span>same time</span></span>
+          {%- for e in engines %}
+          <div class="pa-lanes__lane" role="img" aria-label="{{ e.name }}: {{ '%.2f' | format(e.ratio) }}x the time of best-practice row level security over {{ e.scenarios }} scenarios, from {{ '%.2f' | format(e.dots[0][1]) }}x to {{ '%.2f' | format(e.dots[-1][1]) }}x">
+            <span class="pa-lanes__name"><b>{{ e.name }}</b>{{ '%.2f' | format(e.ratio) }}x &middot; {{ e.scenarios }} scenario{{ 's' if e.scenarios != 1 }}</span>
+            <div class="pa-lanes__track" style="--rows: {{ e.dots | map(attribute='2') | max + 1 }}">
+              <span class="pa-lanes__overall" style="--v: {{ e.ratio }}"></span>
+              {%- for name, v, row in e.dots %}
+              <i tabindex="0" style="--v: {{ v }}; --row: {{ row }}" data-tip="{{ name }} · {{ '%.2f' | format(v) }}x"></i>
+              {%- endfor %}
+            </div>
+          </div>
           {%- endfor %}
         </div>
-        <div class="pa-strip__axis" aria-hidden="true">
+        <div class="pa-lanes__axis" aria-hidden="true">
           {%- for t, label in [(0.25, '0.25x'), (0.5, '0.5x'), (1, '1x'), (2, '2x')] %}<span style="--v: {{ t }}">{{ label }}</span>{% endfor %}
         </div>
-        <figcaption>One dot per scenario: pg_auth's time as a share of the best-practice policy's.
-          Left of the dashed line, pg_auth was faster; right of it, slower.
-          <a href="{{ 'benchmarks/' | url }}">The table, and how it was measured</a></figcaption>
+        <figcaption>One dot per scenario, its time as a share of the policy's: left of the dashed
+          line pg_auth was faster. Cerbos and Cedar run the scenarios their rules express.
+          <a href="{{ 'benchmarks/' | url }}">The tables, and how they were measured</a></figcaption>
       </figure>
     </div>
     <div class="pa-expect__item">
       <h3>A grant written as a row shows within tens of milliseconds</h3>
       <p>
-        A membership or a share written as a row showed to its subject 4 to 34 ms after the commit,
-        measured against OpenFGA and SpiceDB: pg_auth tells every session to ask again. A share with
-        an end date disappears 60 to 120 ms after it ends. A change made in the engine itself, outside
-        Postgres, shows once the engine's own reads see it (up to 5 s on SpiceDB's default
-        consistency, 10 s with OpenFGA's caches on) and the sidecar's one-second cache has passed.
+        4 to 34 ms after the commit; a share with an end date goes 60 to 120 ms after it ends.
         <a href="{{ 'usage/#8-how-fresh-answers-are' | url }}">How fresh answers are</a>
       </p>
     </div>
     <div class="pa-expect__item">
       <h3>When the engine or the sidecar is down, queries fail</h3>
       <p>
-        Statements on protected tables fail rather than guess: at once if the engine refuses the
-        connection, after 4 seconds if it hangs, after 5 if the sidecar does (both configurable).
-        Answers cached in the last second still serve, and with the engine down, subjects too broad
-        to list keep their last set in the permission index. Grants written as rows wait and are
-        delivered when it is back.
+        Statements on protected tables fail rather than guess. Grants written meanwhile wait, and
+        reach the engine when it is back.
       </p>
     </div>
     <div class="pa-expect__item">
       <h3>It needs a Postgres you configure</h3>
       <p>
-        Postgres 15 to 18 with pg_auth in <code>shared_preload_libraries</code>: a VM, Docker,
-        Kubernetes, self-hosted Supabase. Not RDS, Cloud SQL, Neon or hosted Supabase, which do not
-        preload extensions; running the sidecar over HTTPS does not change that. The sidecar runs
-        beside Postgres on a Unix socket, or on another host over HTTPS, where every request and
-        answer is signed with a secret Postgres and the sidecar hold.
-        <a href="{{ 'usage/#1-install' | url }}">Install</a>
+        Postgres 15 to 18 with pg_auth preloaded: a VM, Docker, Kubernetes, self-hosted Supabase.
+        Not RDS, Cloud SQL, Neon or hosted Supabase. <a href="{{ 'usage/#1-install' | url }}">Install</a>
       </p>
     </div>
     <div class="pa-expect__item">
       <h3>It is experimental</h3>
       <p>
-        Pre-release, built from source, no license chosen yet. Every engine is checked for parity
-        against its own answers, and the tests run on Postgres 15 to 18.
-        <a href="{{ 'testing/' | url }}">How it is tested</a>
+        Pre-release, built from source, no license yet; tested on Postgres 15 to 18 against each
+        engine's own answers. <a href="{{ 'testing/' | url }}">How it is tested</a>
       </p>
     </div>
   </div>

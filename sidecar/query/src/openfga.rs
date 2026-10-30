@@ -1,11 +1,20 @@
 //! OpenFGA as the source of truth: ListObjects for "which ids", BatchCheck for "these ids",
 //! StreamedListObjects to fill the permission index, ReadChanges (polled) as the change feed.
 
-use crate::engine::{CallError, Change, Listed, send_classified, send_json};
+use crate::engine::{CallError, Change, Feed, Listed, send_classified, send_json};
 use serde_json::{Value, json};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+/// A position the feed reached before (Feed::At): a continuation token, or the time to read from.
+fn resumed(position: &str) -> Option<(Option<String>, String)> {
+    if let Some(t) = position.strip_prefix("token:") {
+        Some((Some(t.to_owned()), String::new()))
+    } else {
+        position.strip_prefix("time:").map(|t| (None, t.to_owned()))
+    }
+}
 
 /// OpenFGA rejects batches larger than this (maxChecksPerBatchCheck).
 pub const MAX_BATCH: usize = 50;
@@ -88,30 +97,52 @@ impl OpenFga {
         true
     }
 
-    /// Poll the change feed from `start` every `poll`, reading it until it has nothing new each
-    /// time, and report every page with changes. An error is retried from the same token, so
-    /// nothing is missed.
-    pub async fn follow(&self, start: String, poll: Duration, changed: mpsc::UnboundedSender<()>) {
-        let mut token: Option<String> = None;
+    /// Poll the change feed every `poll`, reading it until it has nothing new each time, and
+    /// report every page with changes and, after each poll, the position reached. It resumes from
+    /// `resume` (a continuation token, or the time to read from); without one, or when OpenFGA
+    /// refuses the token, it reads from `start` and reports a Gap. A failed read is retried from
+    /// the same token, so nothing is missed.
+    pub async fn follow(&self, start: String, resume: Option<String>, poll: Duration, feed: mpsc::UnboundedSender<Feed>) {
+        let (mut token, mut from) = if let Some(at) = resume.as_deref().and_then(resumed) {
+            at
+        } else {
+            if feed.send(Feed::Gap).is_err() {
+                return;
+            }
+            (None, start.clone())
+        };
         loop {
             loop {
-                match self.changes(token.as_deref(), &start).await {
+                match self.changes(token.as_deref(), &from).await {
                     Ok((n, next)) => {
-                        if n > 0 && changed.send(()).is_err() {
-                            return;
-                        }
                         if !next.is_empty() {
                             token = Some(next);
+                        }
+                        if n > 0 && feed.send(Feed::Changed(token.as_deref().map(|t| format!("token:{t}")))).is_err() {
+                            return;
                         }
                         if n == 0 {
                             break;
                         }
                     }
+                    // a token from before that OpenFGA no longer takes (another store, past its
+                    // history): changes since may be missed
+                    Err(e) if e.permanent && token.is_some() => {
+                        eprintln!("pg-auth-sidecar: change feed: {}; reading from now", e.message);
+                        (token, from) = (None, start.clone());
+                        if feed.send(Feed::Gap).is_err() {
+                            return;
+                        }
+                    }
                     Err(e) => {
-                        eprintln!("pg-auth-sidecar: change feed: {e}");
+                        eprintln!("pg-auth-sidecar: change feed: {}", e.message);
                         break;
                     }
                 }
+            }
+            let at = token.as_deref().map_or_else(|| format!("time:{from}"), |t| format!("token:{t}"));
+            if feed.send(Feed::At(at)).is_err() {
+                return;
             }
             tokio::time::sleep(poll).await;
         }
@@ -207,13 +238,14 @@ impl OpenFga {
     /// The next page of the store's change feed (ReadChanges): how many changes, and the token
     /// to continue from (unchanged when there is nothing new). Without a token, starts at
     /// `start_time` (RFC 3339).
-    async fn changes(&self, token: Option<&str>, start_time: &str) -> Result<(usize, String), String> {
+    async fn changes(&self, token: Option<&str>, start_time: &str) -> Result<(usize, String), CallError> {
         let mut query = vec![("page_size", "100".to_string())];
         match token {
             Some(t) => query.push(("continuation_token", t.to_string())),
             None => query.push(("start_time", start_time.to_string())),
         }
-        let v = send_json(self.client.get(format!("{}/changes", self.base)).query(&query), "openfga changes").await?;
+        let text = send_classified(self.client.get(format!("{}/changes", self.base)).query(&query), "openfga changes").await?;
+        let v: Value = serde_json::from_str(&text).map_err(|e| format!("openfga changes: {e}"))?;
         let n = v.get("changes").and_then(Value::as_array).map_or(0, Vec::len);
         let next = v.get("continuation_token").and_then(Value::as_str).unwrap_or_default().to_string();
         Ok((n, next))
@@ -325,5 +357,12 @@ mod tests {
     async fn full_pages_and_answers_at_the_deadline_may_be_partial() {
         assert!(matches!(list(Duration::ZERO, Duration::from_millis(300), 1).await, Listed::TooMany), "full page");
         assert!(matches!(list(Duration::from_millis(350), Duration::from_millis(300), 1000).await, Listed::TooMany), "deadline");
+    }
+
+    #[test]
+    fn a_kept_position_resumes_from_its_token_or_time() {
+        assert_eq!(resumed("token:01JX"), Some((Some("01JX".to_owned()), String::new())));
+        assert_eq!(resumed("time:2026-10-30T07:00:00.000000Z"), Some((None, "2026-10-30T07:00:00.000000Z".to_owned())));
+        assert_eq!(resumed("01JX"), None);
     }
 }

@@ -99,10 +99,16 @@ extension then answers from Postgres instead of asking the engine per row.
   marks it fresh. The list reads past the engine's caches (OpenFGA `HIGHER_CONSISTENCY`, SpiceDB
   `fully_consistent`), so a fill reflects every change the feed reported before it. One fill at a
   time; repeated requests for a set being filled are dropped.
-- **Freshness.** It follows the engine's change feed from the moment it starts, and any change
-  marks every set stale (coarse: through inheritance a change can reach any set). A set
-  invalidated while it fills never becomes fresh. The extension uses fresh sets only and asks the
-  engine meanwhile.
+- **Freshness.** It follows the engine's change feed, and any change marks every set stale
+  (coarse: through inheritance a change can reach any set). A set invalidated while it fills never
+  becomes fresh. The extension uses fresh sets only and asks the engine meanwhile.
+- **Restarts.** The feed keeps the position it has read changes to in Postgres
+  (`authz_internal.feed_positions`: OpenFGA's continuation token, SpiceDB's watch cursor), once
+  every change before it has marked the sets stale. A feed starting, a restart or a second sidecar,
+  resumes from it: sets are kept when nothing changed meanwhile, and a change made while no
+  sidecar ran marks them stale on start. With no position, or one the engine no longer serves
+  (another store, past SpiceDB's GC window), every set is marked stale
+  (`compare/restarts.exs`).
 - **Revocation delay.** A revocation reaches pg_auth when the feed reports it (parity measured
   ~0.2 s for OpenFGA, ~0.4 s for SpiceDB) and once the engine's own answers reflect it: OpenFGA's
   caches expire (10 s TTL by default), SpiceDB's `minimize_latency` reads reach the write's

@@ -7,7 +7,7 @@
 //! conditional, and conditional is denied (fail closed), in lists and checks alike.
 
 use crate::cerbos::Plan;
-use crate::engine::{CallError, Change, Listed, causes, send, send_classified, send_json};
+use crate::engine::{CallError, Change, Feed, Listed, causes, send, send_classified, send_json};
 use serde_json::{Value, json};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -219,18 +219,19 @@ impl SpiceDb {
     }
 
     /// Watch relationship and schema changes for as long as the sidecar runs, reporting every
-    /// message with any. Every connection resumes from a revision: the last one seen, or one read
-    /// before the first. Starting from a new revision (the first time, or after SpiceDB refused the
-    /// last, e.g. past its GC window) may skip changes, so it is reported as a change. A failed
-    /// connection is retried after `retry`.
-    pub async fn follow(&self, retry: Duration, changed: mpsc::UnboundedSender<()>) {
-        let mut cursor: Option<Value> = None;
+    /// message with any, and the cursor every message carries (checkpoints included). Every
+    /// connection resumes from a cursor: `resume` (one a feed reached before), the last one seen,
+    /// or one read before the first. Starting from a new revision (nothing to resume from, or
+    /// after SpiceDB refused the cursor, e.g. past its GC window) may skip changes, so it is
+    /// reported as a Gap. A failed connection is retried after `retry`.
+    pub async fn follow(&self, resume: Option<String>, retry: Duration, feed: mpsc::UnboundedSender<Feed>) {
+        let mut cursor: Option<Value> = resume.and_then(|r| serde_json::from_str(&r).ok());
         loop {
             if cursor.is_none() {
                 match self.revision().await {
                     Ok(token) => {
                         cursor = Some(token);
-                        if changed.send(()).is_err() {
+                        if feed.send(Feed::Gap).is_err() {
                             return;
                         }
                     }
@@ -241,11 +242,11 @@ impl SpiceDb {
                     }
                 }
             }
-            match self.watch(&mut cursor, &changed).await {
+            match self.watch(&mut cursor, &feed).await {
                 Ok(()) => eprintln!("pg-auth-sidecar: spicedb watch ended; reconnecting"),
                 Err(e) => eprintln!("pg-auth-sidecar: spicedb watch: {e}"),
             }
-            if changed.is_closed() {
+            if feed.is_closed() {
                 return;
             }
             tokio::time::sleep(retry).await;
@@ -303,7 +304,7 @@ impl SpiceDb {
         field(&v, "read_at").cloned().ok_or_else(|| "spicedb schema read: no read_at".to_string())
     }
 
-    async fn watch(&self, cursor: &mut Option<Value>, changed: &mpsc::UnboundedSender<()>) -> Result<(), String> {
+    async fn watch(&self, cursor: &mut Option<Value>, feed: &mpsc::UnboundedSender<Feed>) -> Result<(), String> {
         let mut body = json!({
             "optional_update_kinds": ["WATCH_KIND_INCLUDE_RELATIONSHIP_UPDATES", "WATCH_KIND_INCLUDE_SCHEMA_UPDATES", "WATCH_KIND_INCLUDE_CHECKPOINTS"],
         });
@@ -331,11 +332,19 @@ impl SpiceDb {
                 let result = result_of(&v, "watch")?;
                 let updates = field(result, "updates").and_then(Value::as_array).is_some_and(|u| !u.is_empty());
                 let schema = field(result, "schema_updated").and_then(Value::as_bool).unwrap_or(false);
-                if (updates || schema) && changed.send(()).is_err() {
-                    return Ok(());
-                }
                 if let Some(t) = field(result, "changes_through") {
                     *cursor = Some(t.clone());
+                }
+                let at = cursor.as_ref().map(Value::to_string);
+                let report = match (updates || schema, at) {
+                    (true, at) => Some(Feed::Changed(at)),
+                    (false, Some(at)) => Some(Feed::At(at)),
+                    (false, None) => None,
+                };
+                if let Some(r) = report
+                    && feed.send(r).is_err()
+                {
+                    return Ok(());
                 }
             }
         }
@@ -610,17 +619,28 @@ mod tests {
             .respond_with(ResponseTemplate::new(400).set_body_string("revision has expired"))
             .mount(&server)
             .await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let e = engine(&server.uri());
-        let follow = tokio::spawn(async move { e.follow(Duration::from_millis(10), tx).await });
-        // the start (a missed change, as far as anyone knows), an update, a schema change, then
-        // after the expired revision a new start
-        for _ in 0..4 {
-            tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
-        }
-        follow.abort();
+        let at = |t: &str| format!("{{\"token\":\"{t}\"}}");
+        let follow = async |resume: Option<String>, n: usize| {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let e = engine(&server.uri());
+            let follow = tokio::spawn(async move { e.follow(resume, Duration::from_millis(10), tx).await });
+            let mut got = Vec::new();
+            for _ in 0..n {
+                got.push(tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap());
+            }
+            follow.abort();
+            got
+        };
+        // nothing to resume from (a missed change, as far as anyone knows), a checkpoint, an
+        // update, a schema change, then after the expired revision a new start
+        assert_eq!(
+            follow(None, 5).await,
+            [Feed::Gap, Feed::At(at("r1")), Feed::Changed(Some(at("r2"))), Feed::Changed(Some(at("r3"))), Feed::Gap]
+        );
         let reads = server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/v1/schema/read").count();
         assert!(reads >= 2, "read the revision again after it expired ({reads})");
+        // a cursor a feed reached before: no gap, the changes since
+        assert_eq!(follow(Some(at("r1")), 2).await, [Feed::At(at("r1")), Feed::Changed(Some(at("r2")))]);
     }
 
     #[test]

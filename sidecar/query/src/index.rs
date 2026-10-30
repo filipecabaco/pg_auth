@@ -8,7 +8,7 @@
 //! sets only; a set invalidated while it fills never becomes fresh (authz_sidecar.index_finish).
 //! Optional: enabled by PG_AUTH_DATABASE_URL.
 
-use crate::engine::{Engine, Key};
+use crate::engine::{Engine, Feed, Key};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -143,38 +143,66 @@ async fn fill(db: &mut Db, engine: &Engine, key: &Key) -> Result<(usize, bool), 
     Ok((n, fresh.unwrap_or(false)))
 }
 
-/// Follow the engine's change feed from now on and invalidate the index on any change. A failed
-/// invalidation is retried, never dropped: until it succeeds the sets it covers may be stale.
+/// Follow the engine's change feed and invalidate the index on any change, or when changes may
+/// have been missed. A failed invalidation is retried, never dropped: until it succeeds the sets it
+/// covers may be stale. The position the feed reached is kept in Postgres once everything before
+/// it was handled (on every change, else at most every POSITION_EVERY), for the next feed to start
+/// from: a sidecar restarting, or another starting, then keeps the sets if nothing changed.
 async fn feed_loop(url: String, engine: Arc<Engine>, retry: Duration, fresh: Fresh) {
     let mut db = Db { url, client: None };
-    let start = loop {
-        match begin(&mut db, &fresh).await {
-            Ok(start) => break start,
+    let (start, resume) = loop {
+        match begin(&mut db, &fresh, engine.name()).await {
+            Ok(begun) => break begun,
             Err(e) => eprintln!("pg-auth-sidecar: change feed: {e}"),
         }
         tokio::time::sleep(retry).await;
     };
-    let (notify, mut changes) = mpsc::unbounded_channel();
-    tokio::spawn(async move { engine.follow(start, retry, notify).await });
-    while changes.recv().await.is_some() {
-        if let Ok(mut f) = fresh.lock() {
-            f.clear();
-        }
+    let (feed, mut reports) = mpsc::unbounded_channel();
+    let following = engine.clone();
+    tokio::spawn(async move { following.follow(start, resume, retry, feed).await });
+    let mut kept: Option<tokio::time::Instant> = None;
+    while let Some(first) = reports.recv().await {
         // one invalidation covers every change reported so far
-        while changes.try_recv().is_ok() {}
-        loop {
-            match invalidate(&mut db).await {
-                Ok(()) => break,
-                Err(e) => eprintln!("pg-auth-sidecar: change feed: {e}"),
+        let mut batch = vec![first];
+        while let Ok(more) = reports.try_recv() {
+            batch.push(more);
+        }
+        let stale = batch.iter().any(|r| !matches!(r, Feed::At(_)));
+        let position = batch.into_iter().rev().find_map(|r| match r {
+            Feed::Changed(at) => at,
+            Feed::At(at) => Some(at),
+            Feed::Gap => None,
+        });
+        if stale {
+            if let Ok(mut f) = fresh.lock() {
+                f.clear();
             }
-            tokio::time::sleep(retry).await;
+            loop {
+                match invalidate(&mut db).await {
+                    Ok(()) => break,
+                    Err(e) => eprintln!("pg-auth-sidecar: change feed: {e}"),
+                }
+                tokio::time::sleep(retry).await;
+            }
+        }
+        if let Some(at) = position
+            && (stale || kept.is_none_or(|k| k.elapsed() >= POSITION_EVERY))
+        {
+            // not kept: the next feed starts from an earlier position, and replays a little more
+            match reached(&mut db, engine.name(), &at).await {
+                Ok(()) => kept = Some(tokio::time::Instant::now()),
+                Err(e) => eprintln!("pg-auth-sidecar: change feed position: {e}"),
+            }
         }
     }
 }
 
-/// Load the sets already fresh (filled before a restart) and the moment the feed starts: sets
-/// filled from then on are what it guards.
-async fn begin(db: &mut Db, fresh: &Fresh) -> Result<String, String> {
+/// How often the feed's position is kept when nothing changes.
+const POSITION_EVERY: Duration = Duration::from_secs(1);
+
+/// Load the sets already fresh (filled before a restart), the moment the feed starts, and the
+/// position a feed reached before, if any, to resume from.
+async fn begin(db: &mut Db, fresh: &Fresh, engine: &str) -> Result<(String, Option<String>), String> {
     let client = db.client().await?;
     let pg = |e: tokio_postgres::Error| format!("postgres: {e}");
     let rows = client.query("select subject, object_type, permission, size from authz_sidecar.index_fresh()", &[]).await.map_err(pg)?;
@@ -183,7 +211,16 @@ async fn begin(db: &mut Db, fresh: &Fresh) -> Result<String, String> {
             f.insert((r.get(0), r.get(1), r.get(2)), usize::try_from(r.get::<_, Option<i64>>(3).unwrap_or(0)).unwrap_or(0));
         }
     }
-    Ok(client.query_one(r#"select to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')"#, &[]).await.map_err(pg)?.get(0))
+    let resume: Option<String> = client.query_one("select authz_sidecar.feed_position($1)", &[&engine]).await.map_err(pg)?.get(0);
+    let start: String =
+        client.query_one(r#"select to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')"#, &[]).await.map_err(pg)?.get(0);
+    Ok((start, resume))
+}
+
+async fn reached(db: &mut Db, engine: &str, position: &str) -> Result<(), String> {
+    let client = db.client().await?;
+    client.execute("select authz_sidecar.feed_reached($1, $2)", &[&engine, &position]).await.map_err(|e| format!("postgres: {e}"))?;
+    Ok(())
 }
 
 async fn invalidate(db: &mut Db) -> Result<(), String> {

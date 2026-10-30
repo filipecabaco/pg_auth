@@ -496,6 +496,9 @@ written through a relationship table clears every one of them:
 - **The engine down:** answers already kept are used for at most the times above, then statements
   fail. Subjects answered from the permission index keep their last fresh set, read from
   Postgres; a change the engine makes meanwhile reaches it when the feed is read again.
+- **A sidecar restarting:** the change feed resumes from the position it had read to, so the
+  permission index is kept when nothing changed, and a change made while no sidecar ran marks its
+  sets stale as soon as one starts.
 - **The sidecar down:** answers already kept are used for at most its 1 s, then every statement
   on a protected table fails, the permission index included: nothing in Postgres answers alone.
 

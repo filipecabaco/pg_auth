@@ -234,18 +234,32 @@ impl Engine {
         }
     }
 
-    /// Follow the engine's changes from `start` (RFC 3339, the moment the index began guarding
-    /// its sets) for as long as the sidecar runs, sending one message per batch of changes, and
-    /// one whenever changes may have been missed (the receiver then treats every set as stale).
-    /// `poll` is how often a polled feed is read, and how soon a failed one is retried.
-    pub async fn follow(&self, start: String, poll: Duration, changed: mpsc::UnboundedSender<()>) {
+    /// Follow the engine's changes for as long as the sidecar runs, from `resume` (a position a
+    /// feed reached before, authz_sidecar.feed_position) or else from `start` (RFC 3339, now)
+    /// with a Gap, since changes before it were watched by no one. Sends a message per batch of
+    /// changes, one with the position read up to now and then, and a Gap whenever changes may
+    /// have been missed. `poll` is how often a polled feed is read, and how soon a failed one is
+    /// retried.
+    pub async fn follow(&self, start: String, resume: Option<String>, poll: Duration, feed: mpsc::UnboundedSender<Feed>) {
         match self {
-            Engine::OpenFga(e) => e.follow(start, poll, changed).await,
-            Engine::SpiceDb(e) => e.follow(poll, changed).await,
+            Engine::OpenFga(e) => e.follow(start, resume, poll, feed).await,
+            Engine::SpiceDb(e) => e.follow(resume, poll, feed).await,
             // no change feed: and no permission index to keep fresh
             Engine::Cerbos(_) => {}
         }
     }
+}
+
+/// What a change feed reports (Engine::follow), in order.
+#[derive(Debug, PartialEq)]
+pub enum Feed {
+    /// Changes may have been missed (nothing to resume from, or a position the engine no longer
+    /// serves): every set is stale.
+    Gap,
+    /// Changes, read up to this position.
+    Changed(Option<String>),
+    /// Read up to this position, with no change.
+    At(String),
 }
 
 /// Send a request: the body on success, else an error naming `what`, the status, and the
@@ -616,14 +630,54 @@ mod tests {
             .await;
         let (tx, mut rx) = mpsc::unbounded_channel();
         let e = openfga(&server);
-        let follow = tokio::spawn(async move { e.follow("2026-10-29T00:00:00Z".into(), Duration::from_millis(10), tx).await });
-        tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+        let follow = tokio::spawn(async move { e.follow("2026-10-29T00:00:00Z".into(), None, Duration::from_millis(10), tx).await });
+        let mut next = async || tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+        // nothing to resume from: changes before now were watched by no one
+        assert_eq!(next().await, Feed::Gap);
+        assert_eq!(next().await, Feed::Changed(Some("token:t1".into())));
+        assert_eq!(next().await, Feed::At("token:t1".into()));
         // later polls continue from the token: the start time is asked for once
         tokio::time::sleep(Duration::from_millis(50)).await;
         follow.abort();
         let starts =
             server.received_requests().await.unwrap().iter().filter(|r| r.url.query().unwrap_or("").contains("start_time")).count();
         assert_eq!(starts, 1);
+    }
+
+    #[tokio::test]
+    async fn openfga_resumes_from_a_kept_token_and_reads_from_now_when_it_is_refused() {
+        let server = MockServer::start().await;
+        Mock::given(path("/stores/s1/changes"))
+            .and(query_param("continuation_token", "kept"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"changes": [], "continuation_token": "kept"})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/stores/s1/changes"))
+            .and(query_param("continuation_token", "gone"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({"code": "invalid_continuation_token", "message": "invalid"})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/stores/s1/changes"))
+            .and(query_param("start_time", "2026-10-30T00:00:00Z"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"changes": [], "continuation_token": "now"})))
+            .mount(&server)
+            .await;
+        for (kept, want) in
+            [("token:kept", vec![Feed::At("token:kept".into())]), ("token:gone", vec![Feed::Gap, Feed::At("token:now".into())])]
+        {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let e = openfga(&server);
+            let follow =
+                tokio::spawn(
+                    async move { e.follow("2026-10-30T00:00:00Z".into(), Some(kept.into()), Duration::from_millis(10), tx).await },
+                );
+            let mut got = Vec::new();
+            for _ in &want {
+                got.push(tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap());
+            }
+            follow.abort();
+            assert_eq!(got, want, "resuming from {kept}");
+        }
     }
 
     #[tokio::test]
@@ -781,7 +835,7 @@ mod tests {
         assert!(c.list_all(&key("user:anne", "note", "read")).await.is_err());
         let (tx, _rx) = mpsc::unbounded_channel();
         // no change feed: returns at once
-        tokio::time::timeout(Duration::from_secs(1), c.follow(String::new(), Duration::from_millis(1), tx)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), c.follow(String::new(), None, Duration::from_millis(1), tx)).await.unwrap();
         assert_eq!((fga.name(), c.name()), ("openfga", "cerbos"));
         assert!(server.received_requests().await.unwrap().is_empty(), "none of these asks the engine");
     }

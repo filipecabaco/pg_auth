@@ -255,6 +255,17 @@ not Postgres:
     elixir compare/notes.exs                            # OpenFGA, SpiceDB, then Cerbos
     elixir compare/notes.exs --engine cerbos --no-build
 
+## The permission index across restarts
+
+`restarts.exs` checks that the change feed resumes from the position it kept in Postgres, on
+OpenFGA and SpiceDB, with a broad subject made by a list limit of 1: a second sidecar starting,
+and a sidecar restarted, keep the subject's set when nothing changed; a relationship deleted
+straight from the engine while no sidecar ran is caught when one starts; and a position the
+engine does not serve marks every set stale.
+
+    elixir compare/restarts.exs                         # OpenFGA, then SpiceDB
+    elixir compare/restarts.exs --engine spicedb --no-build
+
 ## History
 
 This harness first compared OpenFGA with the authorization engine pg_auth used to embed

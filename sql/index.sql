@@ -103,6 +103,30 @@ language sql volatile security definer set search_path = pg_catalog, pg_temp as 
     update authz_internal.permission_sets set status = 'stale' where set_id = p_set and status = 'filling'
 $$;
 
+-- How far the engine's change feed has been read: every change up to `position` has marked the
+-- sets stale. A sidecar's feed starts from it, so a restart, or another sidecar starting, keeps
+-- the sets when nothing changed meanwhile; without one it must treat every set as stale. Any
+-- sidecar may move it back (one that lags): an earlier position is still one everything before
+-- was handled by, and is only replayed again.
+create table authz_internal.feed_positions (
+    engine   text primary key,
+    -- the engine's own: OpenFGA's continuation token (or the time to read changes from), SpiceDB's
+    -- watch cursor
+    position text not null,
+    at       timestamptz not null default now()
+);
+
+create function authz_sidecar.feed_position(p_engine text) returns text
+language sql stable security definer set search_path = pg_catalog, pg_temp as $$
+    select f.position from authz_internal.feed_positions f where f.engine = p_engine
+$$;
+
+create function authz_sidecar.feed_reached(p_engine text, p_position text) returns void
+language sql volatile security definer set search_path = pg_catalog, pg_temp as $$
+    insert into authz_internal.feed_positions (engine, position) values (p_engine, p_position)
+    on conflict (engine) do update set position = excluded.position, at = now()
+$$;
+
 -- The sets fresh now (filled before a sidecar restart): the ones the change feed guards.
 create function authz_sidecar.index_fresh() returns table (subject text, object_type text, permission text, size bigint)
 language sql stable security definer set search_path = pg_catalog, pg_temp as $$

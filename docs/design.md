@@ -159,7 +159,9 @@ nested-rls-chain without the index (comments: 2.7 -> 1.3 s). A set that goes sta
 mid-transaction hands the remaining batches back to the engine. The sidecar fills a set
 by streaming the engine's complete list (a broad subject's 40k folders: 3.2 s, against ~110 s of
 per-row checks for every query) and follows the engine's change feed, marking every set stale on
-any change; a set invalidated while it fills never becomes fresh. So the index answers broad
+any change; a set invalidated while it fills never becomes fresh. The feed keeps the position it
+has read to in Postgres, and a starting feed resumes from it, so a restart, or another sidecar
+starting, keeps the sets when nothing changed and catches what changed while none ran. So the index answers broad
 subjects at in-memory speed, and a revocation applies once the feed is read (~0.2 s) and the
 engine's own caches expire (OpenFGA: 10 s TTL when on). `pg_auth.permission_index = off` turns it
 off.
@@ -288,15 +290,16 @@ background.
 For OpenFGA: `list` is ListObjects, which truncates silently both at its result limit and at its
 deadline (answering with the objects found so far), so a full page or an answer that took the
 deadline means `too_many`; `check` is BatchCheck in chunks of 50; a fill is StreamedListObjects;
-the change feed is ReadChanges, polled.
+the change feed is ReadChanges, polled, resumed from the continuation token kept in Postgres
+(a token OpenFGA refuses marks every set stale).
 
 For SpiceDB (its HTTP gateway): `list` is LookupResources, paged by its cursor past the server's
 1000-per-call limit, every page at the first one's revision, `too_many` at the sidecar's
 `LIST_LIMIT`; `check` is CheckBulkPermissions in calls of 1000 ids, which SpiceDB dispatches as
 one check per subject, type and permission; a fill is LookupResources at the latest revision
 (`fully_consistent`), so it reflects every change the feed reported before it began; the change
-feed is Watch, streamed and resumed from the last revision seen (a connection that cannot resume
-marks every set stale). A caveated relationship evaluated without its context is conditional, and
+feed is Watch, streamed and resumed from the last revision seen, or on start from the cursor kept
+in Postgres (a connection that cannot resume marks every set stale). A caveated relationship evaluated without its context is conditional, and
 conditional is denied. Subjects may be usersets (`group:eng#member`).
 
 ## 5. Security and correctness

@@ -2395,6 +2395,19 @@ mod tests {
     }
 
     #[pg_test]
+    fn the_feed_position_is_kept_per_engine_for_the_next_feed() {
+        assert_eq!(Spi::get_one::<String>("select authz_sidecar.feed_position('openfga')").unwrap(), None);
+        Spi::run(
+            "select authz_sidecar.feed_reached('openfga', 'token:a');
+             select authz_sidecar.feed_reached('openfga', 'token:b');
+             select authz_sidecar.feed_reached('spicedb', '{\"token\":\"r1\"}')",
+        )
+        .unwrap();
+        assert_eq!(Spi::get_one::<String>("select authz_sidecar.feed_position('openfga')").unwrap().as_deref(), Some("token:b"));
+        assert_eq!(Spi::get_one::<String>("select authz_sidecar.feed_position('spicedb')").unwrap().as_deref(), Some("{\"token\":\"r1\"}"));
+    }
+
+    #[pg_test]
     fn sets_not_fresh_are_not_used_and_get_filled() {
         fixture();
         items();

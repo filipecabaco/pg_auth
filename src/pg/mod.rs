@@ -16,6 +16,7 @@ pub mod build;
 pub mod catalog;
 pub mod exec;
 pub mod hooks;
+pub mod index;
 pub mod plan;
 
 pub use pgrx::pg_sys::{self, NodeTag, Oid};

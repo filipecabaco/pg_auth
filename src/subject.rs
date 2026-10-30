@@ -129,8 +129,10 @@ thread_local! {
     static SETTINGS: RefCell<Option<(u64, Settings)>> = const { RefCell::new(None) };
 }
 
-const SETTINGS_QUERY: &str = "SELECT coalesce(jsonb_object_agg(key, value), '{}')::text FROM authz_internal.settings_in_force()";
-const SUBJECT_QUERY: &str = "SELECT authz.subject_type() || ':' || authz.subject_id()";
+const SETTINGS_QUERY: &str =
+    "SELECT coalesce(pg_catalog.jsonb_object_agg(key, value), '{}')::pg_catalog.text FROM authz_internal.settings_in_force()";
+// every name qualified: it runs under the caller's search_path, where `||` could be anyone's
+const SUBJECT_QUERY: &str = "SELECT pg_catalog.textcat(pg_catalog.textcat(authz.subject_type(), ':'), authz.subject_id())";
 
 /// The queries subject resolution runs, for a warm-up to prepare (authz.warm).
 pub fn queries() -> Vec<(&'static str, Vec<pg_sys::Oid>)> {

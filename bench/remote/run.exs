@@ -8,6 +8,7 @@
 #
 #   elixir bench/remote/run.exs                         # builds the images first
 #   elixir bench/remote/run.exs --no-build --seconds 20 --clients 4,16,64 --latency 1
+#   elixir bench/remote/run.exs --setups rls,socket       # some of rls, socket, https, latency
 
 Mix.install([{:req, "~> 0.7"}, {:postgrex, "~> 0.22"}], config: [postgrex: [json_library: JSON]])
 
@@ -31,7 +32,7 @@ defmodule Remote.Bench do
   @users 1000
 
   def main(argv) do
-    {opts, _} = OptionParser.parse!(argv, strict: [build: :boolean, seconds: :integer, clients: :string, latency: :integer])
+    {opts, _} = OptionParser.parse!(argv, strict: [build: :boolean, seconds: :integer, clients: :string, latency: :integer, setups: :string])
     root = Path.expand("../..", __DIR__)
     if Keyword.get(opts, :build, true), do: Stack.build(root)
     seconds = Keyword.get(opts, :seconds, 20)
@@ -53,12 +54,14 @@ defmodule Remote.Bench do
       start_relay(stack, https, latency)
       load(conn)
 
+      setups = (opts[:setups] || "rls,socket,https,latency") |> String.split(",")
       configs = [
-        {"best-practice RLS", "documents_rls", %{}},
-        {"pg_auth, Unix socket", "documents", %{"pg_auth.sidecar_url" => ""}},
-        {"pg_auth, HTTPS", "documents", %{"pg_auth.sidecar_url" => "https://#{@host}:8443"}},
-        {"pg_auth, HTTPS, added latency", "documents", %{"pg_auth.sidecar_url" => "https://#{@proxy}:8443"}}
+        {"rls", "best-practice RLS", "documents_rls", %{}},
+        {"socket", "pg_auth, Unix socket", "documents", %{"pg_auth.sidecar_url" => ""}},
+        {"https", "pg_auth, HTTPS", "documents", %{"pg_auth.sidecar_url" => "https://#{@host}:8443"}},
+        {"latency", "pg_auth, HTTPS, added latency", "documents", %{"pg_auth.sidecar_url" => "https://#{@proxy}:8443"}}
       ]
+      configs = for {name, label, table, settings} <- configs, name in setups, do: {label, table, settings}
 
       rows =
         for {label, table, settings} <- configs, n <- clients do

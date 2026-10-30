@@ -97,10 +97,14 @@ What it shows:
   requests/s). With 4 clients each waits its turn, and throughput follows latency.
 - **Postgres CPU sets the throughput.** Read from Postgres's cgroup, a request costs 184 µs of
   Postgres CPU under RLS and 530 µs under pg_auth over the socket (4 clients). A profile of the
-  backends puts most of the difference in pg_auth's own work, not the transport: reading the
-  sidecar's list answer (its JSON parsed into a generic value, about 50 µs), and for broad
-  subjects reading the permission index through `security definer` SQL functions (about 300 µs
-  per such request).
+  backends put most of the difference in pg_auth's own work, not the transport: parsing the
+  sidecar's list answer into a generic JSON value, and for broad subjects reading the permission
+  index through `security definer` SQL functions. Both were changed (list answers parsed into
+  their set directly; the index read through its indexes from Rust, `src/pg/index.rs`): run
+  alternately with the build before, at 16 clients, Postgres CPU per request fell from 572 and
+  591 µs to 460 and 479, throughput rose from 3496 and 3381 requests/s to 4184 and 4117 (0.69x of
+  RLS to about 0.85x), and p99 from about 21 ms to about 8. At 4 clients the difference was within
+  the run-to-run noise. The table above is from before the change.
 - **HTTPS adds CPU only under heavy concurrency.** 548 µs per request against the socket's 530
   with 4 clients; 742 against 546 with 64 clients on 2 CPUs, where each request's hand-off to the
   backend's request thread and back competes for the CPUs.

@@ -44,8 +44,9 @@ pub fn url() -> Option<String> {
     setting(&URL)
 }
 
-/// Ask the sidecar at `url`. Err: the message the statement fails with.
-pub fn exchange(url: &str, request: &Value) -> Result<Value, String> {
+/// Ask the sidecar at `url`: its answer, signature checked, unparsed. Err: the message the
+/// statement fails with.
+pub fn exchange(url: &str, request: &Value) -> Result<Vec<u8>, String> {
     if !url.starts_with("https://") {
         return Err(format!("pg_auth.sidecar_url must be https:// (it is {url}): authorization answers do not travel unencrypted"));
     }
@@ -75,7 +76,7 @@ impl From<String> for Refused {
     }
 }
 
-fn send(url: &str, body: &str, reread: bool) -> Result<Value, Refused> {
+fn send(url: &str, body: &str, reread: bool) -> Result<Vec<u8>, Refused> {
     let secret = secret(reread)?;
     let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let timestamp = since.as_secs().to_string();
@@ -95,7 +96,7 @@ fn send(url: &str, body: &str, reread: bool) -> Result<Value, Refused> {
     if !verify_response(&secret, &signature, status, &answer, &signed) {
         return Err(Refused::Other("an answer not signed with the secret, refused".into()));
     }
-    serde_json::from_slice(&answer).map_err(|e| Refused::Other(format!("bad sidecar response: {e}")))
+    Ok(answer)
 }
 
 /// A request for the worker: the client, the endpoint, the signing headers, the body.

@@ -5,6 +5,7 @@
 //! rest of the transaction, so a statement sees one consistent answer and repeated rows cost no
 //! round trips. Any failure is an error to the caller: pg_auth fails closed.
 
+use crate::pg::index;
 use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting, PgXactCallbackEvent, register_xact_callback};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
@@ -136,25 +137,19 @@ pub enum Listed {
 type Key = (String, String, String); // subject, object type, permission
 
 // pg_auth's own queries (ffi keeps their plans), named so a warm-up prepares them (authz.warm)
-const INDEXED_IDS: &str = "SELECT authz.indexed_ids($1, $2)";
 const HIERARCHY_OF: &str = "SELECT version FROM authz.hierarchy_of($1, $2) WHERE version IS NOT NULL";
 const HIERARCHY_EXPAND: &str = "SELECT authz.hierarchy_expand($1, $2)";
 const HIERARCHY_DECLARATIONS: &str = "SELECT authz.hierarchy_declarations()";
 const RESOURCE_PLAN: &str = "SELECT authz.resource_plan($1, $2)";
-const INDEXED_SET: &str = "SELECT array[set_id::text, size::text, filled_at::text] FROM authz.indexed_set($1, $2) WHERE set_id IS NOT NULL";
-const INDEXED_LOOKUP: &str = "SELECT authz.indexed_lookup($1, $2)";
 
 /// The queries this module runs, with their parameter types.
 pub fn queries() -> Vec<(&'static str, Vec<pgrx::pg_sys::Oid>)> {
-    use pgrx::pg_sys::{INT8OID, TEXTARRAYOID, TEXTOID};
+    use pgrx::pg_sys::TEXTOID;
     vec![
-        (INDEXED_IDS, vec![TEXTOID, TEXTOID]),
         (HIERARCHY_OF, vec![TEXTOID, TEXTOID]),
         (HIERARCHY_EXPAND, vec![TEXTOID, TEXTOID]),
         (HIERARCHY_DECLARATIONS, vec![]),
         (RESOURCE_PLAN, vec![TEXTOID, TEXTOID]),
-        (INDEXED_SET, vec![TEXTOID, TEXTOID]),
-        (INDEXED_LOOKUP, vec![INT8OID, TEXTARRAYOID]),
     ]
 }
 
@@ -377,12 +372,59 @@ fn connect(path: &str) -> Result<BufReader<UnixStream>, String> {
     Ok(BufReader::new(stream))
 }
 
+/// What `call` reads from every answer, whatever else it holds.
+trait Answer: serde::de::DeserializeOwned {
+    fn engine_us(&self) -> Option<u64>;
+    fn error(&self) -> Option<&str>;
+    fn queued(&self) -> Option<bool>;
+}
+
+impl Answer for Value {
+    fn engine_us(&self) -> Option<u64> {
+        self.get("engine_us").and_then(Value::as_u64)
+    }
+    fn error(&self) -> Option<&str> {
+        self.get("error").and_then(Value::as_str)
+    }
+    fn queued(&self) -> Option<bool> {
+        self.get("queued").and_then(Value::as_bool)
+    }
+}
+
+/// A list answer, read straight into the set it becomes: a generic `Value` would allocate an
+/// element per id, then each id would be copied out of it.
+#[derive(serde::Deserialize)]
+struct ListAnswer {
+    ids: Option<IdSet>,
+    #[serde(default)]
+    too_many: bool,
+    valid_ms: Option<u64>,
+    engine_us: Option<u64>,
+    error: Option<String>,
+}
+
+impl Answer for ListAnswer {
+    fn engine_us(&self) -> Option<u64> {
+        self.engine_us
+    }
+    fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+    fn queued(&self) -> Option<bool> {
+        None
+    }
+}
+
 /// One request to the sidecar, counted in `stats()`. An engine's error is an error.
 fn call(request: &Value) -> Result<Value, String> {
+    call_as(request)
+}
+
+fn call_as<A: Answer>(request: &Value) -> Result<A, String> {
     let started = Instant::now();
-    let result = round_trip(request);
+    let result = round_trip(request).and_then(|answer| parse::<A>(&answer));
     let ids = request.get("ids").and_then(Value::as_array).map_or(0, |a| a.len() as u64);
-    let engine = Duration::from_micros(result.as_ref().ok().and_then(|v| v.get("engine_us")).and_then(Value::as_u64).unwrap_or(0));
+    let engine = Duration::from_micros(result.as_ref().ok().and_then(Answer::engine_us).unwrap_or(0));
     STATS.with(|s| {
         let mut s = s.borrow_mut();
         s.calls += 1;
@@ -390,12 +432,12 @@ fn call(request: &Value) -> Result<Value, String> {
         s.sidecar += started.elapsed();
         s.engine += engine;
     });
-    let result = result.and_then(|v| match v.get("error").and_then(Value::as_str) {
+    let result = result.and_then(|v| match v.error() {
         Some(e) => Err(format!("authorization engine: {e}")),
         None => Ok(v),
     });
     if let Some(key) = request_key(request) {
-        let queued = result.as_ref().ok().and_then(|v| v.get("queued")).and_then(Value::as_bool);
+        let queued = result.as_ref().ok().and_then(Answer::queued);
         record(key, |a| match request.get("op").and_then(Value::as_str) {
             Some("check") => {
                 a.ids_checked += ids;
@@ -410,9 +452,13 @@ fn call(request: &Value) -> Result<Value, String> {
     result
 }
 
+fn parse<A: serde::de::DeserializeOwned>(answer: &[u8]) -> Result<A, String> {
+    serde_json::from_slice(answer).map_err(|e| format!("bad sidecar response: {e}"))
+}
+
 /// Send one request line and read one response line, once more on a new connection when the
 /// sidecar had closed this one (restarted, say); a timeout is not retried.
-fn round_trip(request: &Value) -> Result<Value, String> {
+fn round_trip(request: &Value) -> Result<Vec<u8>, String> {
     if let Some(url) = crate::remote::url() {
         return crate::remote::exchange(&url, request);
     }
@@ -430,7 +476,10 @@ fn round_trip(request: &Value) -> Result<Value, String> {
 /// goes back only after a whole answer, so an error, or a cancel unwinding out of `read` (a fill
 /// wait), drops it: a late answer is never read as the next request's. Err((broken, message)):
 /// broken when the connection was found closed.
-fn exchange(line: &str, read: impl FnOnce(&mut BufReader<UnixStream>) -> Result<Vec<u8>, (bool, String)>) -> Result<Value, (bool, String)> {
+fn exchange(
+    line: &str,
+    read: impl FnOnce(&mut BufReader<UnixStream>) -> Result<Vec<u8>, (bool, String)>,
+) -> Result<Vec<u8>, (bool, String)> {
     let path = socket_path();
     let mut conn = match CONN.with(|c| c.borrow_mut().take()) {
         Some((p, conn)) if p == path => conn,
@@ -438,9 +487,8 @@ fn exchange(line: &str, read: impl FnOnce(&mut BufReader<UnixStream>) -> Result<
     };
     conn.get_mut().write_all(line.as_bytes()).map_err(|e| (broken(&e), e.to_string()))?;
     let answer = read(&mut conn)?;
-    let value = serde_json::from_slice(&answer).map_err(|e| (false, format!("bad sidecar response: {e}")))?;
     CONN.with(|c| *c.borrow_mut() = Some((path, conn)));
-    Ok(value)
+    Ok(answer)
 }
 
 /// Read one answer line by `deadline`, in short slices: a cancel or statement_timeout applies
@@ -542,16 +590,11 @@ pub fn list(subject: &str, object_type: &str, permission: &str) -> Result<Rc<Lis
         LISTS.with(|c| c.borrow_mut().insert(key, hit.clone()));
         return Ok(hit);
     }
-    let v = call(&asking(json!({"op": "list", "subject": subject, "permission": permission, "type": object_type})))?;
-    let listed = if v.get("too_many").and_then(Value::as_bool) == Some(true) {
-        Listed::TooMany
-    } else {
-        let ids = v.get("ids").and_then(Value::as_array).ok_or("bad sidecar response: no ids")?;
-        Listed::Ids(Rc::new(ids.iter().filter_map(Value::as_str).map(str::to_owned).collect()))
-    };
+    let v: ListAnswer = call_as(&asking(json!({"op": "list", "subject": subject, "permission": permission, "type": object_type})))?;
+    let listed = if v.too_many { Listed::TooMany } else { Listed::Ids(Rc::new(v.ids.ok_or("bad sidecar response: no ids")?)) };
     arm_cache_reset();
     let listed = Rc::new(listed);
-    if let Some(ms) = v.get("valid_ms").and_then(Value::as_u64).filter(|ms| *ms > 0) {
+    if let Some(ms) = v.valid_ms.filter(|ms| *ms > 0) {
         LISTS_KEPT.with(|c| {
             let mut c = c.borrow_mut();
             if c.len() >= 10_000 {
@@ -594,7 +637,7 @@ pub fn index_set_loaded(subject: &str, object_type: &str, permission: &str, max:
     let set = if let Some(set) = entry.loaded.clone() {
         set
     } else {
-        let all = index_read::<Vec<String>>(INDEXED_IDS, &[object_type.into(), permission.into()])?;
+        let all = index::set_ids(entry.id, entry.filled_at, subject, object_type, permission, index_snapshot())?;
         let set = Rc::new(Loaded::new(all));
         cache_load(entry.id, entry.filled.clone(), set.clone());
         entry.loaded = Some(set.clone());
@@ -646,7 +689,14 @@ fn hierarchy_list(subject: &str, object_type: &str, permission: &str) -> Result<
         return Ok(Some(Rc::new(Listed::Ids(set.ids.clone()))));
     }
     arm_cache_reset();
-    let entry = IndexedSet { id: HIERARCHY_SET, filled: format!("hierarchy {version}"), size: set.ids.len(), probed: 0, loaded: Some(set) };
+    let entry = IndexedSet {
+        id: HIERARCHY_SET,
+        filled: format!("hierarchy {version}"),
+        filled_at: 0,
+        size: set.ids.len(),
+        probed: 0,
+        loaded: Some(set),
+    };
     INDEXED.with(|c| c.borrow_mut().insert(key, Some(entry)));
     Ok(Some(Rc::new(Listed::TooMany)))
 }
@@ -684,6 +734,8 @@ struct IndexedSet {
     id: i64,
     /// when this fill finished: with `id`, names the set's contents (a refill keeps the id)
     filled: String,
+    /// the same, as the table holds it (microseconds), which every later read checks
+    filled_at: i64,
     size: usize,
     /// ids probed one by one so far
     probed: usize,
@@ -910,25 +962,26 @@ pub fn breadth_changed(subject: Option<&str>) -> bool {
     changed
 }
 
-/// The subject's fresh set in the permission index, found once per transaction. The index
-/// functions resolve the current subject themselves; the key's subject is that subject.
+/// The subject's fresh set in the permission index, found once per transaction. The key's
+/// subject is always the current subject (`current_as_caller`, `subject::current`).
 fn index_entry(key: &Key) -> Option<IndexedSet> {
     if !index_on() && !hierarchy_set(key) {
         return None;
     }
     if !INDEXED.with(|c| c.borrow().contains_key(key)) {
-        let (_, object_type, permission) = key;
-        let found = index_read::<Vec<String>>(INDEXED_SET, &[object_type.as_str().into(), permission.as_str().into()]);
+        let (subject, object_type, permission) = key;
+        let found = index::fresh_set(subject, object_type, permission, index_snapshot());
         arm_cache_reset();
-        let entry = found.and_then(|row| match row.as_slice() {
-            [id, size, filled] => Some(IndexedSet {
-                id: id.parse().ok()?,
-                size: size.parse().ok()?,
+        let entry = found.map(|f| {
+            let filled = f.filled_at.to_string();
+            IndexedSet {
+                id: f.id,
+                size: usize::try_from(f.size).unwrap_or(0),
                 probed: 0,
-                loaded: cached_load(id.parse().ok()?, filled),
-                filled: filled.clone(),
-            }),
-            _ => None,
+                loaded: cached_load(f.id, &filled),
+                filled,
+                filled_at: f.filled_at,
+            }
         });
         INDEXED.with(|c| c.borrow_mut().insert(key.clone(), entry));
     }
@@ -957,7 +1010,7 @@ fn from_index(subject: &str, object_type: &str, permission: &str, ids: &[Option<
     } else {
         let distinct: Vec<String> = ids.iter().flatten().cloned().collect::<HashSet<_>>().into_iter().collect();
         if set.probed + distinct.len() > (set.size / LOAD_AFTER).max(64) {
-            let all = index_read::<Vec<String>>(INDEXED_IDS, &[object_type.into(), permission.into()]);
+            let all = index::set_ids(set.id, set.filled_at, subject, object_type, permission, index_snapshot());
             all.map(|all| {
                 let all = Rc::new(Loaded::new(all));
                 cache_load(set.id, set.filled.clone(), all.clone());
@@ -965,7 +1018,7 @@ fn from_index(subject: &str, object_type: &str, permission: &str, ids: &[Option<
                 contains(&all.ids)
             })
         } else {
-            let found = index_read::<Vec<String>>(INDEXED_LOOKUP, &[set.id.into(), distinct.clone().into()]);
+            let found = index::set_holds(set.id, set.filled_at, subject, object_type, permission, &distinct, index_snapshot());
             found.map(|found| {
                 set.probed += distinct.len();
                 contains(&found.into_iter().collect())
@@ -1000,20 +1053,21 @@ pub fn forget_answers() {
     HOT.with(|h| *h.borrow_mut() = None);
 }
 
-/// A read of the permission index: with the statement's snapshot, or a new one once this
-/// transaction waited for a set that was committed meanwhile (`wait_for_fill`).
-fn index_read<A: pgrx::FromDatum + pgrx::IntoDatum>(query: &str, args: &[pgrx::datum::DatumWithOid]) -> Option<A> {
-    if FRESH_READS.with(|f| *f.borrow()) { crate::ffi::read_one_fresh(query, args) } else { crate::ffi::read_one(query, args) }
+/// The snapshot permission index reads use: the statement's, or a new one once this transaction
+/// waited for a set that was committed meanwhile (`wait_for_fill`).
+fn index_snapshot() -> index::Snapshot {
+    if FRESH_READS.with(|f| *f.borrow()) { index::Snapshot::New } else { index::Snapshot::Statement }
 }
 
 /// A statement that has sent the engine pg_auth.fill_wait_after ids of this subject is heavy: wait for
 /// the subject's set to fill (once per transaction, up to pg_auth.fill_wait_ms) so the rest of
 /// it, and every later statement, is answered from Postgres. -> whether a fresh set exists now.
-/// Under REPEATABLE READ the set stays invisible to the transaction, and the engine answers.
+/// Under REPEATABLE READ the set would stay invisible to the transaction: no wait, the fill is
+/// only requested (`from_index`), and the engine answers.
 fn wait_for_fill(subject: &str, object_type: &str, permission: &str) -> bool {
     let key = (subject.to_string(), object_type.to_string(), permission.to_string());
     let wait = FILL_WAIT_MS.get();
-    if wait <= 0 || !index_on() {
+    if wait <= 0 || !index_on() || crate::ffi::transaction_snapshot_fixed() {
         return false;
     }
     // ids, or round trips: checked row by row (a write), each id is one, so a tenth as many
@@ -1055,7 +1109,7 @@ fn wait_for_fill_remotely(subject: &str, object_type: &str, permission: &str, li
     }
     let deadline = Instant::now() + limit;
     loop {
-        if crate::ffi::read_one_fresh::<Vec<String>>(INDEXED_SET, &[object_type.into(), permission.into()]).is_some() {
+        if index::fresh_set(subject, object_type, permission, index::Snapshot::New).is_some() {
             return true;
         }
         if Instant::now() > deadline {
@@ -1071,7 +1125,7 @@ fn wait_for_fill_remotely(subject: &str, object_type: &str, permission: &str, li
 fn round_trip_waiting(request: &Value, limit: Duration) -> Result<Value, String> {
     let deadline = Instant::now() + limit + Duration::from_millis(unsigned(TIMEOUT_MS.get().max(1)));
     let read = |conn: &mut BufReader<UnixStream>| read_until(conn, deadline, "sidecar did not answer the fill wait in time");
-    exchange(&format!("{request}\n"), read).map_err(|(_, e)| e)
+    exchange(&format!("{request}\n"), read).map_err(|(_, e)| e).and_then(|answer| parse(&answer))
 }
 
 /// `n` ids were answered from the permission index (authz.stats(), advice).

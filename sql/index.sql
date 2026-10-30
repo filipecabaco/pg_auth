@@ -27,40 +27,8 @@ create table authz_internal.permitted (
     primary key (set_id, object_id)
 );
 
--- These functions resolve the current subject themselves, so a caller cannot read, or probe, another
--- subject's set.
-
--- The current subject's fresh set for (p_type, p_permission): its id, size and when this fill
--- finished (a refill keeps the id: the pair names the contents), or no row.
-create function authz.indexed_set(p_type text, p_permission text, out set_id bigint, out size bigint, out filled_at timestamptz)
-language sql stable security definer set search_path = pg_catalog, pg_temp as $$
-    select s.set_id, s.size, s.filled_at
-    from authz_internal.permission_sets s
-    where s.subject = authz.subject_type() || ':' || authz.subject_id()
-      and s.object_type = p_type and s.permission = p_permission and s.status = 'fresh'
-$$;
-
--- Which of p_ids are in set p_set, or NULL when p_set is not the current subject's fresh set (it
--- may have gone stale or be refilling since it was found: the caller then asks the engine).
--- One primary key probe per id: cheap for a few ids, where loading the whole set is not.
-create function authz.indexed_lookup(p_set bigint, p_ids text[]) returns text[]
-language sql stable security definer set search_path = pg_catalog, pg_temp as $$
-    select case when exists (select 1 from authz_internal.permission_sets s
-                             where s.set_id = p_set and s.status = 'fresh'
-                               and s.subject = authz.subject_type() || ':' || authz.subject_id())
-           then (select coalesce(array_agg(p.object_id), '{}') from authz_internal.permitted p
-                 where p.set_id = p_set and p.object_id = any(p_ids))
-           end
-$$;
-
--- The current subject's whole fresh set for (p_type, p_permission), or NULL when there is none.
-create function authz.indexed_ids(p_type text, p_permission text) returns text[]
-language sql stable security definer set search_path = pg_catalog, pg_temp as $$
-    select (select coalesce(array_agg(p.object_id), '{}') from authz_internal.permitted p where p.set_id = s.set_id)
-    from authz_internal.permission_sets s
-    where s.subject = authz.subject_type() || ':' || authz.subject_id()
-      and s.object_type = p_type and s.permission = p_permission and s.status = 'fresh'
-$$;
+-- pg_auth reads both tables itself, through their indexes (src/pg/index.rs), for the current
+-- subject only: nobody else reads them, and src/pg/index.rs relies on the two indexes' names.
 
 -- Writer API for the sidecar. Grant execute to the sidecar's role; nobody else needs it.
 

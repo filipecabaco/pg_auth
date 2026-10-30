@@ -33,8 +33,6 @@ enum Read {
     /// read-only with the statement's snapshot, until the transaction has written: then with a
     /// new one, which sees its own writes (as pgrx's select)
     Current,
-    /// a new snapshot, as a volatile function's statement takes (no transaction id either)
-    Fresh,
     /// read-only, with the latest snapshot whatever the isolation level
     Latest,
 }
@@ -102,7 +100,6 @@ fn execute<A: pgrx::FromDatum + pgrx::IntoDatum>(query: &str, args: &[pgrx::datu
                     let read_only = pg_sys::GetCurrentTransactionIdIfAny() == pg_sys::InvalidTransactionId;
                     pg_sys::SPI_execute_plan(plan, values.as_mut_ptr(), nulls.as_ptr().cast(), read_only, 1)
                 }
-                Read::Fresh => pg_sys::SPI_execute_plan(plan, values.as_mut_ptr(), nulls.as_ptr().cast(), false, 1),
                 Read::Latest => pg_sys::SPI_execute_snapshot(
                     plan,
                     values.as_mut_ptr(),
@@ -132,23 +129,21 @@ pub fn run_volatile(query: &str) -> Result<(), String> {
     })
 }
 
-/// Like `read_one`, but with a new snapshot: SPI `read_only = false`, still without a transaction
-/// id, so under READ COMMITTED it sees what other transactions committed since the statement
-/// started (a permission index set filled while the statement waited for it).
-pub fn read_one_fresh<A: pgrx::FromDatum + pgrx::IntoDatum>(query: &str, args: &[pgrx::datum::DatumWithOid]) -> Option<A> {
-    execute(query, args, Read::Fresh)
-}
-
-/// The first column of the first row the last SPI query returned, copied out of SPI's memory.
+/// The first column of the first row the last SPI query returned, copied out of SPI's memory;
+/// None unless the column has the type `A` reads (a query's type names resolve through the
+/// caller's search_path: a type of the same name elsewhere is not decoded as this one).
 ///
 /// # Safety
 /// Inside the SPI connection that ran the query, with `rc` its result code.
-unsafe fn first_value<A: pgrx::FromDatum>(rc: i32) -> Option<A> {
+unsafe fn first_value<A: pgrx::FromDatum + pgrx::IntoDatum>(rc: i32) -> Option<A> {
     // SAFETY: the caller's contract: SPI's result globals describe the query just run, whose
     // first row and descriptor are live until the connection closes; from_datum copies the value
     unsafe {
         let table = pg_sys::SPI_tuptable;
         if rc != pg_sys::SPI_OK_SELECT.cast_signed() || table.is_null() || pg_sys::SPI_processed == 0 {
+            return None;
+        }
+        if !A::is_compatible_with(pg_sys::SPI_gettypeid((*table).tupdesc, 1)) {
             return None;
         }
         let mut isnull = false;
@@ -364,4 +359,11 @@ pub fn invalidate_config() {
         unsafe { pg_sys::CacheInvalidateRelcacheByRelid(rel) }
     }
     CONFIG_GENERATION.set(CONFIG_GENERATION.get().wrapping_add(1));
+}
+
+/// Whether the transaction reads with one snapshot throughout (REPEATABLE READ, SERIALIZABLE):
+/// what other transactions commit meanwhile stays invisible to it.
+pub fn transaction_snapshot_fixed() -> bool {
+    // SAFETY: a backend global, read in the backend's own thread
+    unsafe { pg_sys::XactIsoLevel >= pg_sys::XACT_REPEATABLE_READ.cast_signed() }
 }

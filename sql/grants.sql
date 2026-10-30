@@ -2,7 +2,7 @@
 -- authz_internal or authz_sidecar is closed to everyone until a role is granted it.
 --
 --   authz           usage for every role: the functions queries call (permits, the allowed_*,
---                   indexed_*, plan_* and hierarchy_* helpers), and what people call. Its admin
+--                   plan_* and hierarchy_* helpers), and what people call. Its admin
 --                   functions are revoked from public where they are made, and granted below.
 --   authz_sidecar   the sidecar's: grant authz_sidecar to the sidecar's login.
 --   authz_internal  the tables and the lower-level setup (protect, relate, setup): grant

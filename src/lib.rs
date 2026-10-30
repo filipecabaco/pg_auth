@@ -347,7 +347,7 @@ mod tests {
                 .map(|row| row.get::<String>(1).unwrap().unwrap())
                 .collect()
         });
-        assert!(steps.iter().any(|s| s.starts_with("queries: ") && s.contains("9 of 9")), "{steps:?}");
+        assert!(steps.iter().any(|s| s.starts_with("queries: ") && s.contains("6 of 6")), "{steps:?}");
         assert!(steps.iter().any(|s| s.starts_with("sidecar: connected")), "{steps:?}");
         assert!(steps.iter().any(|s| s.starts_with("subject: user:alice") && s.contains("2 of 2")), "{steps:?}");
         // the prefetched lists answer the first query
@@ -2569,11 +2569,8 @@ mod tests {
         items();
         index_set("user:wide", &["5", "7"], true);
         as_subject("alice");
-        assert_eq!(
-            Spi::get_one::<Vec<String>>("select authz.indexed_ids('item', 'view')").unwrap(),
-            None,
-            "only the current subject's set"
-        );
+        let read = |subject| crate::pg::index::fresh_set(subject, "item", "view", crate::pg::index::Snapshot::Statement).map(|f| f.size);
+        assert_eq!((read("user:alice"), read("user:wide")), (None, Some(2)), "sets are found by the subject pg_auth resolved");
         assert!(fails("select count(*) from authz_internal.permitted"), "the index tables are not readable");
         assert!(fails("select authz_sidecar.index_begin('user:alice', 'item', 'view', 'x')"), "nor writable");
         assert!(fails("select authz_sidecar.index_invalidate()"));
@@ -3065,6 +3062,28 @@ mod tests {
         as_bearer(&token(b"top-secret", r#"{"sub":"bob","exp":1000}"#));
         assert_eq!(count("select count(*) from public.docs"), 0, "expired");
         reset_role();
+    }
+
+    #[pg_test]
+    fn a_search_path_cannot_forge_the_subject() {
+        fixture();
+        // a role with a schema of its own puts it before pg_catalog: an operator `||` answering
+        // another subject, and a type `text` (pg_auth's own queries run under this search_path)
+        Spi::run(
+            r#"select authz.configure(subject => 'jwt_signed', jwks => '{"keys": [{"kty": "oct", "kid": "k1", "k": "dG9wLXNlY3JldA"}]}');
+               create schema evil;
+               create function evil.cat(a text, b text) returns text language plpgsql as $f$
+                 begin perform pg_catalog.set_config('evil.called', 'yes', false); return 'user:alice'; end $f$;
+               create operator evil.|| (leftarg = text, rightarg = text, function = evil.cat);
+               create type evil.text as (forged int);
+               grant usage on schema evil to public"#,
+        )
+        .unwrap();
+        // no token: nobody, and none of pg_auth's own queries reached the role's operator
+        Spi::run("set local role authz_test_user; set local search_path = evil, pg_catalog, public").unwrap();
+        assert_eq!(count("select pg_catalog.count(*) from public.docs"), 0);
+        reset_role();
+        assert_eq!(Spi::get_one::<String>("select pg_catalog.current_setting('evil.called', true)").unwrap(), None);
     }
 
     #[pg_test]

@@ -69,7 +69,9 @@ semantics (set operations, wildcards, conditions) with all the drift that implie
 - **Subject.** Who is asking comes from a superuser-only GUC (granted per API role), a JWT claim,
   or a bearer token verified in Postgres against a JWKS (`authz.configure`). The planner and the
   scans run as the querying role, so they resolve it through the security definer functions
-  (the role never reads `authz_internal.settings`, which may hold secrets). The answer is kept, across
+  (the role never reads `authz_internal.settings`, which may hold secrets), in queries whose
+  every name is schema-qualified: they run under the role's search_path. The permission index is
+  read without a query, through its indexes (`src/pg/index.rs`), for the subject so resolved. The answer is kept, across
   transactions too, while the request settings it read are unchanged, the configuration has not
   changed and a verified token has not expired, so a returning subject costs no query at all
   (§5, configuration).

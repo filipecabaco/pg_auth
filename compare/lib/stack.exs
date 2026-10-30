@@ -124,7 +124,8 @@ defmodule Compare.Stack do
   @doc "Replace the engine's server with a new container on the same datastore (its caches empty)."
   def fresh_engine(stack) do
     engine = stack.engine_mod.fresh_server(stack.engine)
-    track(stack, engine.container)
+    # Cedar runs in the sidecars: no server of its own
+    if engine.container, do: track(stack, engine.container)
     %{stack | engine: engine}
   end
 

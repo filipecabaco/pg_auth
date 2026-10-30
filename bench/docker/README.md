@@ -32,8 +32,12 @@ First build compiles cargo-pgrx and takes several minutes; later builds reuse ca
 `--engine spicedb` runs the `pg_auth*` variants against SpiceDB instead of OpenFGA (the scenario's
 OpenFGA model translated to a SpiceDB schema; see `compare/README.md`). Variants named
 `pg_auth_cerbos*` always run against Cerbos with the scenario's `pg_auth/cerbos/` policies, rules
-on the rows' attributes (`supabase-owner-or-role`, `rls-best-case-tenant-column`); each engine a
-scenario's variants use gets its own stack.
+on the rows' attributes (`supabase-owner-or-role`, `rls-best-case-tenant-column`). Variants named
+`pg_auth_cedar*` run Cedar in the sidecars, with the scenario's `pg_auth/cedar/` schema and
+policies (stored by the variant with `authz.set_rules`) and its parents (`parents.sql`, rows of
+child and parent, kept in `authz_internal.entity_parents` before the sidecars start): the two
+attribute scenarios, `org-membership` and `hierarchical-permissions`. Each engine a scenario's
+variants use gets its own stack.
 
 `--no-timing` measures with `EXPLAIN (ANALYZE, TIMING OFF)`: exact statement time, without the
 per-node clock reads that inflate plans with more nodes per row (pg_auth's AuthzBatch adds one:

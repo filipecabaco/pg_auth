@@ -10,7 +10,7 @@ Mix.install([{:postgrex, "~> 0.22"}, {:table_rex, "~> 4.1"}, {:req, "~> 0.7"}], 
 
 # pg_auth variants run against OpenFGA and the sidecar, started with the compare harness's helpers
 compare = Path.expand("../../compare/lib", __DIR__)
-for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos stack), do: Code.require_file(Path.join(compare, f <> ".exs"))
+for f <- ~w(engine docker engines/openfga engines/spicedb engines/cerbos engines/cedar stack), do: Code.require_file(Path.join(compare, f <> ".exs"))
 
 defmodule Bench.Docker do
   @label "pg_auth_bench=1"
@@ -100,8 +100,14 @@ defmodule Bench.Scenario do
       superuser: List.keyfind(directives, "role", 0) == {"role", "superuser"},
       pg_auth: String.starts_with?(name, "pg_auth"),
       # pg_auth_cerbos*: rules on the rows' attributes, from the scenario's pg_auth/cerbos policies;
-      # the other pg_auth variants use the run's engine (--engine)
-      engine: if(String.starts_with?(name, "pg_auth_cerbos"), do: "cerbos"),
+      # pg_auth_cedar*: Cedar in the sidecar, its rules and parents from pg_auth/cedar; the other
+      # pg_auth variants use the run's engine (--engine)
+      engine:
+        cond do
+          String.starts_with?(name, "pg_auth_cerbos") -> "cerbos"
+          String.starts_with?(name, "pg_auth_cedar") -> "cedar"
+          true -> nil
+        end,
       prepare_as: with({"prepare_as", s} <- List.keyfind(directives, "prepare_as", 0), do: s, else: (_ -> nil)),
       settings:
         for({"set", kv} <- directives, [k, v] = String.split(kv, "=", parts: 2), do: {String.trim(k), String.trim(v)}),
@@ -263,8 +269,20 @@ defmodule Bench.Runner do
 
       if engines != [] do
         q!(conn, "create extension pg_auth")
-        # relationships for the engines that keep them (Cerbos decides on the rows themselves)
-        for {e, engine} <- started, e != "cerbos" do
+        # Cedar's parents, kept in Postgres where its sidecars read them (pg_auth/cedar/parents.sql)
+        parents = Path.join([sc.dir, "pg_auth", "cedar", "parents.sql"])
+        if Map.has_key?(started, "cedar") and File.exists?(parents) do
+          rows = q!(conn, File.read!(parents)).rows
+          for chunk <- Enum.chunk_every(rows, 5000) do
+            q!(conn, "insert into authz_internal.entity_parents select * from unnest($1::text[], $2::text[]) on conflict do nothing",
+               [Enum.map(chunk, &Enum.at(&1, 0)), Enum.map(chunk, &Enum.at(&1, 1))])
+          end
+          log.("kept #{length(rows)} cedar parents")
+        end
+
+        # relationships for the engines that keep them (Cerbos decides on the rows themselves; Cedar's
+        # are its parents, above)
+        for {e, engine} <- started, e not in ["cerbos", "cedar"] do
           tuples = for [o, r, u] <- q!(conn, sc.pg_auth.tuples).rows, do: %{object: o, relation: r, user: u}
           {us, :ok} = :timer.tc(fn -> Stack.write_tuples(engine, tuples) end)
           log.("wrote #{length(tuples)} tuples to #{e} in #{div(us, 1_000_000)}s")
@@ -303,6 +321,8 @@ defmodule Bench.Runner do
             {us, _} = :timer.tc(fn -> psql!(name, scale, ["-f", v.file]) end)
             psql!(name, scale, ["-c", @grant_sql])
             q!(conn, "vacuum analyze")
+            # rules the variant stored (Cedar's): taken by the sidecar before anything is measured
+            if v.pg_auth, do: rules_taken(conn, sc)
             install_ms = div(us, 1000)
             log.("variant #{v.name}: installed in #{install_ms}ms, measuring")
             {%{name: v.name, install_ms: install_ms, results: measure_variant(conn, sc, v, o, log)}, started}
@@ -396,6 +416,15 @@ defmodule Bench.Runner do
   end
 
   defp q!(c, sql, params \\ []), do: Postgrex.query!(c, sql, params, timeout: :infinity)
+
+  defp rules_taken(conn, sc, waited \\ 0) do
+    case q!(conn, "select name, error from authz.rules() where pushed_at is null").rows do
+      [] -> :ok
+      [[name, error] | _] when is_binary(error) -> raise("#{sc.id}: rules #{name} refused: #{error}")
+      _ when waited > 60_000 -> raise("#{sc.id}: rules not taken by the sidecar in 60 s")
+      _ -> Process.sleep(100) && rules_taken(conn, sc, waited + 100)
+    end
+  end
 
   defp measure_variant(conn, sc, v, o, log) do
     for subj <- pick_subjects(sc, o), {qname, qsql} <- v.queries, only?(o, qname) do

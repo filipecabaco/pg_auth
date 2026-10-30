@@ -63,8 +63,8 @@ The engine is Cedar when `PG_AUTH_ENGINE=cedar`, Cerbos when `CERBOS_URL` is set
 | `list` | ListObjects | LookupResources, paged by its cursor | none: always `too_many` | the ids its policies name (`resource in`, `==`), else `too_many` |
 | `check` | BatchCheck, 50 ids a call | CheckBulkPermissions, 1000 ids a call | CheckResources with each resource's attributes, 50 a call | evaluated here, row by row, with its attributes and parents |
 | `plan` | none | none | PlanResources, translated | typed partial evaluation, its residuals translated |
-| fill (permission index) | StreamedListObjects | LookupResources at the latest revision (`fully_consistent`) | none | none |
-| change feed | ReadChanges, polled every `INDEX_POLL_MS` | Watch, streamed | none | none |
+| fill (permission index) | StreamedListObjects | LookupResources at the latest revision (`fully_consistent`) | none | the ids its policies name, when they name them by id |
+| change feed | ReadChanges, polled every `INDEX_POLL_MS` | Watch, streamed | none | a change to its parents or rules |
 | API | HTTP | the HTTP gateway (`--http-enabled`) | HTTP | none: in this process |
 
 **Cedar.** Run in the sidecar (cedar-policy, its `tpe` feature pinned to an exact version). Its

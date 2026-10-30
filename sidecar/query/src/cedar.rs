@@ -41,6 +41,10 @@ pub struct Cedar {
     version: AtomicU64,
     /// woken when another sidecar delivered changes: the store is read again (`reload`)
     pub stale: tokio::sync::Notify,
+    /// woken when the parents or the rules changed: the permission index's sets are stale
+    /// (`follow`); `changes` counts them, so a wake-up left from before a feed began reports nothing
+    changed: tokio::sync::Notify,
+    changes: AtomicU64,
 }
 
 /// The rules in force, compiled.
@@ -67,10 +71,12 @@ enum Kind {
     Bool,
     Entity(String),
     Set(Box<Kind>),
+    /// its attributes: kind, required
+    Record(BTreeMap<String, (Kind, bool)>),
     Other,
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 struct Store {
     parents: HashMap<Uid, HashSet<Uid>>,
     children: HashMap<Uid, HashSet<Uid>>,
@@ -144,6 +150,8 @@ impl Cedar {
         }
         let loaded = compile(named)?;
         *self.rules.write().map_err(|_| "cedar: rules lock")? = Some(Arc::new(loaded));
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        self.changed.notify_one();
         Ok(true)
     }
 
@@ -157,6 +165,8 @@ impl Cedar {
         let loaded = compile(named).map_err(|message| CallError { permanent: true, message })?;
         let id = loaded.id.clone();
         *self.rules.write().map_err(|_| CallError { permanent: false, message: "cedar: rules lock".into() })? = Some(Arc::new(loaded));
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        self.changed.notify_one();
         Ok(id)
     }
 
@@ -201,6 +211,8 @@ impl Cedar {
             }
         }
         self.version.fetch_add(1, Ordering::SeqCst);
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        self.changed.notify_one();
         Ok(())
     }
 
@@ -222,8 +234,14 @@ impl Cedar {
         if self.version.load(Ordering::SeqCst) != since {
             return Ok(false);
         }
-        *current = store;
-        self.version.fetch_add(1, Ordering::SeqCst);
+        // the same parents read again (a periodic read, another sidecar's delivery already
+        // applied here): nothing for the index to throw away
+        if *current != store {
+            *current = store;
+            self.version.fetch_add(1, Ordering::SeqCst);
+            self.changes.fetch_add(1, Ordering::SeqCst);
+            self.changed.notify_one();
+        }
         Ok(true)
     }
 
@@ -319,6 +337,40 @@ impl Cedar {
         })
     }
 
+    /// Every object of `object_type` the subject may access, for the permission index: when its
+    /// policies name them by id (`resource in`, `resource ==`), none past a limit; otherwise Cedar
+    /// cannot list them (the extension then checks rows).
+    pub fn list_all(&self, subject: &str, permission: &str, object_type: &str) -> Result<Vec<String>, String> {
+        match self.plan_rows(subject, permission, object_type, None, usize::MAX, false)? {
+            Plan::Never => Ok(Vec::new()),
+            Plan::Condition(c) => ids_only(&c)
+                .map(|ids| ids.into_iter().collect())
+                .ok_or_else(|| format!("cedar: {object_type}#{permission}'s policies do not name its objects by id: rows are checked")),
+            Plan::Always | Plan::Rows => {
+                Err(format!("cedar: {object_type}#{permission}'s policies do not name its objects by id: rows are checked"))
+            }
+        }
+    }
+
+    /// Changes for the permission index: changes may have been missed before this sidecar started
+    /// (a gap), then one report per change to the parents or the rules.
+    pub async fn follow(&self, feed: tokio::sync::mpsc::UnboundedSender<crate::engine::Feed>) {
+        let mut seen = self.changes.load(Ordering::SeqCst);
+        if feed.send(crate::engine::Feed::Gap).is_err() {
+            return;
+        }
+        loop {
+            self.changed.notified().await;
+            let now = self.changes.load(Ordering::SeqCst);
+            if now != seen {
+                seen = now;
+                if feed.send(crate::engine::Feed::Changed(None)).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+
     /// One answer per id: the request evaluated with the row's attributes (when given) and the
     /// ancestors of the principal and the resource. A row given without a required attribute is
     /// not a valid entity to Cedar: denied.
@@ -337,36 +389,66 @@ impl Cedar {
         let principal_ancestors = principal_ancestors(&loaded, &store, &principal_uid, principal);
         let base = principal_entities(&loaded, &store, &principal_uid, principal, principal_ancestors.as_ref());
         let action = action(permission)?;
-        ids.iter()
-            .enumerate()
-            .map(|(i, id)| {
-                let resource = (object_type.to_owned(), (*id).clone());
-                let mut entity = Map::new();
-                entity.insert("uid".into(), entity_json(&resource));
-                if let Some(given) = attrs.get(i).copied().flatten() {
-                    let Some(a) = attributes(&loaded, object_type, given) else { return Ok(false) };
-                    entity.insert("attrs".into(), a);
+        let decide = |entities: &PartialEntities, resource: &Uid| -> Result<bool, String> {
+            let request = PartialRequest::new(
+                PartialEntityUid::from_concrete(euid(&principal_uid)?),
+                action.clone(),
+                PartialEntityUid::from_concrete(euid(resource)?),
+                Some(Context::empty()),
+                &loaded.schema,
+            )
+            .map_err(|e| format!("cedar: {e}"))?;
+            let response = loaded.policies.tpe(&request, entities, &loaded.schema).map_err(|e| format!("cedar: {e}"))?;
+            Ok(response.decision() == Some(cedar_policy::Decision::Allow))
+        };
+        // Every row's entity, the principal's and the ancestors in one set, validated once: each
+        // row is then one evaluation (building the set per row cost twenty times the evaluation).
+        // A row repeating an id with other attributes is evaluated in a set of its own.
+        let mut out = vec![false; ids.len()];
+        let mut rows: Vec<(usize, Uid)> = Vec::new();
+        let mut alone: Vec<(usize, Uid, Value)> = Vec::new();
+        let mut entities: Vec<Value> = Vec::new();
+        let mut seen: HashMap<String, Value> = HashMap::new();
+        for (i, id) in ids.iter().enumerate() {
+            let resource = (object_type.to_owned(), (*id).clone());
+            let mut entity = Map::new();
+            entity.insert("uid".into(), entity_json(&resource));
+            if let Some(given) = attrs.get(i).copied().flatten() {
+                let Some(a) = attributes(&loaded, object_type, given) else { continue };
+                entity.insert("attrs".into(), a);
+            }
+            entity.insert("parents".into(), Value::Array(ancestors(&loaded, &store, &resource).iter().map(entity_json).collect()));
+            let entity = Value::Object(entity);
+            match seen.get(*id) {
+                Some(first) if *first != entity => alone.push((i, resource, entity)),
+                Some(_) => rows.push((i, resource)),
+                None => {
+                    seen.insert((*id).clone(), entity.clone());
+                    entities.push(entity);
+                    rows.push((i, resource));
                 }
-                entity.insert("parents".into(), Value::Array(ancestors(&loaded, &store, &resource).iter().map(entity_json).collect()));
-                // the row first: kept over the same entity among the principal's ancestors (`dedup`),
-                // with the attributes it alone has
-                let mut entities = vec![Value::Object(entity)];
-                entities.extend(base.iter().cloned());
-                entities.extend(ancestors_json(&loaded, &store, &resource));
-                let request = PartialRequest::new(
-                    PartialEntityUid::from_concrete(euid(&principal_uid)?),
-                    action.clone(),
-                    PartialEntityUid::from_concrete(euid(&resource)?),
-                    Some(Context::empty()),
-                    &loaded.schema,
-                )
-                .map_err(|e| format!("cedar: {e}"))?;
-                let entities =
-                    PartialEntities::from_json_value(Value::Array(dedup(entities)), &loaded.schema).map_err(|e| format!("cedar: {e}"))?;
-                let response = loaded.policies.tpe(&request, &entities, &loaded.schema).map_err(|e| format!("cedar: {e}"))?;
-                Ok(response.decision() == Some(cedar_policy::Decision::Allow))
-            })
-            .collect()
+            }
+        }
+        // the rows first: kept over the same entity among the principal's ancestors (`dedup`),
+        // with the attributes only they have
+        let with_others = |mut set: Vec<Value>, resources: &mut dyn Iterator<Item = &Uid>| {
+            set.extend(base.iter().cloned());
+            for r in resources {
+                set.extend(ancestors_json(&loaded, &store, r));
+            }
+            PartialEntities::from_json_value(Value::Array(dedup(set)), &loaded.schema).map_err(|e| format!("cedar: {e}"))
+        };
+        if !rows.is_empty() {
+            let shared = with_others(entities, &mut rows.iter().map(|(_, r)| r))?;
+            for (i, resource) in &rows {
+                out[*i] = decide(&shared, resource)?;
+            }
+        }
+        for (i, resource, entity) in alone {
+            let own = with_others(vec![entity], &mut std::iter::once(&resource))?;
+            out[i] = decide(&own, &resource)?;
+        }
+        Ok(out)
     }
 }
 
@@ -464,6 +546,16 @@ fn kind(t: &Value, entities: &Map<String, Value>, common: &Map<String, Value>, d
         "Boolean" | "Bool" => Kind::Bool,
         "Entity" => Kind::Entity(name.to_owned()),
         "Set" => Kind::Set(Box::new(kind(&t["element"], entities, common, depth + 1))),
+        "Record" => Kind::Record(
+            t["attributes"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(a, at)| {
+                    (a.clone(), (kind(at, entities, common, depth + 1), at.get("required").and_then(Value::as_bool).unwrap_or(true)))
+                })
+                .collect(),
+        ),
         "EntityOrCommon" if entities.contains_key(name) => Kind::Entity(name.to_owned()),
         "EntityOrCommon" if common.contains_key(name) => kind(&common[name], entities, common, depth + 1),
         "EntityOrCommon" => match name {
@@ -590,6 +682,20 @@ fn value_of(kind: &Kind, v: &Value) -> Option<Value> {
         (Kind::Entity(t), Value::String(id)) => json!({"__entity": {"type": t, "id": id}}),
         (Kind::Entity(t), Value::Number(n)) => json!({"__entity": {"type": t, "id": n.to_string()}}),
         (Kind::Set(k), Value::Array(items)) => Value::Array(items.iter().map(|i| value_of(k, i)).collect::<Option<_>>()?),
+        // its declared attributes (a token's app_metadata, say): a required one absent, none
+        (Kind::Record(attributes), Value::Object(given)) => {
+            let mut out = Map::new();
+            for (name, (k, required)) in attributes {
+                match given.get(name).filter(|v| !v.is_null()) {
+                    Some(v) => {
+                        out.insert(name.clone(), value_of(k, v)?);
+                    }
+                    None if *required => return None,
+                    None => {}
+                }
+            }
+            Value::Object(out)
+        }
         _ => return None,
     })
 }
@@ -1079,6 +1185,25 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_decides_as_its_rows_one_by_one() {
+        let c = cedar();
+        let principal = anne();
+        let mut all = rows();
+        // an id again, with other attributes: decided on its own
+        all.push(("2".into(), json!({"owner": "anne", "size": 3, "public": true, "tags": []})));
+        all.push(("2".into(), json!({"owner": "bob", "size": 30, "public": false, "tags": []})));
+        let ids: Vec<&String> = all.iter().map(|(id, _)| id).collect();
+        let attrs: Vec<Option<&Value>> = all.iter().map(|(_, row)| Some(row)).collect();
+        let batch = c.check("User:anne", "view", "Document", &ids, &attrs, Some(&principal)).unwrap();
+        let one_by_one: Vec<bool> = all
+            .iter()
+            .map(|(id, row)| c.check("User:anne", "view", "Document", &[id], &[Some(row)], Some(&principal)).unwrap()[0])
+            .collect();
+        assert_eq!(batch, one_by_one);
+        assert_ne!(batch[batch.len() - 2], batch[batch.len() - 1], "the same id, other attributes, another answer");
+    }
+
+    #[test]
     fn attributes_become_columns_and_parents_become_ids() {
         let c = cedar();
         let Plan::Condition(plan) = c.plan("User:anne", "view", "Document", Some(&anne()), 1000).unwrap() else { panic!("a condition") };
@@ -1264,11 +1389,93 @@ mod review_tests {
     }
 
     #[test]
+    fn a_principals_record_attribute_comes_from_its_claims() {
+        let c = load(
+            "entity User { app_metadata: { role?: String } }; entity Todo { owner_id: User };
+             action read appliesTo { principal: User, resource: Todo };",
+            r#"permit (principal, action, resource) when { resource.owner_id == principal || (principal.app_metadata has role && ["admin", "support"].contains(principal.app_metadata.role)) };"#,
+        );
+        let admin = json!({"roles": [], "attr": {"app_metadata": {"role": "admin"}}});
+        let member = json!({"roles": [], "attr": {"app_metadata": {}}});
+        // an admin: every row Cedar takes (its required owner present)
+        let everything = condition(c.plan("User:a", "read", "Todo", Some(&admin), 1000).unwrap());
+        assert_eq!(everything, r#"{"op":"ne","args":[{"column":"owner_id"},{"value":null}]}"#);
+        let own = condition(c.plan("User:b", "read", "Todo", Some(&member), 1000).unwrap());
+        assert!(own.contains(r#"{"op":"eq","args":[{"column":"owner_id"},{"value":"b","entity":true}]}"#), "{own}");
+    }
+
+    #[tokio::test]
+    async fn a_hierarchy_fills_the_index_and_its_changes_make_it_stale() {
+        let c = load(
+            "entity User; entity Folder in [Folder, User]; action read appliesTo { principal: User, resource: Folder };",
+            r#"permit (principal, action == Action::"read", resource) when { resource in principal };"#,
+        );
+        let tree: Vec<Change> =
+            (1..=1500).map(|i| edge(&format!("Folder:{i}"), "Folder:0")).chain([edge("Folder:0", "User:anne")]).collect();
+        c.apply(&tree).unwrap();
+        assert!(matches!(c.list("User:anne", "read", "Folder", 1000).unwrap(), Listed::TooMany));
+        assert_eq!(c.list_all("User:anne", "read", "Folder").unwrap().len(), 1501, "every folder under her grant, for the index");
+        let (feed, mut reports) = tokio::sync::mpsc::unbounded_channel();
+        let c = std::sync::Arc::new(c);
+        let following = c.clone();
+        tokio::spawn(async move { following.follow(feed).await });
+        assert_eq!(reports.recv().await, Some(crate::engine::Feed::Gap), "what changed before it started is not known");
+        c.apply(&[edge("Folder:2000", "Folder:0")]).unwrap();
+        assert_eq!(reports.recv().await, Some(crate::engine::Feed::Changed(None)));
+        // the same parents read again: no change
+        let rows: Vec<(String, String, String)> =
+            tree.iter().chain([&edge("Folder:2000", "Folder:0")]).map(|e| (e.object.clone(), "in".into(), e.subject.clone())).collect();
+        assert!(c.replace(&rows, c.version()).unwrap());
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), reports.recv()).await.is_err());
+        // policies that do not grant by id cannot be listed
+        let attrs = load(
+            "entity User; entity Doc { owner: User }; action read appliesTo { principal: User, resource: Doc };",
+            r"permit (principal, action, resource) when { resource.owner == principal };",
+        );
+        assert!(attrs.list_all("User:anne", "read", "Doc").unwrap_err().contains("do not name its objects by id"));
+    }
+
+    #[test]
     fn an_action_requiring_a_context_is_refused() {
         let schema = "entity User; entity Doc; action view appliesTo { principal: User, resource: Doc, context: { ip: String } };";
         let refused = compile(BTreeMap::from([("schema".to_owned(), schema.to_owned())])).err().unwrap_or_default();
         assert!(refused.contains("requires a context"), "{refused}");
         let optional = "entity User; entity Doc; action view appliesTo { principal: User, resource: Doc, context: { ip?: String } };";
         assert!(compile(BTreeMap::from([("schema".to_owned(), optional.to_owned())])).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod timing {
+    use super::*;
+
+    /// `cargo test --release timing -- --ignored --nocapture`: a check of 1000 rows for a principal
+    /// in 50 groups.
+    #[test]
+    #[ignore = "a timing, not a test"]
+    fn check_a_thousand_rows() {
+        let c = Cedar::new();
+        let schema = "entity Group; entity User in [Group]; entity Doc { owner: User, org: Group, size: Long };
+                      action view appliesTo { principal: User, resource: Doc };";
+        let policies = r"permit (principal, action, resource) when { resource.owner == principal };
+                          permit (principal, action, resource) when { principal in resource.org && resource.size < 10 };";
+        c.load(BTreeMap::from([("schema".to_owned(), schema.to_owned()), ("p".to_owned(), policies.to_owned())])).unwrap();
+        let edges: Vec<Change> = (0..50)
+            .map(|g| Change {
+                write: true,
+                object: "User:anne".into(),
+                relation: "in".into(),
+                subject: format!("Group:g{g}"),
+                ..Change::default()
+            })
+            .collect();
+        c.apply(&edges).unwrap();
+        let ids: Vec<String> = (0..1000).map(|i| i.to_string()).collect();
+        let refs: Vec<&String> = ids.iter().collect();
+        let rows: Vec<Value> = (0..1000).map(|i| json!({"owner": "bob", "org": format!("g{}", i % 80), "size": i % 20})).collect();
+        let attrs: Vec<Option<&Value>> = rows.iter().map(Some).collect();
+        let started = std::time::Instant::now();
+        let allowed = c.check("User:anne", "view", "Doc", &refs, &attrs, Some(&json!({"roles": [], "attr": {}}))).unwrap();
+        println!("1000 rows in {:?}, {} allowed", started.elapsed(), allowed.iter().filter(|a| **a).count());
     }
 }

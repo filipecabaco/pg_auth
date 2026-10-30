@@ -1,0 +1,5 @@
+// The folder tree in Cedar: a folder is in its parent, and a folder granted to a user in that
+// user's scope, so a user reads every folder under one granted to them (`resource in principal`).
+entity User;
+entity Folder in [Folder, User];
+action read appliesTo { principal: User, resource: Folder };

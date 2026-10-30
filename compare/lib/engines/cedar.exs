@@ -32,6 +32,8 @@ defmodule Compare.Engines.Cedar do
   @impl true
   def sidecar_env(_), do: [{"PG_AUTH_ENGINE", "cedar"}]
   @impl true
+  def fresh_server(state), do: state
+  @impl true
   def staleness_ms(_), do: 0
   @impl true
   def revocation_ms(_), do: 0

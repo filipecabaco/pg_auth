@@ -1,0 +1,5 @@
+// The Supabase todos policy in Cedar: the owner, or a token whose app_metadata role is admin or
+// support. The token's claims are the principal's attributes.
+entity User { app_metadata: { role?: String } };
+entity Todo { owner_id: User };
+action read appliesTo { principal: User, resource: Todo };

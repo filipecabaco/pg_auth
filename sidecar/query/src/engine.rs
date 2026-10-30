@@ -149,7 +149,7 @@ impl Engine {
             Engine::OpenFga(e) => e.list_all(subject, permission, object_type).await,
             Engine::SpiceDb(e) => e.list_all(subject, permission, object_type).await,
             Engine::Cerbos(_) => Err("cerbos cannot list a subject's objects".into()),
-            Engine::Cedar(_) => Err("cedar cannot list a subject's objects for the permission index".into()),
+            Engine::Cedar(e) => e.list_all(subject, permission, object_type),
         }
     }
 
@@ -293,8 +293,9 @@ impl Engine {
         match self {
             Engine::OpenFga(e) => e.follow(start, resume, poll, feed).await,
             Engine::SpiceDb(e) => e.follow(resume, poll, feed).await,
+            Engine::Cedar(e) => e.follow(feed).await,
             // no change feed: and no permission index to keep fresh
-            Engine::Cerbos(_) | Engine::Cedar(_) => {}
+            Engine::Cerbos(_) => {}
         }
     }
 }

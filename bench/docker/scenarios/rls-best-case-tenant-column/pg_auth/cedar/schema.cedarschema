@@ -1,0 +1,7 @@
+// The tenant column as Cedar sees it: a row's tenant_id and the token's tenant_id are Tenant
+// entities, compared; a note's owner is a User. No parents: every rule is on the row.
+entity Tenant;
+entity User { tenant_id: Tenant };
+entity TenantRow { tenant_id: Tenant };
+entity Note { owner_id: User };
+action read appliesTo { principal: User, resource: [TenantRow, Note] };

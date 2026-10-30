@@ -1,0 +1,6 @@
+// Organisations in Cedar, scoped: a document is in its org, and an org in the scope of each of
+// its members, so what a member reads is what is in them (`resource in principal`).
+entity User;
+entity Org in [User];
+entity Document in [Org];
+action read appliesTo { principal: User, resource: [Org, Document] };

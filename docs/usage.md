@@ -629,7 +629,9 @@ written through a relationship table clears every one of them:
   them denies every row it could apply to. A principal whose type may be `in` a `Role` has its
   roles only from its token, sent with plans and with checks of rows given their attributes: a
   table protected without attributes is answered with them unknown, so a policy on roles decides
-  none of its rows (they are denied). The permission index does not serve Cedar. A sidecar that did
+  none of its rows (they are denied). A subject whose objects Cedar's policies name by id (`resource in principal`) past `LIST_LIMIT`
+  gets a permission index set, filled from them and made stale by any change to the parents or
+  the rules. A sidecar that did
   not deliver a change reads the parents again after the delivery, a few milliseconds behind the
   one that did. A protected table's attributes come from columns of the type Cedar declares (a
   Long from an integer, a String from text, an entity's id from any column, matched by its exact

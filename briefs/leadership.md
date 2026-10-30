@@ -61,8 +61,9 @@ they found documentation gaps and bugs, not demand.
   and sales requests for relationship-based access.
 - **The setup a platform would run, measured on real hosts:** request rate and latency are
   measured on one host with network delay added; not yet on two hosts, nor with the engine away
-  from the sidecar. Over HTTPS the TLS client runs inside Postgres and costs its CPU under heavy
-  concurrency.
+  from the sidecar. Postgres CPU limits throughput: 530 µs per request against RLS's 184,
+  most of it pg_auth's own work (parsing the sidecar's answers, reading the permission index), which
+  a profile has located; HTTPS adds 3% at low concurrency and 36% at 64 clients on 2 CPUs.
 - **Operations a platform needs:** extension upgrade scripts, which start with the first release
   (there is nothing installed to upgrade before it), checked in CI against a fresh install. (Logical backups keep pg_auth's
   configuration, a statement waiting on the sidecar gives way to a cancel, and the sidecar's own

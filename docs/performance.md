@@ -95,8 +95,15 @@ What it shows:
 - **Concurrency hides the wait.** A backend waiting on the network uses no CPU, so with 16 clients
   a 6.2 ms round trip costs 5% of the throughput HTTPS on the same host has (2556 against 2688
   requests/s). With 4 clients each waits its turn, and throughput follows latency.
-- **HTTPS costs Postgres CPU.** TLS and a request thread per backend run inside Postgres: with 64
-  clients on 2 CPUs, HTTPS on the same host gives 2272 requests/s against the socket's 3687.
+- **Postgres CPU sets the throughput.** Read from Postgres's cgroup, a request costs 184 µs of
+  Postgres CPU under RLS and 530 µs under pg_auth over the socket (4 clients). A profile of the
+  backends puts most of the difference in pg_auth's own work, not the transport: reading the
+  sidecar's list answer (its JSON parsed into a generic value, about 50 µs), and for broad
+  subjects reading the permission index through `security definer` SQL functions (about 300 µs
+  per such request).
+- **HTTPS adds CPU only under heavy concurrency.** 548 µs per request against the socket's 530
+  with 4 clients; 742 against 546 with 64 clients on 2 CPUs, where each request's hand-off to the
+  backend's request thread and back competes for the CPUs.
 - **This is not the 0.80x above.** Those are single statements, timed with answers kept; this is
   a stream of requests by subjects not seen in the last half second. Requests by the same users
   again and again (a session's page loads) reuse answers and ask the sidecar less.

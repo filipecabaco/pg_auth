@@ -64,7 +64,7 @@ defmodule Remote.Bench do
         for {label, table, settings} <- configs, n <- clients do
           settings!(conn, settings)
           IO.puts(:stderr, "#{label}, #{n} clients")
-          {label, n, run(port, table, n, seconds), trips(port, table)}
+          {label, n, run(port, table, n, seconds, pg, stack.id), trips(port, table)}
         end
 
       report(rows, seconds, latency, root)
@@ -103,10 +103,34 @@ defmodule Remote.Bench do
       end))
   end
 
-  defp run(port, table, n, seconds) do
+  # CPU used over the measured window, read from each container's cgroup: Postgres's, and the
+  # rest of the stack's (sidecars, engine, its datastore, the relay)
+  defp run(port, table, n, seconds, pg, id) do
     warmup = 5_000
     stop_at = System.monotonic_time(:millisecond) + warmup + seconds * 1000
+    clients = Task.async(fn -> clients(port, table, n, stop_at, warmup) end)
+    Process.sleep(warmup)
+    others = for c <- containers(id), c != pg, do: c
+    {pg0, rest0} = {cpu_us(pg), Enum.sum(Enum.map(others, &cpu_us/1))}
+    Process.sleep(seconds * 1000)
+    {pg1, rest1} = {cpu_us(pg), Enum.sum(Enum.map(others, &cpu_us/1))}
+    {lat, errors} = Task.await(clients, :infinity)
+    {lat, errors, pg1 - pg0, rest1 - rest0}
+  end
 
+  defp containers(id) do
+    {out, 0} = System.cmd("docker", ["ps", "--filter", "name=^#{id}-", "--format", "{{.Names}}"])
+    String.split(out, "\n", trim: true)
+  end
+
+  defp cpu_us(container) do
+    case System.cmd("docker", ["exec", container, "cat", "/sys/fs/cgroup/cpu.stat"], stderr_to_stdout: true) do
+      {out, 0} -> out |> String.split("\n") |> Enum.find_value(0, &(match?("usage_usec " <> _, &1) && String.to_integer(String.trim_leading(&1, "usage_usec "))))
+      _ -> 0
+    end
+  end
+
+  defp clients(port, table, n, stop_at, warmup) do
     1..n
     |> Task.async_stream(
       fn i ->
@@ -176,10 +200,11 @@ defmodule Remote.Bench do
   defp report(rows, seconds, latency, root) do
     pct = fn sorted, p -> Enum.at(sorted, min(length(sorted) - 1, trunc(length(sorted) * p))) / 1000 end
     lines =
-      for {label, n, {lat, errors}, {trips, transport}} <- rows do
+      for {label, n, {lat, errors, pg_us, rest_us}, {trips, transport}} <- rows do
         sorted = Enum.sort(lat)
         rps = round(length(sorted) / seconds)
-        "| #{label} | #{n} | #{rps} | #{Float.round(pct.(sorted, 0.5), 2)} | #{Float.round(pct.(sorted, 0.95), 2)} | #{Float.round(pct.(sorted, 0.99), 2)} | #{trips} | #{transport} | #{errors} |"
+        per = fn us -> round(us / max(length(sorted), 1)) end
+        "| #{label} | #{n} | #{rps} | #{Float.round(pct.(sorted, 0.5), 2)} | #{Float.round(pct.(sorted, 0.95), 2)} | #{Float.round(pct.(sorted, 0.99), 2)} | #{trips} | #{transport} | #{per.(pg_us)} | #{per.(rest_us)} | #{errors} |"
       end
     # netem's delay is what the kernel's timers make of it (Docker Desktop's VM: several times the
     # setting), so the round trip it added is measured: a trip's time beyond the engine with the
@@ -191,8 +216,8 @@ defmodule Remote.Bench do
     text = """
     Commit `#{String.trim(sha)}`, #{Date.utc_today()}. #{seconds} s per row after a 5 s warm-up. Added latency: netem set to #{latency} ms each way, measured as #{added} ms more per round trip.
 
-    | setup | clients | requests/s | p50 ms | p95 ms | p99 ms | sidecar round trips per request | ms per trip beyond the engine | errors |
-    |---|---|---|---|---|---|---|---|---|
+    | setup | clients | requests/s | p50 ms | p95 ms | p99 ms | sidecar round trips per request | ms per trip beyond the engine | Postgres CPU µs per request | rest of the stack's CPU µs per request | errors |
+    |---|---|---|---|---|---|---|---|---|---|---|
     #{Enum.join(lines, "\n")}
     """
     IO.puts(text)

@@ -110,8 +110,11 @@
       });
       const fit = new FitAddon.FitAddon();
       term.loadAddon(fit);
-      screen.replaceChildren();
-      term.open(screen);
+      // in a box of its own: the screen also holds the Setup view (and the poster, hidden by now)
+      const box = document.createElement("div");
+      box.className = "pa-demo__term";
+      screen.append(box);
+      term.open(box);
       term.textarea?.setAttribute("autocapitalize", "off");
       term.textarea?.setAttribute("spellcheck", "false");
 

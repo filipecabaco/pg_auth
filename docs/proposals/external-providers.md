@@ -129,7 +129,8 @@ the response body the answer's JSON.
 
 ```text
 pg-auth-timestamp: 1793350000
-pg-auth-signature: v1=<hex HMAC-SHA256(secret, "v1\n<timestamp>\nPOST\n/v1/ask\n<body>")>
+pg-auth-nonce:     <new for every request>
+pg-auth-signature: v1=<hex HMAC-SHA256(secret, "v1\n<timestamp>\n<nonce>\nPOST\n/v1/ask\n<body>")>
                               response: v1=<hex HMAC-SHA256(secret, "v1 response\n<request signature>\n<status>\n<body>")>
 ```
 
@@ -147,9 +148,11 @@ secret is rotated by adding the new one, moving Postgres to it, then removing th
 response is signed with the secret that verified the request. TLS from `PG_AUTH_TLS_CERT` and
 `PG_AUTH_TLS_KEY`; without them it refuses to start unless `PG_AUTH_TLS_TERMINATED=1` says a
 platform in front of it terminates TLS (signatures are still required). It answers 401 to a
-missing or wrong signature or a timestamp more than 30 s from its clock, 413 to a body over 16
-MiB, 404 to anything but `POST /v1/ask` and `GET /healthz` (which says only "ok"), and compares
-signatures in constant time.
+missing or wrong signature, a timestamp more than 30 s from its clock, or a signature it has seen
+in the last minute (the nonce makes each new), checking the headers before reading a body; 413 to
+a body over 16 MiB; 404 to anything but `POST /v1/ask` and `GET /healthz` (which says only "ok").
+It compares signatures in constant time, limits open connections, and gives a TLS handshake or a
+body 10 s.
 
 **The extension** verifies the certificate (the public roots, Mozilla's, or the CA file), signs each
 request, keeps a connection per backend, and verifies the response's signature. Any failure fails
@@ -159,7 +162,7 @@ after another, so a cancel or `statement_timeout` still applies.
 | attack | what stops it |
 |---|---|
 | someone who reaches the sidecar asks what a user may see | no secret, no signature: 401 |
-| a captured request sent again | refused after 30 s; before, it only asks the same question again, and its answer travels encrypted to the sender |
+| a captured request sent again | refused: its signature was seen (each request's nonce makes it new), or its timestamp is 30 s old |
 | a request changed on its way | the body is signed |
 | a fake sidecar (DNS, a misrouted service) answers "allow everything" | the certificate does not verify; behind TLS termination, it cannot sign the answer without the secret |
 | a proxy or platform logs the traffic | the logs hold signatures, never the secret; they do hold the questions and answers, in the clear behind a platform that terminates TLS |

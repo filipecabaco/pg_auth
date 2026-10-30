@@ -193,7 +193,10 @@ defmodule Remote do
     post = fn headers, body ->
       Req.post!(url, body: body, headers: headers, retry: false, decode_body: false, connect_options: [transport_opts: [verify: :verify_none]])
     end
-    signed = fn secret, at, body -> [{"pg-auth-timestamp", "#{at}"}, {"pg-auth-signature", sign(secret, "v1\n#{at}\nPOST\n/v1/ask\n" <> body)}] end
+    signed = fn secret, at, body ->
+      nonce = "n-#{System.unique_integer([:positive])}"
+      [{"pg-auth-timestamp", "#{at}"}, {"pg-auth-nonce", nonce}, {"pg-auth-signature", sign(secret, "v1\n#{at}\n#{nonce}\nPOST\n/v1/ask\n" <> body)}]
+    end
 
     [
       check("the sidecar refuses an unsigned request: 401", fn -> post.([], body).status == 401 end),
@@ -201,6 +204,10 @@ defmodule Remote do
         post.(signed.("not-the-secret-but-at-least-thirty-two-bytes", now, body), body).status == 401
       end),
       check("a request seen a minute ago, sent again: 401", fn -> post.(signed.(@secret, now - 60, body), body).status == 401 end),
+      check("the same signed request sent twice: the second 401", fn ->
+        headers = signed.(@secret, now, body)
+        post.(headers, body).status == 200 and post.(headers, body).status == 401
+      end),
       check("a signed request whose body was changed: 401", fn ->
         post.(signed.(@secret, now, body), String.replace(body, "anne", "bob")).status == 401
       end),
@@ -214,6 +221,10 @@ defmodule Remote do
       check("health answers with nothing about anyone", fn ->
         r = Req.get!("https://127.0.0.1:#{port}/healthz", retry: false, connect_options: [transport_opts: [verify: :verify_none]])
         r.status == 200 and r.body == "ok\n"
+      end),
+      # last: the sidecar closes a connection whose body it did not read
+      check("an unsigned request is refused before its body is read: 401, not 413", fn ->
+        post.([], String.duplicate("x", 20 * 1024 * 1024)).status == 401
       end)
     ]
   end

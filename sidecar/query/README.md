@@ -185,6 +185,7 @@ the socket.
 | `PG_AUTH_SECRET_FILE` | required with `PG_AUTH_LISTEN` | the secrets requests are signed with, one per line, each at least 32 bytes |
 | `PG_AUTH_TLS_CERT`, `PG_AUTH_TLS_KEY` | required with `PG_AUTH_LISTEN` | its certificate chain and key (PEM) |
 | `PG_AUTH_TLS_TERMINATED` | off | `1` instead of the certificate, behind a platform that terminates TLS in front of it; signatures are still required |
+| `PG_AUTH_MAX_CONNECTIONS` | 512 | connections open at once on `PG_AUTH_LISTEN`; one past it is closed at once |
 | `LIST_LIMIT` | 1000 | OpenFGA: match its `listObjectsMaxResults`; SpiceDB: any, the sidecar pages |
 | `CACHE_TTL_MS` | 1000 | answers are cached this long; 0 disables (staleness vs. load). A list or plan answered from the cache past half its TTL is refreshed in the background, and the extension keeps it until that half-life, so a subject asking steadily never waits on the engine |
 | `REFRESH_ACTIVE_MS` | 30000 | lists and plans used within this long are refreshed before they expire even when nobody asks, so a subject back after a pause does not wait on the engine either (an idle backend's planning: 2.6 ms -> 0.5 ms with Cerbos); answers neither fresh nor active are dropped. 0 refreshes only what is asked for. Costs about two engine calls per second per active list or plan, never more than `REFRESH_CONCURRENCY` at once |
@@ -205,16 +206,21 @@ request (`src/net.rs`), for an extension that reaches it by URL instead of a soc
 on another host, or on a platform that runs services next to the database. The socket stays
 available beside it.
 
-- **Signed.** Each request carries `pg-auth-timestamp` and `pg-auth-signature`, an HMAC-SHA256
-  over the timestamp, the endpoint and the body with a secret both ends hold; each answer carries
+- **Signed.** Each request carries `pg-auth-timestamp`, `pg-auth-nonce` and `pg-auth-signature`,
+  an HMAC-SHA256 over the timestamp, the nonce, the endpoint and the body with a secret both ends
+  hold; each answer carries
   the sidecar's signature over it and the request's signature. A request without one, with a
   wrong one, or with a timestamp more than 30 s from the sidecar's clock is refused (401), and the
   secret never crosses the wire.
-- **Replays.** A captured request is refused once its timestamp is 30 s old; before that it only
-  asks the same question again, and its answer goes back encrypted. Keep the clocks of Postgres's
-  host and the sidecar's within that (NTP): a skewed clock is refused as a wrong signature.
+- **Replays.** A request is taken once: the sidecar remembers the signatures of the last minute,
+  and the nonce makes every request's signature new; one whose timestamp is 30 s off is refused
+  too. Keep the clocks of Postgres's host and the sidecar's within that (NTP): a skewed clock is
+  refused, and Postgres reports it as a wrong signature. Each replica remembers its own.
 - **Who reaches it.** Only Postgres should: restrict the port (a firewall, a Kubernetes
-  NetworkPolicy). The sidecar reads a request's body before checking its signature, up to 16 MiB.
+  NetworkPolicy). Its headers are checked before a body is read; a body has 10 s and 16 MiB, a TLS
+  handshake 10 s, and at most `PG_AUTH_MAX_CONNECTIONS` (512) connections are open at once. There
+  is no timeout on reading headers, which would also close the idle connections Postgres keeps;
+  refusals are logged at most once a second.
 - **Rotation.** `PG_AUTH_SECRET_FILE` holds one secret per line, any of them accepted: add the new
   one, move Postgres to it, remove the old one. The sidecar reads the file, and its certificate,
   when it starts: restart it after each change.

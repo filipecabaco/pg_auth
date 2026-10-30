@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// The endpoint's name in the signature: fixed, so a proxy that rewrites paths changes nothing.
 const ENDPOINT: &str = "/v1/ask";
 const TIMESTAMP: &str = "pg-auth-timestamp";
+const NONCE: &str = "pg-auth-nonce";
 const SIGNATURE: &str = "pg-auth-signature";
 const MIN_SECRET: usize = 32;
 /// Answers above this are refused: a list of every object a subject reaches is far below it.
@@ -76,10 +77,13 @@ impl From<String> for Refused {
 
 fn send(url: &str, body: &str, reread: bool) -> Result<Value, Refused> {
     let secret = secret(reread)?;
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string();
-    let signature = sign_request(&secret, &timestamp, body.as_bytes());
+    let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let timestamp = since.as_secs().to_string();
+    let nonce = nonce(since);
+    let signature = sign_request(&secret, &timestamp, &nonce, body.as_bytes());
     let endpoint = format!("{}{ENDPOINT}", url.trim_end_matches('/'));
-    let (status, signed, answer) = post(agent(url)?, endpoint, timestamp, signature.clone(), body.to_owned())?;
+    let headers = vec![(TIMESTAMP, timestamp), (NONCE, nonce), (SIGNATURE, signature.clone())];
+    let (status, signed, answer) = post(agent(url)?, endpoint, headers, body.to_owned())?;
     if status == 401 {
         return Err(Refused::Signature);
     }
@@ -94,8 +98,8 @@ fn send(url: &str, body: &str, reread: bool) -> Result<Value, Refused> {
     serde_json::from_slice(&answer).map_err(|e| Refused::Other(format!("bad sidecar response: {e}")))
 }
 
-/// A request for the worker: the client, the endpoint, the timestamp, the signature, the body.
-type Job = (ureq::Agent, String, String, String, String);
+/// A request for the worker: the client, the endpoint, the signing headers, the body.
+type Job = (ureq::Agent, String, Vec<(&'static str, String)>, String);
 /// -> (status, the answer's signature, the answer)
 type Answered = Result<(u16, Option<String>, Vec<u8>), String>;
 
@@ -118,15 +122,10 @@ fn worker() -> Result<Worker, String> {
     let (jobs, inbox) = std::sync::mpsc::channel::<Job>();
     let (outbox, answers) = std::sync::mpsc::channel::<Answered>();
     crate::ffi::spawn_without_signals("pg_auth https", move || {
-        for (agent, endpoint, timestamp, signature, body) in inbox {
+        for (agent, endpoint, headers, body) in inbox {
             let asked = || -> Answered {
-                let mut response = agent
-                    .post(&endpoint)
-                    .header(TIMESTAMP, &timestamp)
-                    .header(SIGNATURE, &signature)
-                    .content_type("application/json")
-                    .send(body.as_bytes())
-                    .map_err(|e| e.to_string())?;
+                let request = headers.iter().fold(agent.post(&endpoint), |r, (name, value)| r.header(*name, value));
+                let mut response = request.content_type("application/json").send(body.as_bytes()).map_err(|e| e.to_string())?;
                 let status = response.status().as_u16();
                 let signed = response.headers().get(SIGNATURE).and_then(|v| v.to_str().ok()).map(str::to_owned);
                 let answer = response.body_mut().with_config().limit(MAX_ANSWER).read_to_vec().map_err(|e| e.to_string())?;
@@ -141,13 +140,13 @@ fn worker() -> Result<Worker, String> {
     Ok(Worker { jobs, answers, busy: false })
 }
 
-fn post(agent: ureq::Agent, endpoint: String, timestamp: String, signature: String, body: String) -> Answered {
+fn post(agent: ureq::Agent, endpoint: String, headers: Vec<(&'static str, String)>, body: String) -> Answered {
     let mut current = WORKER.with(|w| w.borrow_mut().take()).filter(|w| !w.busy);
     let w = match current.take() {
         Some(w) => w,
         None => worker()?,
     };
-    w.jobs.send((agent, endpoint, timestamp, signature, body)).map_err(|_| "the request thread ended".to_string())?;
+    w.jobs.send((agent, endpoint, headers, body)).map_err(|_| "the request thread ended".to_string())?;
     // busy until the answer is taken; put back first, so a cancel unwinding from the wait leaves
     // it marked busy for the next request to replace
     WORKER.with(|c| *c.borrow_mut() = Some(Worker { busy: true, ..w }));
@@ -241,8 +240,21 @@ fn mac(secret: &[u8], text: &[&[u8]]) -> Hmac<Sha256> {
     mac
 }
 
-fn sign_request(secret: &[u8], timestamp: &str, body: &[u8]) -> String {
-    let head = format!("v1\n{timestamp}\nPOST\n{ENDPOINT}\n");
+/// A request's nonce, new for each request of this backend (its process, a count, the time), so
+/// the sidecar can refuse a request it has already seen.
+fn nonce(at: Duration) -> String {
+    thread_local! {
+        static COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    let count = COUNT.with(|c| {
+        c.set(c.get() + 1);
+        c.get()
+    });
+    format!("{:x}-{count:x}-{:x}", std::process::id(), at.as_nanos())
+}
+
+fn sign_request(secret: &[u8], timestamp: &str, nonce: &str, body: &[u8]) -> String {
+    let head = format!("v1\n{timestamp}\n{nonce}\nPOST\n{ENDPOINT}\n");
     format!("v1={}", hex(&mac(secret, &[head.as_bytes(), body]).finalize().into_bytes()))
 }
 
@@ -279,8 +291,8 @@ mod unit {
     #[test]
     fn signatures_match_the_sidecars() {
         assert_eq!(
-            sign_request(A, "1793350000", br#"{"op":"ping"}"#),
-            "v1=cf7fdf96f7f1fa1155874c98dbe4fa3c88858340dfebb10b961fb74e23f00c9b"
+            sign_request(A, "1793350000", "n-1", br#"{"op":"ping"}"#),
+            "v1=f9aa57cc61b19dc0ac58708ab8396f66f185271eba0bcc25b0db698a72d95a7e"
         );
         let signed = "v1=ba7fa6cc1f05797639848c9025512d781ed4d8a1a3dc341890697fbde393e149";
         assert!(verify_response(A, "v1=aa", 200, b"{\"engine\":\"openfga\"}\n", signed));
